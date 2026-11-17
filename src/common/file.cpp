@@ -210,6 +210,23 @@ void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
 	}
 }
 
+void File::ReadEx(void* data, uint32_t size, uint32_t* bytes_read, int* err) {
+	EXIT_IF(IsInvalid());
+
+	if (err != nullptr) {
+		*err = 0;
+	}
+
+	if (m_p->archive != nullptr) {
+		m_p->archive->Read(data, size, bytes_read);
+		return;
+	}
+
+	if (m_p->f != nullptr) {
+		SysFileReadEx(data, size, *m_p->f, bytes_read, err);
+	}
+}
+
 void File::Write(const void* data, uint32_t size, uint32_t* bytes_written) {
 	EXIT_IF(IsInvalid());
 
@@ -254,16 +271,13 @@ void File::Printf(const char* format, ...) {
 	Write(s.data(), static_cast<uint32_t>(s.size()));
 }
 
-static std::filesystem::path WithoutTrailingSeparator(
-	const std::filesystem::path& path) {
-		if (!path.empty() && !path.has_filename() &&
-			path != path.root_path()) {
-			return path.parent_path();
-		}
+static std::filesystem::path WithoutTrailingSeparator(const std::filesystem::path& path) {
+	if (!path.empty() && !path.has_filename() && path != path.root_path()) {
+		return path.parent_path();
+	}
 
-		return path;
+	return path;
 }
-
 
 bool File::IsDirectoryExisting(const std::filesystem::path& path) {
 	const auto info = GetInfo(path);
@@ -279,33 +293,30 @@ bool File::CreateDirectory(const std::filesystem::path& path) {
 	if (IsArchivePath(path)) {
 		return false;
 	}
-    return SysFileCreateDirectory(
-        WithoutTrailingSeparator(path));
+	return SysFileCreateDirectory(WithoutTrailingSeparator(path));
 }
 
 bool File::CreateDirectories(const std::filesystem::path& path) {
 	if (IsArchivePath(path)) {
 		return false;
 	}
-    const auto normalized_path =
-        WithoutTrailingSeparator(path);
+	const auto normalized_path = WithoutTrailingSeparator(path);
 
-    auto current_path = normalized_path.root_path();
+	auto current_path = normalized_path.root_path();
 
-    for (const auto& component:
-         normalized_path.relative_path()) {
-        current_path /= component;
+	for (const auto& component: normalized_path.relative_path()) {
+		current_path /= component;
 
-        if (IsDirectoryExisting(current_path)) {
-            continue;
-        }
+		if (IsDirectoryExisting(current_path)) {
+			continue;
+		}
 
-        if (!CreateDirectory(current_path)) {
-            return false;
-        }
-    }
+		if (!CreateDirectory(current_path)) {
+			return false;
+		}
+	}
 
-    return true;
+	return true;
 }
 
 bool File::DeleteFile(
@@ -335,7 +346,7 @@ std::vector<std::byte> File::ReadWholeBuffer() {
 
 	EXIT_IF((s >> 32u) != 0);
 
-	const auto            read_size = static_cast<uint32_t>(s);
+	const auto             read_size = static_cast<uint32_t>(s);
 	std::vector<std::byte> buf(read_size);
 
 	Read(buf.data(), read_size);

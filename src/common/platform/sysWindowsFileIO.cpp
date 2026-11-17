@@ -12,10 +12,8 @@
 #include "common/platform/sysFileIO.h"
 #include "common/stringUtils.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstring>
-#include <vector>
+#include <cerrno>
+
 // NOLINTNEXTLINE(readability-identifier-naming)
 struct sys_file_t {
 	HANDLE handle;
@@ -33,55 +31,30 @@ constexpr DWORD FILE_SHARE_POSIX  = static_cast<DWORD>(FILE_SHARE_READ) |
 constexpr DWORD READ_WRITE_DELETE = static_cast<DWORD>(GENERIC_READ) |
                                     static_cast<DWORD>(GENERIC_WRITE) | static_cast<DWORD>(DELETE);
 
-static std::atomic<SysFileRecoverableDestination> g_recoverable_destination {nullptr};
-
-void SysFileSetRecoverableDestination(SysFileRecoverableDestination probe) {
-	g_recoverable_destination.store(probe, std::memory_order_release);
+// ReadFile into a page the GPU resource tracker has made PAGE_READONLY fails with ERROR_NOACCESS
+// and delivers 0 bytes. Report it as EFAULT, as POSIX read does, so the caller retries through a
+// host buffer instead of giving the guest a silent short read. Other failures are EIO; a read at
+// end of file is not an error.
+void SysFileReadEx(void* data, uint32_t size, sys_file_t& f, uint32_t* bytes_read, int* err) {
+	if (err != nullptr) {
+		*err = 0;
+	}
+	DWORD       w   = 0;
+	const BOOL  ok  = ReadFile(f.handle, data, size, &w, nullptr);
+	const DWORD gle = (ok != 0 ? 0 : GetLastError());
+	if (bytes_read != nullptr) {
+		*bytes_read = w;
+	}
+	if (ok == 0 && err != nullptr && gle != ERROR_HANDLE_EOF) {
+		*err = (gle == ERROR_NOACCESS || gle == ERROR_INVALID_USER_BUFFER) ? EFAULT : EIO;
+	}
 }
 
 void SysFileRead(void* data, uint32_t size, sys_file_t& f, uint32_t* bytes_read) {
-	DWORD         w = 0;
-	LARGE_INTEGER zero {};
-	LARGE_INTEGER start {};
-	const bool    have_start = SetFilePointerEx(f.handle, zero, &start, FILE_CURRENT) != FALSE;
-	if (ReadFile(f.handle, data, size, &w, nullptr) == FALSE) {
-		const DWORD error = GetLastError();
-		if ((error == ERROR_NOACCESS || error == ERROR_INVALID_USER_BUFFER) && have_start &&
-		    SetFilePointerEx(f.handle, start, nullptr, FILE_BEGIN) != FALSE) {
-			w                       = 0;
-			uint64_t      remaining = size;
-			LARGE_INTEGER file_size {};
-			if (GetFileSizeEx(f.handle, &file_size) != FALSE) {
-				remaining =
-				    file_size.QuadPart > start.QuadPart
-				        ? std::min<uint64_t>(
-				              remaining, static_cast<uint64_t>(file_size.QuadPart - start.QuadPart))
-				        : 0;
-			}
-			thread_local std::vector<uint8_t> chunk(1u << 20u);
-			while (remaining != 0) {
-				const auto request =
-				    static_cast<DWORD>(std::min<uint64_t>(remaining, chunk.size()));
-				const auto recoverable = g_recoverable_destination.load(std::memory_order_acquire);
-				if (recoverable == nullptr ||
-				    !recoverable(static_cast<uint8_t*>(data) + w, request)) {
-					break;
-				}
-				DWORD got = 0;
-				if (ReadFile(f.handle, chunk.data(), request, &got, nullptr) == FALSE || got == 0) {
-					break;
-				}
-				std::memcpy(static_cast<uint8_t*>(data) + w, chunk.data(), got);
-				w += got;
-				remaining -= got;
-				if (got < request) {
-					break;
-				}
-			}
-		}
-	}
+	DWORD r = 0;
+	ReadFile(f.handle, data, size, &r, nullptr);
 	if (bytes_read != nullptr) {
-		*bytes_read = w;
+		*bytes_read = r;
 	}
 }
 
@@ -93,42 +66,10 @@ void SysFileWrite(const void* data, uint32_t size, sys_file_t& f, uint32_t* byte
 	}
 }
 
-// Win32 rejects plain paths of MAX_PATH (260) characters or more, and directory names from 248,
-// unless long paths are enabled system-wide. Extended-length paths ("\\?\") have no such limit
-// but are passed to the file system unparsed, so they must already be absolute and normalized.
-static std::wstring HostPath(const std::filesystem::path& path) {
-	constexpr size_t MAX_PLAIN_PATH = 248;
-
-	const auto& native = path.native();
-	if (native.size() < MAX_PLAIN_PATH || native.starts_with(L"\\\\?\\") ||
-	    native.starts_with(L"\\\\.\\")) {
-		return native;
-	}
-
-	std::wstring full(native.size() + MAX_PATH, L'\0');
-	for (;;) {
-		const DWORD size =
-		    GetFullPathNameW(native.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
-		if (size == 0) {
-			return native;
-		}
-		if (size < full.size()) {
-			full.resize(size);
-			break;
-		}
-		full.resize(size);
-	}
-
-	if (full.starts_with(L"\\\\")) {
-		return L"\\\\?\\UNC" + full.substr(1);
-	}
-	return L"\\\\?\\" + full;
-}
-
 static sys_file_t* OpenHostFile(const std::filesystem::path& file_name, DWORD access,
                                 DWORD disposition) {
-	HANDLE handle = CreateFileW(HostPath(file_name).c_str(), access, FILE_SHARE_POSIX, nullptr,
-	                            disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+	HANDLE handle = CreateFileW(file_name.c_str(), access, FILE_SHARE_POSIX, nullptr, disposition,
+	                            FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (handle == INVALID_HANDLE_VALUE) {
 		return nullptr;
 	}
@@ -166,7 +107,7 @@ uint64_t SysFileSize(sys_file_t& f) {
 bool SysFileGetInfo(const std::filesystem::path& name, bool* is_file, uint64_t* size) {
 	const bool directory_path = !name.empty() && !name.has_filename() && name != name.root_path();
 	WIN32_FILE_ATTRIBUTE_DATA info {};
-	if (GetFileAttributesExW(HostPath(directory_path ? name.parent_path() : name).c_str(),
+	if (GetFileAttributesExW(directory_path ? name.parent_path().c_str() : name.c_str(),
 	                         GetFileExInfoStandard, &info) == 0) {
 		return false;
 	}
@@ -216,11 +157,13 @@ uint64_t SysFileTell(sys_file_t& f) {
 }
 
 bool SysFileCreateDirectory(const std::filesystem::path& path) {
-	return CreateDirectoryW(HostPath(path).c_str(), nullptr) != 0;
+	auto wide = path.wstring();
+	return CreateDirectoryW(wide.c_str(), nullptr) != 0;
 }
 
 bool SysFileDeleteFile(const std::filesystem::path& name) {
-	return DeleteFileW(HostPath(name).c_str()) != 0;
+	auto wide = name.wstring();
+	return DeleteFileW(wide.c_str()) != 0;
 }
 
 bool SysFileFlush(sys_file_t& f) {
@@ -254,7 +197,7 @@ void SysFileGetDents(const std::filesystem::path& path, std::vector<sys_dir_entr
 	const auto pattern = path / L"*";
 
 	WIN32_FIND_DATAW data {};
-	HANDLE           h = FindFirstFileW(HostPath(pattern).c_str(), &data);
+	HANDLE           h = FindFirstFileW(pattern.c_str(), &data);
 
 	if (h == INVALID_HANDLE_VALUE) {
 		return;
@@ -276,7 +219,9 @@ void SysFileGetDents(const std::filesystem::path& path, std::vector<sys_dir_entr
 }
 
 bool SysFileRenameFile(const std::filesystem::path& src, const std::filesystem::path& dst) {
-	return MoveFileW(HostPath(src).c_str(), HostPath(dst).c_str()) != 0;
+	auto src_wide = src.wstring();
+	auto dst_wide = dst.wstring();
+	return MoveFileW(src_wide.c_str(), dst_wide.c_str()) != 0;
 }
 
 #endif

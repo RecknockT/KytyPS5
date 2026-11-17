@@ -69,13 +69,16 @@ public:
 	[[nodiscard]] std::optional<Times> GetTimes() const;
 
 	void Read(void* data, uint32_t size, uint32_t* bytes_read = nullptr);
+	// Read() that also reports a failed read: 0 on success or end of file, EFAULT when the
+	// destination is not writable, otherwise a host errno (EIO on Windows).
+	void ReadEx(void* data, uint32_t size, uint32_t* bytes_read, int* err);
 	void Write(const void* data, uint32_t size, uint32_t* bytes_written = nullptr);
 
 	void Printf(const char* format, ...) KYTY_FORMAT_PRINTF(2, 3);
 
 	std::vector<std::byte> ReadWholeBuffer();
 
-	static uint64_t Size(const std::filesystem::path& name);
+	static uint64_t            Size(const std::filesystem::path& name);
 	static std::optional<Info> GetInfo(const std::filesystem::path& name);
 	// Archive members report the host archive's times.
 	static std::optional<Times> GetTimes(const std::filesystem::path& name);

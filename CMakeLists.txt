@@ -654,6 +654,11 @@ add_executable(gpu_stall_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuStallTests
 target_link_libraries(gpu_stall_tests common fmt::fmt)
 target_include_directories(gpu_stall_tests PRIVATE ${inc_headers})
 
+add_executable(win_read_efault_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/WinReadEfaultTests.cpp")
+target_link_libraries(win_read_efault_tests common)
+target_include_directories(win_read_efault_tests PRIVATE ${inc_headers})
+
 add_executable(sync_on_address_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/SyncOnAddressTests.cpp"
 	"${KYTY_SOURCE_DIR}/kernel/syncOnAddress.cpp"
@@ -798,6 +803,7 @@ if(BUILD_TESTING)
 	add_test(NAME gpu_stall COMMAND $<TARGET_FILE:gpu_stall_tests>)
 	# A missed wakeup shows up as a hang, so fail fast instead of at the default timeout.
 	set_tests_properties(gpu_stall PROPERTIES TIMEOUT 30)
+	add_test(NAME win_read_efault COMMAND $<TARGET_FILE:win_read_efault_tests>)
 	add_test(NAME sync_on_address COMMAND $<TARGET_FILE:sync_on_address_tests>)
 	add_test(NAME audio_out2_port COMMAND $<TARGET_FILE:audio_out2_port_tests>)
 	# A push or query wrongly held by GpuStall hangs, so fail fast instead of at the default timeout.
@@ -945,6 +951,7 @@ if(BUILD_TESTING)
 		event_queue_lifetime_tests
 		kernel_file_system_tests
 		gpu_stall_tests
+		win_read_efault_tests
 		sync_on_address_tests
 		shader_recompiler_compute_tests
 		virtual_memory_allocation_tests

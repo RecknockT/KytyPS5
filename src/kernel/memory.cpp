@@ -468,7 +468,10 @@ public:
 		int              memory_type    = 0;
 		VirtualRangeType type           = VirtualRangeType::Reserved;
 		bool             disallow_merge = false;
-		char             name[KERNEL_MAXIMUM_NAME_LENGTH];
+		// The host mapping is read-write although the guest protection is not
+		// (SetProgramMemoryProtection); any other protection change resets it.
+		bool host_writable = false;
+		char name[KERNEL_MAXIMUM_NAME_LENGTH];
 	};
 
 	bool Add(uint64_t start, uint64_t size, uint64_t offset, int protection, int memory_type,
@@ -580,8 +583,11 @@ public:
 		EditUnlocked(start, size, [name](Range* r) { CopyVirtualRangeName(r->name, name); });
 	}
 
-	void Protect(uint64_t start, uint64_t size, int protection) {
-		EditUnlocked(start, size, [protection](Range* r) { r->protection = protection; });
+	void Protect(uint64_t start, uint64_t size, int protection, bool host_writable = false) {
+		EditUnlocked(start, size, [protection, host_writable](Range* r) {
+			r->protection    = protection;
+			r->host_writable = host_writable;
+		});
 	}
 
 	bool Query(uint64_t addr, int flags, Range* out) {
@@ -680,7 +686,7 @@ private:
 		}
 
 		return left.type == right.type && left.protection == right.protection &&
-		       left.memory_type == right.memory_type &&
+		       left.host_writable == right.host_writable && left.memory_type == right.memory_type &&
 		       std::strncmp(left.name, right.name, KERNEL_MAXIMUM_NAME_LENGTH) == 0;
 	}
 
@@ -1143,38 +1149,49 @@ static void CancelAllSuspendedRangesIfUsed() {
 	CancelAllSuspendedRanges();
 }
 
+// The host mapping of a committed range is writable when the guest may write it from the CPU or
+// the GPU (DecodeMemoryProtection).
+static bool HasHostWriteAccess(const VirtualRanges::Range& range) {
+	return IsCommittedRangeType(range.type) &&
+	       (range.protection & (PROT_CPU_WRITE | PROT_GPU_WRITE)) != 0;
+}
+
+bool IsKnownUnwritable(uint64_t vaddr, uint64_t size) {
+	if (size == 0 || size > UINT64_MAX - vaddr) {
+		return size != 0;
+	}
+	std::vector<VirtualRanges::Range> ranges;
+	std::shared_lock                  state(g_memory_state_mutex);
+	if (g_virtual_ranges == nullptr) {
+		return false;
+	}
+	// Holes are skipped: memory the map does not describe, such as a host buffer that HLE code
+	// hands to a guest callback, is not known to fail. A program image that
+	// SetProgramMemoryProtection left host-writable whatever its guest protection is not known to
+	// fail either; ProtectGuestMemory and ProtectMemory give program memory the host protection
+	// of the guest one, so a read-only page there is unwritable like any other.
+	g_virtual_ranges->QueryFragments(vaddr, size, &ranges);
+	return std::any_of(ranges.begin(), ranges.end(), [](const auto& range) {
+		return !range.host_writable && !HasHostWriteAccess(range);
+	});
+}
+
+bool IsGuestWritable(uint64_t vaddr, uint64_t size) {
+	if (size == 0) {
+		return true;
+	}
+	std::vector<VirtualRanges::Range> ranges;
+	std::shared_lock                  state(g_memory_state_mutex);
+	return g_virtual_ranges != nullptr && g_virtual_ranges->QuerySpan(vaddr, size, &ranges) &&
+	       std::all_of(ranges.begin(), ranges.end(), HasHostWriteAccess);
+}
+
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	// Suspended caches belong to the GPU that is going away. Left behind, they would keep page
 	// state alive that the page manager refuses to destroy.
 	CancelAllSuspendedRangesIfUsed();
-	g_gpu_resources                     = resources;
-	SysFileRecoverableDestination probe = nullptr;
-	if (resources != nullptr) {
-		probe = [](const void* data, uint64_t size) {
-			if (g_virtual_ranges == nullptr) {
-				return false;
-			}
-			auto addr = reinterpret_cast<uint64_t>(data);
-			if (size > UINT64_MAX - addr) {
-				return false;
-			}
-			const auto end = addr + size;
-			while (addr < end) {
-				VirtualRanges::Range range {};
-				if (!g_virtual_ranges->Query(addr, 0, &range)) {
-					return false;
-				}
-				const auto next = std::min(end, range.start + range.size);
-				if ((range.protection & PROT_CPU_WRITE) == 0) {
-					return false;
-				}
-				addr = next;
-			}
-			return true;
-		};
-	}
-	SysFileSetRecoverableDestination(probe);
+	g_gpu_resources = resources;
 }
 
 void SetKeepGpuCacheOnReuse(bool enabled) noexcept {
@@ -2524,8 +2541,12 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len, bool skip_gaps
 
 	// Validation precedes the first unmap; failing after it is an emulator fault.
 	const auto mapped_aliases = g_physical_memory->FindMappings(start, len);
-	for (const auto& alias: mapped_aliases) {
-		SuspendOrUnmapGpuRange(alias.start, alias.size, alias.offset);
+	if (g_keep_gpu_cache_on_reuse) {
+		for (const auto& alias: mapped_aliases) {
+			SuspendOrUnmapGpuRange(alias.start, alias.size, alias.offset);
+		}
+	} else {
+		UnmapGpuRanges(mapped_aliases);
 	}
 	{
 		std::lock_guard state(g_memory_state_mutex);
@@ -3361,7 +3382,7 @@ void SetProgramMemoryProtection(uint64_t vaddr, uint64_t size, VirtualMemory::Mo
 	                                                      : VirtualMemory::Mode::ReadWrite;
 	std::lock_guard state(g_memory_state_mutex);
 	EXIT_IF(!g_guest_address_space->Protect(vaddr, size, host_mode));
-	g_virtual_ranges->Protect(vaddr, size, ProgramProtection(mode));
+	g_virtual_ranges->Protect(vaddr, size, ProgramProtection(mode), true);
 }
 
 uint64_t AllocateRuntimeMemory(uint64_t search_addr, uint64_t size, VirtualMemory::Mode mode,

@@ -158,6 +158,14 @@ void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 [[nodiscard]] uint64_t WaitForTransientUnmap(uint64_t fault_vaddr) noexcept;
 // Whether such a fault can be retried (false once the same page keeps faulting).
 [[nodiscard]] bool RetryTransientUnmapFault(uint64_t fault_vaddr, uint64_t window) noexcept;
+// Part of the range is guest memory that is reserved or mapped without CPU or GPU write access,
+// so a host store into it faults and nothing recovers the fault. Memory the guest map does not
+// describe is not known to fail, nor is a program image that SetProgramMemoryProtection left
+// host-writable whatever its guest protection.
+[[nodiscard]] bool IsKnownUnwritable(uint64_t vaddr, uint64_t size);
+// The guest has the whole range committed with CPU or GPU write access. A host store into it
+// faults only on pages the GPU resource tracker protects, which HandleGpuFault recovers.
+[[nodiscard]] bool IsGuestWritable(uint64_t vaddr, uint64_t size);
 void               InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 // Opt-in. When on, releasing direct memory keeps the GPU buffer caches of its mappings, and a
 // fixed read-write map of the same memory at the same address picks them up again. Turning it off
