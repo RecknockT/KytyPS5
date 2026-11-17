@@ -29,16 +29,15 @@ GuestRange TiledMipRange(const ImageInfo& info, uint32_t level) {
 	    info.tiling.texel_width == 0 || info.tiling.texel_height == 0) {
 		return {};
 	}
-	const auto extent = info.MipExtent(level);
-	const auto width  = (extent.width + info.tiling.texel_width - 1u) / info.tiling.texel_width;
-	const auto height = (extent.height + info.tiling.texel_height - 1u) / info.tiling.texel_height;
-	const auto& mip   = info.mip_layout[level];
-	uint32_t last = 0, origin = 0;
-	if (!std::has_single_bit(width) || !std::has_single_bit(height) ||
-	    width > block.block_width || height > block.block_height ||
-	    mip.tail_x > block.block_width - width || mip.tail_y > block.block_height - height ||
-	    mip.tail_x % width != 0 || mip.tail_y % height != 0 ||
-	    !TileGetBlockOffset(block, width - 1u, height - 1u, 0, last) ||
+	const auto  extent = info.MipExtent(level);
+	const auto  width  = (extent.width + info.tiling.texel_width - 1u) / info.tiling.texel_width;
+	const auto  height = (extent.height + info.tiling.texel_height - 1u) / info.tiling.texel_height;
+	const auto& mip    = info.mip_layout[level];
+	uint32_t    last = 0, origin = 0;
+	if (!std::has_single_bit(width) || !std::has_single_bit(height) || width > block.block_width ||
+	    height > block.block_height || mip.tail_x > block.block_width - width ||
+	    mip.tail_y > block.block_height - height || mip.tail_x % width != 0 ||
+	    mip.tail_y % height != 0 || !TileGetBlockOffset(block, width - 1u, height - 1u, 0, last) ||
 	    !TileGetBlockOffset(block, mip.tail_x, mip.tail_y, 0, origin)) {
 		return {};
 	}
@@ -81,7 +80,7 @@ void ImageInfo::UpdateSize() {
 	        extent.height == 0 || extent.depth == 0 || resources.levels == 0 ||
 	        resources.levels > mip_layout.size() || resources.layers == 0 || samples == 0 ||
 	        !std::has_single_bit(samples));
-	const bool auto_size = data.size == 0;
+	const bool               auto_size = data.size == 0;
 	TileTextureElementLayout element {};
 	EXIT_NOT_IMPLEMENTED(!TileGetTextureElementLayout(guest_format, element));
 	if (bytes_per_block == 0) {
@@ -219,6 +218,83 @@ ImageLinearLayout ImageInfo::LinearLayout() const {
 	return layout;
 }
 
+namespace {
+
+bool MatchStoredMipChain(ImageInfo& info, uint32_t physical_levels, bool metadata,
+                         uint32_t view_levels, uint32_t& base_level,
+                         const vk::Extent3D* rebased_extent) {
+	ImageInfo physical = info;
+	if (rebased_extent != nullptr) {
+		physical.extent = *rebased_extent;
+	}
+	physical.resources.levels = physical_levels;
+	physical.UpdateSize();
+	info.UpdateSize();
+	const auto same_mip = [&](uint32_t target, uint32_t source) {
+		return physical.mip_layout[target] == info.mip_layout[source] &&
+		       physical.MipExtent(target) == info.MipExtent(source);
+	};
+	if (physical.first_tail_level == info.first_tail_level &&
+	    physical.tiled_slice_stride == info.tiled_slice_stride &&
+	    physical.data.size == info.data.size) {
+		bool matches = true;
+		for (uint32_t level = 0; level < physical_levels; ++level) {
+			matches &= same_mip(level, level);
+		}
+		if (matches) {
+			return true;
+		}
+	}
+	if (metadata ||
+	    (info.TransferLayers() > 1 && physical.tiled_slice_stride != info.tiled_slice_stride)) {
+		return false;
+	}
+	// T# addresses the last mip. A view can select the same stored subresources
+	// with different mip indices; inaccessible mips need no host representation.
+	for (uint32_t base = 0; base + view_levels <= physical_levels; ++base) {
+		bool matches = true;
+		for (uint32_t i = 0; i < view_levels; ++i) {
+			const auto source = base_level + i;
+			const auto target = base + i;
+			if (!same_mip(target, source) ||
+			    (target >= physical.first_tail_level) != (source >= info.first_tail_level)) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) {
+			info       = std::move(physical);
+			base_level = base;
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+bool ResolveTextureMipView(ImageInfo& info, uint32_t physical_levels, bool metadata,
+                           uint32_t view_levels, uint32_t& base_level) {
+	if (!info.IsTiled()) {
+		return false;
+	}
+	// A view entirely past MAX_MIP may address its own chain starting at its base mip (PPSA02110
+	// compresses mip 1 through a T# that declares one level). A render-target mip that is not
+	// tiled as its own image still lies in the stored chain, which is matched instead.
+	if (base_level >= physical_levels) {
+		const ImageInfo    saved = info;
+		const auto         mip   = info.MipExtent(base_level);
+		const vk::Extent3D extent {mip.width, mip.height, info.IsVolume() ? mip.depth : 1u};
+		uint32_t           rebased_base = base_level;
+		if (MatchStoredMipChain(info, view_levels, metadata, view_levels, rebased_base, &extent)) {
+			base_level = rebased_base;
+			return true;
+		}
+		info = saved;
+	}
+	return MatchStoredMipChain(info, physical_levels, metadata, view_levels, base_level, nullptr);
+}
+
 uint32_t ImageInfo::DataAlignment() const {
 	if (!IsTiled()) {
 		return 256;
@@ -235,8 +311,8 @@ int32_t ImageInfo::SliceOf(const ImageInfo& container, int32_t mip) const noexce
 	    IsVolume() || resources.levels != 1 || resources.layers == 0 ||
 	    container.resources.layers == 0 || mip < 0 ||
 	    static_cast<uint32_t>(mip) >= container.resources.levels ||
-	    container.resources.levels > container.mip_layout.size() ||
-	    !data.Valid() || !container.data.Valid() || data.address < container.data.address ||
+	    container.resources.levels > container.mip_layout.size() || !data.Valid() ||
+	    !container.data.Valid() || data.address < container.data.address ||
 	    data.End() > container.data.End()) {
 		return -1;
 	}
@@ -262,8 +338,8 @@ int32_t ImageInfo::SliceOf(const ImageInfo& container, int32_t mip) const noexce
 	// descriptor covers its addressed span within the shared tail block.
 	const auto slice_stride = container.data.size / container.resources.layers;
 	const auto child_stride = data.size / resources.layers;
-	auto mip_offset = layout.offset;
-	auto mip_size   = layout.size / container.resources.layers;
+	auto       mip_offset   = layout.offset;
+	auto       mip_size     = layout.size / container.resources.layers;
 	const auto compact_size = CompactMipSize(*this);
 	if (compact_size != 0 && child_stride == compact_size && mip_layout[0].size == compact_size) {
 		const auto range = TiledMipRange(container, level);
