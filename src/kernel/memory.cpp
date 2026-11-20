@@ -2524,8 +2524,12 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len, bool skip_gaps
 
 	// Validation precedes the first unmap; failing after it is an emulator fault.
 	const auto mapped_aliases = g_physical_memory->FindMappings(start, len);
-	for (const auto& alias: mapped_aliases) {
-		SuspendOrUnmapGpuRange(alias.start, alias.size, alias.offset);
+	if (!g_keep_gpu_cache_on_reuse) {
+		UnmapGpuRanges(mapped_aliases);
+	} else {
+		for (const auto& alias: mapped_aliases) {
+			SuspendOrUnmapGpuRange(alias.start, alias.size, alias.offset);
+		}
 	}
 	{
 		std::lock_guard state(g_memory_state_mutex);
@@ -2726,9 +2730,12 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		// break aliasing and lose direct-memory contents when a range is unmapped and mapped again.
 		if (MapBackingForGuest(target, len, direct_memory_start, mode, &shared_failure)) {
 			resume_scope.view_created = true;
-			out_addr                  = target;
 			// CanMapDirect and the target were validated under the operation lock.
-			EXIT_IF(!g_physical_memory->Map(out_addr, direct_memory_start, len));
+			if (!g_physical_memory->Map(target, direct_memory_start, len)) {
+				EXIT_IF(!g_guest_address_space->UnmapBacking(target, len));
+				return KERNEL_ERROR_EBUSY;
+			}
+			out_addr = target;
 			const bool published =
 			    replace_target
 			        ? g_virtual_ranges->ReplaceSpan(out_addr, len, replaced_type,
