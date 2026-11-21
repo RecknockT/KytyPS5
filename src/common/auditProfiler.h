@@ -82,6 +82,53 @@ enum class SubmitReason : uint32_t {
 	Count
 };
 
+/// Classification of callers enqueueing priority GPU operations (Stage 8.2).
+enum class PriorityOpCaller : uint32_t {
+	Unknown = 0,
+	ReadHotPublish,   ///< BufferCache::PublishReadHot backing updates.
+	Interrupt,        ///< CommandProcessor::ReleaseMemory interrupt events.
+	Flip,             ///< Presentation flip completion (CompleteFlip / CompleteCpuFlip).
+	AsyncDownload,    ///< BufferCache::DownloadBufferMemory<true> asynchronous completions.
+	TextureWriteBack, ///< TextureCache::WriteBackImages storage image write-backs.
+	SuspendPoint,     ///< CommandProcessor::SuspendPoint sync release.
+	Count
+};
+
+/// Classification of callers triggering buffer readbacks from GPU memory (Stage 8.2).
+enum class BufferReadbackCaller : uint32_t {
+	Unknown = 0,
+	PageFault,        ///< Guest thread reading from GPU-modified buffer (HandleFault).
+	ColorMetadata,    ///< TextureCache::FindView checking color metadata clear codes.
+	IndirectDispatch, ///< RenderCompute reading indirect dispatch arguments.
+	ImageHeapRefresh, ///< ImageHeap::Refresh reading descriptors/heap entries.
+	ShaderRead,       ///< PipelineCache reading shader guest memory for recompiler.
+	Other,
+	Count
+};
+
+struct CallerWaitStats {
+	uint64_t count        = 0;
+	uint64_t total_ns     = 0;
+	uint64_t max_ns       = 0;
+	uint64_t total_bytes  = 0;
+	double   total_ms     = 0.0;
+	double   avg_us       = 0.0;
+	double   ms_per_frame = 0.0;
+};
+
+struct SignificantWaitEvent {
+	uint64_t      timestamp_us = 0;
+	uint64_t      duration_ns  = 0;
+	GpuWaitReason reason       = GpuWaitReason::Other;
+	uint32_t      caller_id    = 0;
+	std::string   caller_name;
+	uint64_t      tick_requested = 0;
+	uint64_t      tick_completed = 0;
+	uint64_t      address        = 0;
+	uint64_t      size_bytes     = 0;
+	uint32_t      tid            = 0;
+};
+
 /// Classification of rendering pipeline stages for fine-grained timing.
 enum class PipelineStage : uint32_t {
 	Pm4Decode = 0,       ///< PM4 decode loop in CommandProcessor::Process
@@ -212,9 +259,13 @@ struct ProfileSnapshot {
 	bool     redundant_bind_elision_enabled = true;
 	bool     pipeline_cache_mru_enabled     = true;
 	bool     pipeline_key_cache_enabled     = true;
-	bool     draw_state_dirty_check_enabled = true;
+	bool     draw_state_dirty_check_enabled = false;
 	bool     ensure_pipeline_cache_enabled  = true;
 	bool     descriptor_cache_enabled       = true;
+	bool     program_cache_mru_enabled      = true;
+	bool     coalesce_read_faults_enabled   = true;
+	bool     gpu_timestamps_enabled         = true;
+	bool     diagnostic_skip_water_enabled  = false;
 
 	// Capture lifecycle metadata
 	std::string capture_id;
@@ -347,6 +398,14 @@ struct ProfileSnapshot {
 
 	// Stage 8 additions: Detailed hitch correlation records
 	std::vector<DetailedHitchInfo> detailed_hitches;
+
+	// Stage 8.2 additions: Synchronization and Readback caller breakdowns
+	std::array<CallerWaitStats, static_cast<size_t>(PriorityOpCaller::Count)>
+	    priority_op_callers {};
+	std::array<CallerWaitStats, static_cast<size_t>(BufferReadbackCaller::Count)>
+	                                  buffer_readback_callers {};
+	std::vector<SignificantWaitEvent> significant_waits;
+	uint64_t                          water_draws_estimated = 0;
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;
@@ -465,6 +524,19 @@ void NoteGpuThreadFrame() noexcept;
 
 /// Records physical GPU execution time from timestamps.
 void RecordGpuExecutionTime(uint64_t duration_ns) noexcept;
+
+/// Stage 8.2 additions: Callers and significant wait tracking
+[[nodiscard]] const char* GetPriorityOpCallerName(PriorityOpCaller caller) noexcept;
+[[nodiscard]] const char* GetBufferReadbackCallerName(BufferReadbackCaller caller) noexcept;
+void RecordPriorityOpWait(PriorityOpCaller caller, uint64_t wait_ns, uint64_t tick,
+                          uint64_t known_tick) noexcept;
+void RecordBufferReadbackWait(BufferReadbackCaller caller, uint64_t wait_ns, uint64_t tick,
+                              uint64_t known_tick, uint64_t address = 0,
+                              uint64_t size = 0) noexcept;
+void RecordSignificantWait(GpuWaitReason reason, uint32_t caller_id, const char* caller_name,
+                           uint64_t wait_ns, uint64_t tick_req, uint64_t tick_done,
+                           uint64_t address = 0, uint64_t size = 0) noexcept;
+void RecordWaterDraw() noexcept;
 
 /// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
 class ScopedStageTimer {

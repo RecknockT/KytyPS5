@@ -48,7 +48,7 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 | **Redundant Bind Elision** (Etapa 7) | `--redundant-bind-elision` | `--no-redundant-bind-elision` | **Activado** |
 | **Pipeline Cache MRU** (Etapa 7) | `--pipeline-cache-mru` | `--no-pipeline-cache-mru` | **Activado** |
 | **Pipeline Key Cache** (Etapa 8) | `--pipeline-key-cache` | `--no-pipeline-key-cache` | **Activado** |
-| **Draw State Dirty Check** (Etapa 8) | `--draw-state-dirty-check` | `--no-draw-state-dirty-check` | **Activado** |
+| **Draw State Dirty Check** (Etapa 8) | `--draw-state-dirty-check` | `--no-draw-state-dirty-check` | **Desactivado** (regresión Sky Garden) |
 | **Ensure Pipeline Cache** (Etapa 8.1) | `--ensure-pipeline-cache` | `--no-ensure-pipeline-cache` | **Activado** |
 | **Descriptor Cache** (Etapa 8.1) | `--descriptor-cache` | `--no-descriptor-cache` | **Activado** |
 | **Extended Stream Buffer** (256 MiB) | `--extended-stream-buffer` | (omitir) | **Desactivado** (64 MiB estándar) |

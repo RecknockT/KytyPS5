@@ -121,7 +121,7 @@ static void PrintUsage() {
 	         "(default: on).\n");
 	::printf("  --no-pipeline-key-cache              Disable pipeline key caching.\n");
 	::printf("  --draw-state-dirty-check             Elide redundant draw state and render target "
-	         "preparations (default: on).\n");
+	         "preparations (default: off).\n");
 	::printf("  --no-draw-state-dirty-check          Disable draw state dirty checking.\n");
 	::printf("  --ensure-pipeline-cache              Fast-path MRU pipeline key check in "
 	         "EnsureGraphicsPipeline (default: on).\n");

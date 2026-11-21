@@ -1016,13 +1016,24 @@ TEST_F(AuditProfilerTest, Stage8_1FrameTimeSeriesExport) {
 TEST_F(AuditProfilerTest, Stage8_1OptimizationFlagsConfig) {
 	EXPECT_TRUE(Config::EnsurePipelineCacheEnabled());
 	EXPECT_TRUE(Config::DescriptorCacheEnabled());
+	EXPECT_FALSE(Config::DrawStateDirtyCheckEnabled());
 
 	StartCapture("UnitTestStage8_1Config");
 	const auto snap = TakeSnapshot();
 	EXPECT_TRUE(snap.ensure_pipeline_cache_enabled);
 	EXPECT_TRUE(snap.descriptor_cache_enabled);
+	EXPECT_FALSE(snap.draw_state_dirty_check_enabled);
 
 	StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, Stage8_2DrawStateDirtyCheckRegressionProtection) {
+	// Verify that DrawStateDirtyCheck is disabled by default to prevent visual regressions
+	// demonstrated in Astro Bot Sky Garden (phantom shadows, intense flashing, binding desync)
+	EXPECT_FALSE(Config::DrawStateDirtyCheckEnabled());
+
+	const auto snap = TakeSnapshot();
+	EXPECT_FALSE(snap.draw_state_dirty_check_enabled);
 }
 
 } // namespace

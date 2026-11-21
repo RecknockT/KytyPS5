@@ -107,7 +107,7 @@ struct ConfigOptions {
 	bool     redundant_bind_elision_enabled = true;
 	bool     pipeline_cache_mru_enabled     = true;
 	bool     pipeline_key_cache_enabled     = true;
-	bool     draw_state_dirty_check_enabled = true;
+	bool     draw_state_dirty_check_enabled = false;
 	bool     ensure_pipeline_cache_enabled  = true;
 	bool     descriptor_cache_enabled       = true;
 	uint32_t flush_draws                    = 0; // 0 is off

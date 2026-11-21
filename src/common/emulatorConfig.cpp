@@ -355,7 +355,7 @@ bool PipelineKeyCacheEnabled() {
 }
 
 bool DrawStateDirtyCheckEnabled() {
-	return g_config != nullptr ? g_config->draw_state_dirty_check_enabled : true;
+	return g_config != nullptr ? g_config->draw_state_dirty_check_enabled : false;
 }
 
 bool EnsurePipelineCacheEnabled() {

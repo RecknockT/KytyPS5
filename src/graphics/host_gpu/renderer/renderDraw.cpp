@@ -930,15 +930,56 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		targets_unchanged = true;
 		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
 			if ((state.mrt_mask & (1u << slot)) != 0) {
-				if (m_cached_targets_sig.color_bases[slot] != hw.GetRenderTarget(slot).base.addr) {
+				const auto&    rt = hw.GetRenderTarget(slot);
+				const uint32_t cv = static_cast<uint32_t>(rt.view.current_mip_level) |
+				                    (static_cast<uint32_t>(rt.view.base_array_slice_index) << 8u) |
+				                    (static_cast<uint32_t>(rt.view.last_array_slice_index) << 16u);
+				if (m_cached_targets_sig.color_bases[slot] != rt.base.addr ||
+				    m_cached_targets_sig.color_views[slot] != cv) {
 					targets_unchanged = false;
 					break;
 				}
 			}
 		}
+		if (targets_unchanged) {
+			const auto& z  = hw.GetDepthRenderTarget();
+			const auto& dc = hw.GetDepthControl();
+			const auto& rc = hw.GetRenderControl();
+			if (m_cached_targets_sig.depth_write_base != z.z_write_base_addr ||
+			    m_cached_targets_sig.depth_clear_enable != rc.depth_clear_enable ||
+			    m_cached_targets_sig.z_enable != dc.z_enable ||
+			    m_cached_targets_sig.z_write_enable != dc.z_write_enable ||
+			    m_cached_targets_sig.zfunc != dc.zfunc ||
+			    m_cached_targets_sig.depth_write_disable != z.depth_view.depth_write_disable ||
+			    m_cached_targets_sig.depth_clear_val != hw.GetDepthClearValue()) {
+				targets_unchanged = false;
+			}
+		}
 	}
 
-	if (!targets_unchanged) {
+	if (targets_unchanged) {
+		// Re-bind targets in m_bound_images so texture cache tracks them as active targets
+		for (uint32_t slot = 0; slot < targets.color_count; ++slot) {
+			if (targets.colors[slot].image_id) {
+				BindRenderTarget(targets.colors[slot].image_id);
+			}
+		}
+		if (targets.depth.image_id) {
+			BindRenderTarget(targets.depth.image_id);
+		}
+		// Refresh dynamic depth test/write/clear state for current draw
+		const auto& z         = hw.GetDepthRenderTarget();
+		const auto& dc        = hw.GetDepthControl();
+		const auto& rc        = hw.GetRenderControl();
+		const bool  has_depth = targets.depth.desc.view_info.format != vk::Format::eUndefined;
+		targets.depth.depth_clear_enable = has_depth && rc.depth_clear_enable;
+		targets.depth.depth_clear_value  = hw.GetDepthClearValue();
+		targets.depth.depth_test_enable  = has_depth && dc.z_enable;
+		targets.depth.depth_write_enable = targets.depth.depth_test_enable && dc.z_write_enable &&
+		                                   !z.depth_view.depth_write_disable &&
+		                                   !targets.depth.depth_clear_enable;
+		targets.depth.depth_compare_op   = static_cast<vk::CompareOp>(dc.zfunc);
+	} else {
 		targets.color_count = 0;
 		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
 			if ((state.mrt_mask & (1u << slot)) != 0) {
@@ -995,12 +1036,27 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		}
 
 		if (Config::DrawStateDirtyCheckEnabled()) {
-			m_cached_targets_sig.mrt_mask     = state.mrt_mask;
-			m_cached_targets_sig.rt_mask      = current_rt_mask;
-			m_cached_targets_sig.depth_base   = current_depth_base;
-			m_cached_targets_sig.msaa_samples = current_msaa;
+			const auto& z                            = hw.GetDepthRenderTarget();
+			const auto& dc                           = hw.GetDepthControl();
+			const auto& rc                           = hw.GetRenderControl();
+			m_cached_targets_sig.mrt_mask            = state.mrt_mask;
+			m_cached_targets_sig.rt_mask             = current_rt_mask;
+			m_cached_targets_sig.depth_base          = current_depth_base;
+			m_cached_targets_sig.depth_write_base    = z.z_write_base_addr;
+			m_cached_targets_sig.depth_clear_enable  = rc.depth_clear_enable;
+			m_cached_targets_sig.z_enable            = dc.z_enable;
+			m_cached_targets_sig.z_write_enable      = dc.z_write_enable;
+			m_cached_targets_sig.zfunc               = dc.zfunc;
+			m_cached_targets_sig.depth_write_disable = z.depth_view.depth_write_disable;
+			m_cached_targets_sig.depth_clear_val     = hw.GetDepthClearValue();
+			m_cached_targets_sig.msaa_samples        = current_msaa;
 			for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
-				m_cached_targets_sig.color_bases[slot] = hw.GetRenderTarget(slot).base.addr;
+				const auto& rt                         = hw.GetRenderTarget(slot);
+				m_cached_targets_sig.color_bases[slot] = rt.base.addr;
+				m_cached_targets_sig.color_views[slot] =
+				    static_cast<uint32_t>(rt.view.current_mip_level) |
+				    (static_cast<uint32_t>(rt.view.base_array_slice_index) << 8u) |
+				    (static_cast<uint32_t>(rt.view.last_array_slice_index) << 16u);
 			}
 			m_cached_targets_sig.valid = true;
 		}

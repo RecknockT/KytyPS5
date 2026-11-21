@@ -239,12 +239,20 @@ private:
 	// The current draw's targets; PrepareDrawRenderState resolves them again for each draw.
 	DrawTargets m_targets;
 	struct CachedTargetsSignature {
-		uint32_t                mrt_mask     = 0;
-		uint32_t                rt_mask      = 0;
-		uint64_t                depth_base   = 0;
-		std::array<uint64_t, 8> color_bases  = {};
-		uint8_t                 msaa_samples = 0;
-		bool                    valid        = false;
+		uint32_t                mrt_mask            = 0;
+		uint32_t                rt_mask             = 0;
+		uint64_t                depth_base          = 0;
+		uint64_t                depth_write_base    = 0;
+		bool                    depth_clear_enable  = false;
+		bool                    z_enable            = false;
+		bool                    z_write_enable      = false;
+		uint8_t                 zfunc               = 0;
+		bool                    depth_write_disable = false;
+		uint32_t                depth_clear_val     = 0;
+		std::array<uint64_t, 8> color_bases         = {};
+		std::array<uint32_t, 8> color_views         = {};
+		uint8_t                 msaa_samples        = 0;
+		bool                    valid               = false;
 	} m_cached_targets_sig;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                 m_bound_images;
