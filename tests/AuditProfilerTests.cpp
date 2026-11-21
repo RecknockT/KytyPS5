@@ -774,6 +774,155 @@ TEST_F(AuditProfilerTest, Stage7RenderOptimizationMetricsAndConfig) {
 	std::filesystem::remove("test_stage7.csv");
 }
 
+TEST_F(AuditProfilerTest, RecordsPipelineStagesAccurately) {
+	StartCapture("UnitTestStage8Pipeline");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	RecordPipelineStage(PipelineStage::Pm4Decode, 1000);
+	RecordPipelineStage(PipelineStage::Pm4Decode, 2000);
+	RecordPipelineStage(PipelineStage::Pm4Dispatch, 5000);
+	RecordPipelineStage(PipelineStage::RenderStatePrep, 3000);
+	RecordPipelineStage(PipelineStage::PipelineKeyBuild, 1500);
+	RecordPipelineStage(PipelineStage::PipelineLookup, 500);
+	RecordPipelineStage(PipelineStage::DescriptorPrep, 4000);
+	RecordPipelineStage(PipelineStage::BarriersTransitions, 2500);
+	RecordPipelineStage(PipelineStage::BufferPrep, 3500);
+	RecordPipelineStage(PipelineStage::CommandRecording, 6000);
+	RecordPipelineStage(PipelineStage::CommandEnd, 800);
+	RecordPipelineStage(PipelineStage::Submit, 7000);
+	RecordPipelineStage(PipelineStage::SyncWaits, 12000);
+	RecordPipelineStage(PipelineStage::Present, 8000);
+
+	RecordFrame(16.6);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Decode)].count, 2u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Decode)].total_ns, 3000u);
+	EXPECT_DOUBLE_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Decode)].avg_us, 1.5);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Dispatch)].count, 1u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Dispatch)].total_ns, 5000u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SyncWaits)].count, 1u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SyncWaits)].total_ns, 12000u);
+
+	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Pm4Decode), "Pm4Decode");
+	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Submit), "Submit");
+	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Present), "Present");
+
+	StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, RecordsStreamBufferAuditAndWaits) {
+	StartCapture("UnitTestStage8StreamBuffer");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	RecordStreamBufferAlloc(1024 * 1024, false, 1024 * 1024);
+	RecordStreamBufferAlloc(2 * 1024 * 1024, false, 3 * 1024 * 1024);
+	RecordStreamBufferAlloc(1024 * 1024, true, 4 * 1024 * 1024);
+
+	RecordStreamBufferWaitEvent(250'000'000, 42);
+
+	RecordFrame(20.0);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_EQ(snap.stream_buffer_stats.total_allocs, 3u);
+	EXPECT_EQ(snap.stream_buffer_stats.total_wraps, 1u);
+	EXPECT_EQ(snap.stream_buffer_stats.total_bytes, 4 * 1024 * 1024u);
+	EXPECT_DOUBLE_EQ(snap.stream_buffer_stats.total_mb, 4.0);
+	EXPECT_DOUBLE_EQ(snap.stream_buffer_stats.high_water_mb, 4.0);
+	EXPECT_EQ(snap.stream_buffer_stats.wait_events, 1u);
+	EXPECT_DOUBLE_EQ(snap.stream_buffer_stats.wait_total_ms, 250.0);
+	EXPECT_DOUBLE_EQ(snap.stream_buffer_stats.wait_max_ms, 250.0);
+	EXPECT_EQ(snap.stream_buffer_stats.last_wait_tick, 42u);
+
+	StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, CorrelatesHitchesWithTraceEventRing) {
+	StartCapture("UnitTestStage8HitchCorrelation");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	RecordTraceEvent(TraceEventType::StreamBufferWait, 450'000'000, 100, 0x1000);
+	RecordFrame(500.0);
+
+	const auto snap = TakeSnapshot();
+	ASSERT_GE(snap.detailed_hitches.size(), 1u);
+	EXPECT_DOUBLE_EQ(snap.detailed_hitches[0].frame_ms, 500.0);
+	EXPECT_STREQ(snap.detailed_hitches[0].dominant_blocker.c_str(), "StreamBufferWait");
+	EXPECT_DOUBLE_EQ(snap.detailed_hitches[0].blocker_duration_ms, 450.0);
+	EXPECT_EQ(snap.detailed_hitches[0].blocker_tick, 100u);
+	EXPECT_EQ(snap.detailed_hitches[0].blocker_address, 0x1000u);
+	EXPECT_STREQ(snap.detailed_hitches[0].correlation_confidence.c_str(), "High");
+
+	StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, ExportsStage8JsonAndCsvComplete) {
+	StartCapture("UnitTestStage8Export");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	RecordPipelineStage(PipelineStage::PipelineKeyBuild, 50000);
+	RecordStreamBufferAlloc(8 * 1024 * 1024, true, 8 * 1024 * 1024);
+	RecordStreamBufferWaitEvent(120'000'000, 999);
+	RecordTraceEvent(TraceEventType::TimelineWait, 120'000'000, 999, 0);
+	RecordGpuExecutionTime(15'000'000);
+	RecordFrame(150.0);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_TRUE(ExportAll("test_stage8.json", "test_stage8.csv", &snap));
+
+	// Verify JSON export contains all Stage 8 sections
+	{
+		std::ifstream jf("test_stage8.json");
+		ASSERT_TRUE(jf.is_open());
+		nlohmann::json j;
+		jf >> j;
+
+		ASSERT_TRUE(j.contains("pipeline_stage_timings"));
+		EXPECT_TRUE(j["pipeline_stage_timings"].contains("PipelineKeyBuild"));
+
+		ASSERT_TRUE(j.contains("cpu_gpu_separation"));
+		EXPECT_TRUE(j["cpu_gpu_separation"].contains("gpu_thread_wall_clock_ms"));
+		EXPECT_TRUE(j["cpu_gpu_separation"].contains("gpu_execution_time_ms"));
+
+		ASSERT_TRUE(j.contains("stream_buffer_audit"));
+		EXPECT_EQ(j["stream_buffer_audit"]["total_allocations"], 1);
+		EXPECT_EQ(j["stream_buffer_audit"]["total_wraparounds"], 1);
+
+		ASSERT_TRUE(j.contains("stuttering_analysis"));
+		ASSERT_TRUE(j["stuttering_analysis"].contains("detailed_hitches"));
+		EXPECT_FALSE(j["stuttering_analysis"]["detailed_hitches"].empty());
+
+		ASSERT_TRUE(j["metadata"]["config"].contains("pipeline_key_cache"));
+		ASSERT_TRUE(j["metadata"]["config"].contains("draw_state_dirty_check"));
+	}
+
+	// Verify CSV export contains Stage 8 categories
+	{
+		std::ifstream cf("test_stage8.csv");
+		ASSERT_TRUE(cf.is_open());
+		std::string line;
+		bool found_pipeline_stage = false;
+		bool found_stream_buffer = false;
+		bool found_cpu_gpu = false;
+		bool found_hitch = false;
+		while (std::getline(cf, line)) {
+			if (line.find("PipelineStageCount,PipelineKeyBuild,1") != std::string::npos) found_pipeline_stage = true;
+			if (line.find("StreamBuffer,TotalAllocations,1") != std::string::npos) found_stream_buffer = true;
+			if (line.find("CpuGpuSeparation,GpuExecutionTimeMs") != std::string::npos) found_cpu_gpu = true;
+			if (line.find("Hitch,") != std::string::npos) found_hitch = true;
+		}
+		EXPECT_TRUE(found_pipeline_stage);
+		EXPECT_TRUE(found_stream_buffer);
+		EXPECT_TRUE(found_cpu_gpu);
+		EXPECT_TRUE(found_hitch);
+	}
+
+	StopCapture(CaptureState::Completed);
+
+	std::filesystem::remove("test_stage8.json");
+	std::filesystem::remove("test_stage8.csv");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {

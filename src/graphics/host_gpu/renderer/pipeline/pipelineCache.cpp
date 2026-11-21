@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -1172,6 +1173,8 @@ GraphicsPipelineKey
 PipelineCache::MakeGraphicsPipelineKey(const CommandBuffer& command, const DrawRenderState& state,
                                        const DrawTargets&                  targets,
                                        std::array<const ShaderModule*, 4>& stages) {
+	Common::AuditProfiler::ScopedStageTimer timer(
+	    Common::AuditProfiler::PipelineStage::PipelineKeyBuild);
 	const auto* colors        = targets.colors;
 	const auto& depth         = targets.depth;
 	const auto  vertex_info   = state.VertexStages();
@@ -1340,10 +1343,87 @@ PipelineCache::MakeGraphicsPipelineKey(const CommandBuffer& command, const DrawR
 	return key;
 }
 
+struct PipelineCache::KeyInputCache {
+	std::array<const ShaderModule*, 4> stages {};
+	uint32_t                           color_count              = 0;
+	uint32_t                           mrt_mask                 = 0;
+	uint32_t                           rt_mask                  = 0;
+	vk::PrimitiveTopology              topology                 = {};
+	bool                               primitive_restart_enable = false;
+	bool                               ps_active                = false;
+	ImageId                            depth_image_id           = 0;
+	std::array<ImageId, 8>             color_image_ids          = {};
+	uint32_t                           prim_type                = 0;
+	int32_t                            buffers_num              = 0;
+	int32_t                            resources_num            = 0;
+	HW::ModeControl                    mode_control             = {};
+	HW::ClipControl                    clip_control             = {};
+	HW::AaConfig                       aa_config                = {};
+	bool                               alpha_to_mask            = false;
+	std::array<HW::BlendControl, 8>    blend_control            = {};
+	uint64_t                           vertex_fingerprint       = 0;
+	bool                               valid                    = false;
+};
+
+static uint64_t ComputeVertexFingerprint(const ShaderVertexInputInfo& vs) {
+	uint64_t fp =
+	    (static_cast<uint64_t>(vs.buffers_num) << 32) | static_cast<uint32_t>(vs.resources_num);
+	for (int i = 0; i < vs.buffers_num; ++i) {
+		fp ^= (static_cast<uint64_t>(vs.buffers[i].stride) << (i % 32)) ^
+		      (static_cast<uint64_t>(vs.buffers[i].fetch_index) << 16);
+	}
+	for (int i = 0; i < vs.resources_num; ++i) {
+		const auto binding = vs.resources_dst[i].buffer_index;
+		const auto offset =
+		    static_cast<uint32_t>(vs.resources[i].Base48() - vs.buffers[binding].addr);
+		fp ^= (static_cast<uint64_t>(offset) << (i % 32)) ^ (static_cast<uint64_t>(binding) << 24);
+	}
+	return fp;
+}
+
+void PipelineCache::UpdateKeyInputCache(const CommandBuffer& command, const DrawRenderState& state,
+                                        const DrawTargets&                        targets,
+                                        const std::array<const ShaderModule*, 4>& stages,
+                                        const ShaderVertexInputInfo&              vs_input_info) {
+	if (m_key_input_cache == nullptr) {
+		m_key_input_cache = std::make_unique<KeyInputCache>();
+	}
+	auto& kic                    = *m_key_input_cache;
+	kic.stages                   = stages;
+	kic.color_count              = targets.color_count;
+	kic.mrt_mask                 = state.mrt_mask;
+	kic.topology                 = state.topology;
+	kic.primitive_restart_enable = state.primitive_restart_enable;
+	kic.ps_active                = state.ps_active;
+	kic.depth_image_id           = targets.depth.image_id;
+	for (uint32_t i = 0; i < targets.color_count; ++i) {
+		kic.color_image_ids[i] = targets.colors[i].image_id;
+	}
+	kic.prim_type     = static_cast<uint32_t>(command.GetUserConfig().GetPrimType());
+	kic.buffers_num   = vs_input_info.buffers_num;
+	kic.resources_num = vs_input_info.resources_num;
+
+	const auto& ctx   = command.GetRegisters();
+	kic.rt_mask       = ctx.GetRenderTargetMask();
+	kic.mode_control  = ctx.GetModeControl();
+	kic.clip_control  = ctx.GetClipControl();
+	kic.aa_config     = ctx.GetAaConfig();
+	kic.alpha_to_mask = (state.ps_active && ctx.GetShaderRegisters().AlphaToMask());
+	for (uint32_t i = 0; i < targets.color_count; ++i) {
+		const auto slot         = targets.colors[i].target_slot;
+		kic.blend_control[slot] = ctx.GetBlendControl(slot);
+	}
+	kic.vertex_fingerprint = ComputeVertexFingerprint(vs_input_info);
+	kic.valid              = true;
+}
+
 PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
                                                             const DrawRenderState& state,
                                                             const DrawTargets&     targets) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Gfx)", profiler::colors::DeepOrangeA200);
+	Common::AuditProfiler::ScopedStageTimer lookup_timer(
+	    Common::AuditProfiler::PipelineStage::PipelineLookup);
+
 	const auto  vertex_info   = state.VertexStages();
 	const auto& ps_input_info = state.ps_input_info;
 	const auto& vs_input_info = vertex_info.front();
@@ -1352,11 +1432,64 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::PipelineCacheLookups);
 
 	std::array<const ShaderModule*, 4> stages {};
+	for (uint32_t i = 0; i < vertex_info.size(); i++) {
+		stages[i] = vertex_info[i].stage.module;
+	}
+	if (ps_active) {
+		stages[3] = ps_input_info.stage.module;
+	}
+
+	if (Config::PipelineKeyCacheEnabled() && m_key_input_cache != nullptr &&
+	    m_key_input_cache->valid && m_last_graphics_pipeline != nullptr) {
+		const auto& kic = *m_key_input_cache;
+		if (kic.stages == stages && kic.color_count == targets.color_count &&
+		    kic.mrt_mask == state.mrt_mask && kic.topology == state.topology &&
+		    kic.primitive_restart_enable == state.primitive_restart_enable &&
+		    kic.ps_active == ps_active && kic.depth_image_id == targets.depth.image_id &&
+		    kic.prim_type == static_cast<uint32_t>(command.GetUserConfig().GetPrimType()) &&
+		    kic.buffers_num == vs_input_info.buffers_num &&
+		    kic.resources_num == vs_input_info.resources_num) {
+			bool targets_match = true;
+			for (uint32_t i = 0; i < targets.color_count; ++i) {
+				if (targets.colors[i].image_id != kic.color_image_ids[i]) {
+					targets_match = false;
+					break;
+				}
+			}
+			if (targets_match) {
+				const auto& ctx = command.GetRegisters();
+				if (kic.rt_mask == ctx.GetRenderTargetMask() &&
+				    kic.mode_control == ctx.GetModeControl() &&
+				    kic.clip_control == ctx.GetClipControl() &&
+				    kic.aa_config == ctx.GetAaConfig() &&
+				    kic.alpha_to_mask == (ps_active && ctx.GetShaderRegisters().AlphaToMask())) {
+					bool blend_match = true;
+					for (uint32_t i = 0; i < targets.color_count; ++i) {
+						const auto slot = targets.colors[i].target_slot;
+						if (kic.blend_control[slot] != ctx.GetBlendControl(slot)) {
+							blend_match = false;
+							break;
+						}
+					}
+					if (blend_match &&
+					    kic.vertex_fingerprint == ComputeVertexFingerprint(vs_input_info)) {
+						Common::DebugCounters::Add(
+						    Common::DebugCounters::Counter::PipelineCacheHits);
+						return *m_last_graphics_pipeline;
+					}
+				}
+			}
+		}
+	}
+
 	const auto key = MakeGraphicsPipelineKey(command, state, targets, stages);
 
 	if (Config::PipelineCacheMruEnabled() && m_last_graphics_pipeline != nullptr &&
 	    m_last_graphics_key == key) {
 		Common::DebugCounters::Add(Common::DebugCounters::Counter::PipelineCacheHits);
+		if (Config::PipelineKeyCacheEnabled()) {
+			UpdateKeyInputCache(command, state, targets, stages, vs_input_info);
+		}
 		return *m_last_graphics_pipeline;
 	}
 
@@ -1372,6 +1505,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		if (Config::PipelineCacheMruEnabled()) {
 			m_last_graphics_key      = key;
 			m_last_graphics_pipeline = &pipeline;
+		}
+		if (Config::PipelineKeyCacheEnabled()) {
+			UpdateKeyInputCache(command, state, targets, stages, vs_input_info);
 		}
 		return pipeline;
 	}

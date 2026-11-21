@@ -154,6 +154,35 @@ std::atomic<uint64_t> g_flip_wait_count {0};
 std::atomic<uint64_t> g_audio_updates_count {0};
 std::atomic<uint64_t> g_audio_total_samples {0};
 
+// Stage 8 additions: Pipeline stage timings
+std::atomic<uint64_t> g_stage_counts[static_cast<size_t>(PipelineStage::Count)] {};
+std::atomic<uint64_t> g_stage_nanos[static_cast<size_t>(PipelineStage::Count)] {};
+std::atomic<uint64_t> g_stage_max_nanos[static_cast<size_t>(PipelineStage::Count)] {};
+std::atomic<uint64_t> g_stage_min_nanos[static_cast<size_t>(PipelineStage::Count)] {};
+
+// Stage 8 additions: StreamBuffer audit
+std::atomic<uint64_t> g_stream_buffer_allocs {0};
+std::atomic<uint64_t> g_stream_buffer_wraps {0};
+std::atomic<uint64_t> g_stream_buffer_bytes {0};
+std::atomic<uint64_t> g_stream_buffer_high_water {0};
+std::atomic<uint64_t> g_stream_buffer_wait_events {0};
+std::atomic<uint64_t> g_stream_buffer_wait_total_ns {0};
+std::atomic<uint64_t> g_stream_buffer_wait_max_ns {0};
+std::atomic<uint64_t> g_stream_buffer_last_wait_tick {0};
+
+// Stage 8 additions: CPU / GPU separation
+std::atomic<uint64_t> g_gpu_thread_cpu_start_ns {0};
+std::atomic<uint64_t> g_gpu_thread_cpu_end_ns {0};
+std::atomic<uint64_t> g_gpu_thread_wall_start_ns {0};
+std::atomic<uint64_t> g_gpu_thread_wall_end_ns {0};
+std::atomic<uint64_t> g_gpu_execution_total_ns {0};
+std::atomic<uint64_t> g_gpu_execution_count {0};
+
+// Stage 8 additions: Trace event circular ring buffer
+constexpr size_t      TRACE_EVENT_RING_CAPACITY = 16384;
+TraceEvent            g_trace_event_ring[TRACE_EVENT_RING_CAPACITY] {};
+std::atomic<uint64_t> g_trace_event_cursor {0};
+
 struct AtomicSlowFrame {
 	std::atomic<uint64_t> frame_index {0};
 	std::atomic<double>   frame_ms {0.0};
@@ -177,9 +206,35 @@ uint32_t GetCurrentTid() noexcept {
 #endif
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+uint64_t GetCurrentThreadCpuTimeNs() noexcept {
+	FILETIME creation {}, exit {}, kernel {}, user {};
+	if (GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user)) {
+		ULARGE_INTEGER k, u;
+		k.LowPart  = kernel.dwLowDateTime;
+		k.HighPart = kernel.dwHighDateTime;
+		u.LowPart  = user.dwLowDateTime;
+		u.HighPart = user.dwHighDateTime;
+		return (k.QuadPart + u.QuadPart) * 100ULL;
+	}
+	return 0;
+}
+#else
+uint64_t GetCurrentThreadCpuTimeNs() noexcept {
+	return 0;
+}
+#endif
+
 void UpdateMax(std::atomic<uint64_t>& target, uint64_t value) noexcept {
 	auto current = target.load(std::memory_order_relaxed);
 	while (value > current &&
+	       !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+	}
+}
+
+void UpdateMin(std::atomic<uint64_t>& target, uint64_t value) noexcept {
+	auto current = target.load(std::memory_order_relaxed);
+	while ((current == 0 || value < current) &&
 	       !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
 	}
 }
@@ -306,6 +361,38 @@ void Reset() {
 	g_flip_wait_count.store(0, std::memory_order_relaxed);
 	g_audio_updates_count.store(0, std::memory_order_relaxed);
 	g_audio_total_samples.store(0, std::memory_order_relaxed);
+
+	// Stage 8 additions: Reset pipeline stage timings
+	for (auto& count: g_stage_counts)
+		count.store(0, std::memory_order_relaxed);
+	for (auto& nanos: g_stage_nanos)
+		nanos.store(0, std::memory_order_relaxed);
+	for (auto& max_ns: g_stage_max_nanos)
+		max_ns.store(0, std::memory_order_relaxed);
+	for (auto& min_ns: g_stage_min_nanos)
+		min_ns.store(0, std::memory_order_relaxed);
+
+	// Stage 8 additions: Reset StreamBuffer audit
+	g_stream_buffer_allocs.store(0, std::memory_order_relaxed);
+	g_stream_buffer_wraps.store(0, std::memory_order_relaxed);
+	g_stream_buffer_bytes.store(0, std::memory_order_relaxed);
+	g_stream_buffer_high_water.store(0, std::memory_order_relaxed);
+	g_stream_buffer_wait_events.store(0, std::memory_order_relaxed);
+	g_stream_buffer_wait_total_ns.store(0, std::memory_order_relaxed);
+	g_stream_buffer_wait_max_ns.store(0, std::memory_order_relaxed);
+	g_stream_buffer_last_wait_tick.store(0, std::memory_order_relaxed);
+
+	// Stage 8 additions: Reset CPU/GPU separation
+	g_gpu_thread_cpu_start_ns.store(0, std::memory_order_relaxed);
+	g_gpu_thread_cpu_end_ns.store(0, std::memory_order_relaxed);
+	g_gpu_thread_wall_start_ns.store(0, std::memory_order_relaxed);
+	g_gpu_thread_wall_end_ns.store(0, std::memory_order_relaxed);
+	g_gpu_execution_total_ns.store(0, std::memory_order_relaxed);
+	g_gpu_execution_count.store(0, std::memory_order_relaxed);
+
+	// Stage 8 additions: Reset Trace event cursor
+	g_trace_event_cursor.store(0, std::memory_order_relaxed);
+
 	g_has_completed_snapshot.store(false, std::memory_order_relaxed);
 }
 
@@ -767,6 +854,121 @@ void RecordAudioUpdate(uint32_t samples, uint32_t /*freq*/) noexcept {
 	g_audio_total_samples.fetch_add(samples, std::memory_order_relaxed);
 }
 
+void RecordPipelineStage(PipelineStage stage, uint64_t duration_ns) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	const auto idx = static_cast<size_t>(stage);
+	if (idx < static_cast<size_t>(PipelineStage::Count)) {
+		g_stage_counts[idx].fetch_add(1, std::memory_order_relaxed);
+		g_stage_nanos[idx].fetch_add(duration_ns, std::memory_order_relaxed);
+		UpdateMax(g_stage_max_nanos[idx], duration_ns);
+		UpdateMin(g_stage_min_nanos[idx], duration_ns);
+	}
+}
+
+const char* GetPipelineStageName(PipelineStage stage) noexcept {
+	switch (stage) {
+		case PipelineStage::Pm4Decode: return "Pm4Decode";
+		case PipelineStage::Pm4Dispatch: return "Pm4Dispatch";
+		case PipelineStage::RenderStatePrep: return "RenderStatePrep";
+		case PipelineStage::PipelineKeyBuild: return "PipelineKeyBuild";
+		case PipelineStage::PipelineLookup: return "PipelineLookup";
+		case PipelineStage::DescriptorPrep: return "DescriptorPrep";
+		case PipelineStage::BarriersTransitions: return "BarriersTransitions";
+		case PipelineStage::BufferPrep: return "BufferPrep";
+		case PipelineStage::CommandRecording: return "CommandRecording";
+		case PipelineStage::CommandEnd: return "CommandEnd";
+		case PipelineStage::Submit: return "Submit";
+		case PipelineStage::SyncWaits: return "SyncWaits";
+		case PipelineStage::Present: return "Present";
+		default: return "Unknown";
+	}
+}
+
+void RecordTraceEvent(TraceEventType type, uint64_t duration_ns, uint64_t tick,
+                      uint64_t data) noexcept {
+	if (!IsEnabled()) {
+		return;
+	}
+	const auto idx =
+	    g_trace_event_cursor.fetch_add(1, std::memory_order_relaxed) % TRACE_EVENT_RING_CAPACITY;
+	const auto now          = Clock::now();
+	const auto timestamp_us = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+	g_trace_event_ring[idx].timestamp_us = timestamp_us;
+	g_trace_event_ring[idx].duration_ns  = duration_ns;
+	g_trace_event_ring[idx].tick         = tick;
+	g_trace_event_ring[idx].data         = data;
+	g_trace_event_ring[idx].tid          = GetCurrentTid();
+	g_trace_event_ring[idx].type         = type;
+}
+
+const char* GetTraceEventTypeName(TraceEventType type) noexcept {
+	switch (type) {
+		case TraceEventType::None: return "None";
+		case TraceEventType::TimelineWait: return "TimelineWait";
+		case TraceEventType::VulkanSubmit: return "VulkanSubmit";
+		case TraceEventType::StreamBufferWait: return "StreamBufferWait";
+		case TraceEventType::BufferReadback: return "BufferReadback";
+		case TraceEventType::PriorityOperation: return "PriorityOperation";
+		case TraceEventType::SwapchainPresent: return "SwapchainPresent";
+		case TraceEventType::WriteFault: return "WriteFault";
+		case TraceEventType::Reprotect: return "Reprotect";
+		case TraceEventType::PipelineCompile: return "PipelineCompile";
+		case TraceEventType::Other:
+		default: return "Other";
+	}
+}
+
+void RecordStreamBufferAlloc(uint64_t bytes, bool wrapped, uint64_t high_water) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_stream_buffer_allocs.fetch_add(1, std::memory_order_relaxed);
+	g_stream_buffer_bytes.fetch_add(bytes, std::memory_order_relaxed);
+	if (wrapped) {
+		g_stream_buffer_wraps.fetch_add(1, std::memory_order_relaxed);
+	}
+	UpdateMax(g_stream_buffer_high_water, high_water);
+}
+
+void RecordStreamBufferWaitEvent(uint64_t wait_ns, uint64_t target_tick) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_stream_buffer_wait_events.fetch_add(1, std::memory_order_relaxed);
+	g_stream_buffer_wait_total_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+	UpdateMax(g_stream_buffer_wait_max_ns, wait_ns);
+	g_stream_buffer_last_wait_tick.store(target_tick, std::memory_order_relaxed);
+}
+
+void NoteGpuThreadStart() noexcept {
+	const auto wall_ns = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+	        .count());
+	const auto cpu_ns = GetCurrentThreadCpuTimeNs();
+	g_gpu_thread_wall_start_ns.store(wall_ns, std::memory_order_relaxed);
+	g_gpu_thread_cpu_start_ns.store(cpu_ns, std::memory_order_relaxed);
+}
+
+void NoteGpuThreadFrame() noexcept {
+	const auto wall_ns = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+	        .count());
+	const auto cpu_ns = GetCurrentThreadCpuTimeNs();
+	g_gpu_thread_wall_end_ns.store(wall_ns, std::memory_order_relaxed);
+	g_gpu_thread_cpu_end_ns.store(cpu_ns, std::memory_order_relaxed);
+}
+
+void RecordGpuExecutionTime(uint64_t execution_ns) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_gpu_execution_total_ns.fetch_add(execution_ns, std::memory_order_relaxed);
+	g_gpu_execution_count.fetch_add(1, std::memory_order_relaxed);
+}
+
 ProfileSnapshot TakeSnapshot() {
 	if (g_has_completed_snapshot.load(std::memory_order_acquire)) {
 		return g_completed_snapshot;
@@ -781,6 +983,8 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.extended_stream_buffer_enabled = Config::ExtendedStreamBufferEnabled();
 	snapshot.redundant_bind_elision_enabled = Config::RedundantBindElisionEnabled();
 	snapshot.pipeline_cache_mru_enabled     = Config::PipelineCacheMruEnabled();
+	snapshot.pipeline_key_cache_enabled     = Config::PipelineKeyCacheEnabled();
+	snapshot.draw_state_dirty_check_enabled = Config::DrawStateDirtyCheckEnabled();
 	snapshot.git_commit                     = KYTY_GIT_VERSION;
 
 	const auto state = g_capture_state.load(std::memory_order_relaxed);
@@ -1124,6 +1328,152 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.redundant_index_binds =
 	    (cur_red_idx >= base_red_idx) ? (cur_red_idx - base_red_idx) : cur_red_idx;
 
+	// Stage 8 additions: Pipeline stages breakdown
+	double total_pipeline_ms = 0.0;
+	for (size_t i = 0; i < static_cast<size_t>(PipelineStage::Count); ++i) {
+		const auto   count    = g_stage_counts[i].load(std::memory_order_relaxed);
+		const auto   total_ns = g_stage_nanos[i].load(std::memory_order_relaxed);
+		const auto   max_ns   = g_stage_max_nanos[i].load(std::memory_order_relaxed);
+		const auto   min_ns   = g_stage_min_nanos[i].load(std::memory_order_relaxed);
+		const double ms       = static_cast<double>(total_ns) / 1e6;
+
+		snapshot.pipeline_stages[i].count    = count;
+		snapshot.pipeline_stages[i].total_ns = total_ns;
+		snapshot.pipeline_stages[i].max_ns   = max_ns;
+		snapshot.pipeline_stages[i].min_ns   = (count > 0) ? min_ns : 0;
+		snapshot.pipeline_stages[i].total_ms = ms;
+		snapshot.pipeline_stages[i].avg_us =
+		    count > 0 ? (static_cast<double>(total_ns) / (count * 1000.0)) : 0.0;
+		snapshot.pipeline_stages[i].max_ms       = static_cast<double>(max_ns) / 1e6;
+		snapshot.pipeline_stages[i].ms_per_frame = snap_frames > 0.0 ? (ms / snap_frames) : 0.0;
+
+		total_pipeline_ms += ms;
+	}
+	for (size_t i = 0; i < static_cast<size_t>(PipelineStage::Count); ++i) {
+		snapshot.pipeline_stages[i].pct_thread_time =
+		    total_pipeline_ms > 0.0
+		        ? (100.0 * snapshot.pipeline_stages[i].total_ms / total_pipeline_ms)
+		        : 0.0;
+	}
+
+	// Stage 8 additions: CPU / GPU execution separation
+	const auto wall_start = g_gpu_thread_wall_start_ns.load(std::memory_order_relaxed);
+	const auto wall_end   = g_gpu_thread_wall_end_ns.load(std::memory_order_relaxed);
+	const auto cpu_start  = g_gpu_thread_cpu_start_ns.load(std::memory_order_relaxed);
+	const auto cpu_end    = g_gpu_thread_cpu_end_ns.load(std::memory_order_relaxed);
+
+	if (wall_end > wall_start) {
+		snapshot.gpu_thread_wall_clock_ms = static_cast<double>(wall_end - wall_start) / 1e6;
+	} else if (snapshot.capture_real_duration_ms > 0) {
+		snapshot.gpu_thread_wall_clock_ms = static_cast<double>(snapshot.capture_real_duration_ms);
+	}
+
+	if (cpu_end > cpu_start) {
+		snapshot.gpu_thread_cpu_time_ms = static_cast<double>(cpu_end - cpu_start) / 1e6;
+	} else {
+		snapshot.gpu_thread_cpu_time_ms = snapshot.gpu_thread_busy_ms;
+	}
+
+	if (snapshot.gpu_thread_wall_clock_ms > 0.0) {
+		snapshot.gpu_thread_cpu_utilization_pct = std::min(
+		    100.0, 100.0 * (snapshot.gpu_thread_cpu_time_ms / snapshot.gpu_thread_wall_clock_ms));
+	}
+
+	uint64_t total_wait_ns = 0;
+	for (size_t i = 0; i < static_cast<size_t>(GpuWaitReason::Count); ++i) {
+		total_wait_ns += g_wait_nanos[i].load(std::memory_order_relaxed);
+	}
+	snapshot.gpu_thread_wait_time_ms = static_cast<double>(total_wait_ns) / 1e6;
+
+	snapshot.gpu_execution_time_ms =
+	    static_cast<double>(g_gpu_execution_total_ns.load(std::memory_order_relaxed)) / 1e6;
+	snapshot.gpu_queries_recorded = g_gpu_execution_count.load(std::memory_order_relaxed);
+
+	// Stage 8 additions: StreamBuffer audit
+	snapshot.stream_buffer_stats.total_allocs =
+	    g_stream_buffer_allocs.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.total_wraps =
+	    g_stream_buffer_wraps.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.total_bytes =
+	    g_stream_buffer_bytes.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.high_water_bytes =
+	    g_stream_buffer_high_water.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.wait_events =
+	    g_stream_buffer_wait_events.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.wait_total_ns =
+	    g_stream_buffer_wait_total_ns.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.wait_max_ns =
+	    g_stream_buffer_wait_max_ns.load(std::memory_order_relaxed);
+	snapshot.stream_buffer_stats.last_wait_tick =
+	    g_stream_buffer_last_wait_tick.load(std::memory_order_relaxed);
+
+	snapshot.stream_buffer_stats.total_mb =
+	    static_cast<double>(snapshot.stream_buffer_stats.total_bytes) / (1024.0 * 1024.0);
+	snapshot.stream_buffer_stats.mb_per_frame =
+	    snap_frames > 0.0 ? (snapshot.stream_buffer_stats.total_mb / snap_frames) : 0.0;
+	snapshot.stream_buffer_stats.high_water_mb =
+	    static_cast<double>(snapshot.stream_buffer_stats.high_water_bytes) / (1024.0 * 1024.0);
+	snapshot.stream_buffer_stats.wait_total_ms =
+	    static_cast<double>(snapshot.stream_buffer_stats.wait_total_ns) / 1e6;
+	snapshot.stream_buffer_stats.wait_avg_ms =
+	    snapshot.stream_buffer_stats.wait_events > 0
+	        ? (snapshot.stream_buffer_stats.wait_total_ms /
+	           static_cast<double>(snapshot.stream_buffer_stats.wait_events))
+	        : 0.0;
+	snapshot.stream_buffer_stats.wait_max_ms =
+	    static_cast<double>(snapshot.stream_buffer_stats.wait_max_ns) / 1e6;
+
+	// Stage 8 additions: Detailed hitch correlation
+	const uint64_t total_trace_events = g_trace_event_cursor.load(std::memory_order_relaxed);
+	const size_t trace_ring_count = std::min<size_t>(total_trace_events, TRACE_EVENT_RING_CAPACITY);
+
+	for (const auto& sf: snapshot.slow_frames) {
+		DetailedHitchInfo hitch {};
+		hitch.frame_index  = sf.frame_index;
+		hitch.frame_ms     = sf.frame_ms;
+		hitch.timestamp_ms = sf.timestamp_ms;
+
+		uint64_t best_duration_ns = 0;
+		size_t   best_event_idx   = SIZE_MAX;
+
+		for (size_t e = 0; e < trace_ring_count; ++e) {
+			const auto& evt = g_trace_event_ring[e];
+			if (evt.type == TraceEventType::None) continue;
+			if (evt.duration_ns > best_duration_ns) {
+				best_duration_ns = evt.duration_ns;
+				best_event_idx   = e;
+			}
+		}
+
+		if (best_event_idx != SIZE_MAX) {
+			const auto& best_evt      = g_trace_event_ring[best_event_idx];
+			hitch.dominant_blocker    = GetTraceEventTypeName(best_evt.type);
+			hitch.blocker_duration_ms = static_cast<double>(best_evt.duration_ns) / 1e6;
+			hitch.blocker_thread_id   = best_evt.tid;
+			hitch.blocker_tick        = best_evt.tick;
+			hitch.blocker_address     = best_evt.data;
+
+			const double ratio =
+			    (sf.frame_ms > 0.0) ? (hitch.blocker_duration_ms / sf.frame_ms) : 0.0;
+			if (ratio >= 0.70) {
+				hitch.correlation_confidence = "High";
+			} else if (ratio >= 0.30) {
+				hitch.correlation_confidence = "Medium";
+			} else {
+				hitch.correlation_confidence = "Low";
+			}
+		} else {
+			hitch.dominant_blocker       = "ComputeOrRasterBound";
+			hitch.blocker_duration_ms    = sf.frame_ms;
+			hitch.blocker_thread_id      = 0;
+			hitch.blocker_tick           = 0;
+			hitch.blocker_address        = 0;
+			hitch.correlation_confidence = "Medium";
+		}
+
+		snapshot.detailed_hitches.push_back(hitch);
+	}
+
 	return snapshot;
 }
 
@@ -1181,6 +1531,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"extended_stream_buffer", snap.extended_stream_buffer_enabled},
 	         {"redundant_bind_elision", snap.redundant_bind_elision_enabled},
 	         {"pipeline_cache_mru", snap.pipeline_cache_mru_enabled},
+	         {"pipeline_key_cache", snap.pipeline_key_cache_enabled},
+	         {"draw_state_dirty_check", snap.draw_state_dirty_check_enabled},
 	     }},
 	};
 
@@ -1205,6 +1557,21 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 		});
 	}
 
+	nlohmann::json detailed_hitches_json = nlohmann::json::array();
+	for (const auto& h: snap.detailed_hitches) {
+		detailed_hitches_json.push_back({
+		    {"frame_index", h.frame_index},
+		    {"frame_ms", h.frame_ms},
+		    {"timestamp_ms", h.timestamp_ms},
+		    {"dominant_blocker", h.dominant_blocker},
+		    {"blocker_duration_ms", h.blocker_duration_ms},
+		    {"blocker_thread_id", h.blocker_thread_id},
+		    {"blocker_tick", h.blocker_tick},
+		    {"blocker_address", fmt::format("0x{:016x}", h.blocker_address)},
+		    {"correlation_confidence", h.correlation_confidence},
+		});
+	}
+
 	j["stuttering_analysis"] = {
 	    {"hitches_ge_50ms", snap.hitches_ge_50ms},
 	    {"hitches_ge_100ms", snap.hitches_ge_100ms},
@@ -1218,6 +1585,7 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	                                                 snap.total_frames * 100.0)
 	                                              : 0.0},
 	    {"slowest_frames", slow_frames_json},
+	    {"detailed_hitches", detailed_hitches_json},
 	};
 
 	j["write_tracking"] = {
@@ -1388,6 +1756,43 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"redundant_index_binds", snap.redundant_index_binds},
 	};
 
+	nlohmann::json stages_json = nlohmann::json::object();
+	for (size_t i = 0; i < static_cast<size_t>(PipelineStage::Count); ++i) {
+		const auto  stage                        = static_cast<PipelineStage>(i);
+		const auto& s                            = snap.pipeline_stages[i];
+		stages_json[GetPipelineStageName(stage)] = {
+		    {"count", s.count},
+		    {"total_ms", s.total_ms},
+		    {"avg_us", s.avg_us},
+		    {"max_ms", s.max_ms},
+		    {"ms_per_frame", s.ms_per_frame},
+		    {"pct_thread_time", s.pct_thread_time},
+		};
+	}
+	j["pipeline_stage_timings"] = stages_json;
+
+	j["cpu_gpu_separation"] = {
+	    {"gpu_thread_wall_clock_ms", snap.gpu_thread_wall_clock_ms},
+	    {"gpu_thread_cpu_time_ms", snap.gpu_thread_cpu_time_ms},
+	    {"gpu_thread_cpu_utilization_pct", snap.gpu_thread_cpu_utilization_pct},
+	    {"gpu_thread_wait_time_ms", snap.gpu_thread_wait_time_ms},
+	    {"gpu_execution_time_ms", snap.gpu_execution_time_ms},
+	    {"gpu_queries_recorded", snap.gpu_queries_recorded},
+	};
+
+	j["stream_buffer_audit"] = {
+	    {"total_allocations", snap.stream_buffer_stats.total_allocs},
+	    {"total_wraparounds", snap.stream_buffer_stats.total_wraps},
+	    {"total_allocated_mb", snap.stream_buffer_stats.total_mb},
+	    {"mb_per_frame", snap.stream_buffer_stats.mb_per_frame},
+	    {"high_water_mark_mb", snap.stream_buffer_stats.high_water_mb},
+	    {"wait_events", snap.stream_buffer_stats.wait_events},
+	    {"wait_total_ms", snap.stream_buffer_stats.wait_total_ms},
+	    {"wait_avg_ms", snap.stream_buffer_stats.wait_avg_ms},
+	    {"wait_max_ms", snap.stream_buffer_stats.wait_max_ms},
+	    {"last_wait_tick", snap.stream_buffer_stats.last_wait_tick},
+	};
+
 	// Legacy backwards-compatible aliases for existing tests and scripts
 	j["configuration"]              = j["metadata"]["config"];
 	j["frametime_metrics_ms"]       = j["frametime_summary"];
@@ -1435,6 +1840,10 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   snap.batch_hot_readbacks_enabled ? 1 : 0);
 	out << fmt::format("Metadata,ExtendedStreamBufferEnabled,{}\n",
 	                   snap.extended_stream_buffer_enabled ? 1 : 0);
+	out << fmt::format("Metadata,PipelineKeyCacheEnabled,{}\n",
+	                   snap.pipeline_key_cache_enabled ? 1 : 0);
+	out << fmt::format("Metadata,DrawStateDirtyCheckEnabled,{}\n",
+	                   snap.draw_state_dirty_check_enabled ? 1 : 0);
 
 	out << fmt::format("Frametime,TotalFrames,{}\n", snap.total_frames);
 	out << fmt::format("Frametime,EffectiveFps,{:.2f}\n", snap.effective_fps);
@@ -1575,6 +1984,51 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("PhaseGameplay,Submits,{}\n", snap.phase_gameplay.submits);
 	out << fmt::format("PhaseGameplay,GpuWaitMs,{:.2f}\n",
 	                   static_cast<double>(snap.phase_gameplay.gpu_wait_ns) / 1000000.0);
+
+	for (size_t i = 0; i < static_cast<size_t>(PipelineStage::Count); ++i) {
+		const auto  stage = static_cast<PipelineStage>(i);
+		const auto& s     = snap.pipeline_stages[i];
+		out << fmt::format("PipelineStageCount,{},{}\n", GetPipelineStageName(stage), s.count);
+		out << fmt::format("PipelineStageTotalMs,{},{:.3f}\n", GetPipelineStageName(stage),
+		                   s.total_ms);
+		out << fmt::format("PipelineStageAvgUs,{},{:.2f}\n", GetPipelineStageName(stage), s.avg_us);
+		out << fmt::format("PipelineStageMaxMs,{},{:.3f}\n", GetPipelineStageName(stage), s.max_ms);
+		out << fmt::format("PipelineStageMsPerFrame,{},{:.3f}\n", GetPipelineStageName(stage),
+		                   s.ms_per_frame);
+		out << fmt::format("PipelineStagePctThreadTime,{},{:.2f}%\n", GetPipelineStageName(stage),
+		                   s.pct_thread_time);
+	}
+
+	out << fmt::format("CpuGpuSeparation,GpuThreadWallClockMs,{:.2f}\n",
+	                   snap.gpu_thread_wall_clock_ms);
+	out << fmt::format("CpuGpuSeparation,GpuThreadCpuTimeMs,{:.2f}\n", snap.gpu_thread_cpu_time_ms);
+	out << fmt::format("CpuGpuSeparation,GpuThreadCpuUtilizationPct,{:.2f}%\n",
+	                   snap.gpu_thread_cpu_utilization_pct);
+	out << fmt::format("CpuGpuSeparation,GpuThreadWaitTimeMs,{:.2f}\n",
+	                   snap.gpu_thread_wait_time_ms);
+	out << fmt::format("CpuGpuSeparation,GpuExecutionTimeMs,{:.2f}\n", snap.gpu_execution_time_ms);
+	out << fmt::format("CpuGpuSeparation,GpuQueriesRecorded,{}\n", snap.gpu_queries_recorded);
+
+	out << fmt::format("StreamBuffer,TotalAllocations,{}\n", snap.stream_buffer_stats.total_allocs);
+	out << fmt::format("StreamBuffer,TotalWraparounds,{}\n", snap.stream_buffer_stats.total_wraps);
+	out << fmt::format("StreamBuffer,TotalAllocatedMB,{:.2f}\n", snap.stream_buffer_stats.total_mb);
+	out << fmt::format("StreamBuffer,MBPerFrame,{:.2f}\n", snap.stream_buffer_stats.mb_per_frame);
+	out << fmt::format("StreamBuffer,HighWaterMarkMB,{:.2f}\n",
+	                   snap.stream_buffer_stats.high_water_mb);
+	out << fmt::format("StreamBuffer,WaitEvents,{}\n", snap.stream_buffer_stats.wait_events);
+	out << fmt::format("StreamBuffer,WaitTotalMs,{:.3f}\n", snap.stream_buffer_stats.wait_total_ms);
+	out << fmt::format("StreamBuffer,WaitAvgMs,{:.3f}\n", snap.stream_buffer_stats.wait_avg_ms);
+	out << fmt::format("StreamBuffer,WaitMaxMs,{:.3f}\n", snap.stream_buffer_stats.wait_max_ms);
+	out << fmt::format("StreamBuffer,LastWaitTick,{}\n", snap.stream_buffer_stats.last_wait_tick);
+
+	out << "\nDetailedHitches,FrameIndex,FrameMs,TimestampMs,DominantBlocker,BlockerDurationMs,"
+	       "BlockerThreadId,BlockerTick,BlockerAddress,CorrelationConfidence\n";
+	for (const auto& h: snap.detailed_hitches) {
+		out << fmt::format("Hitch,{},{:.2f},{},{},{:.2f},{},{},0x{:016x},{}\n", h.frame_index,
+		                   h.frame_ms, h.timestamp_ms, h.dominant_blocker, h.blocker_duration_ms,
+		                   h.blocker_thread_id, h.blocker_tick, h.blocker_address,
+		                   h.correlation_confidence);
+	}
 
 	out << "\nTopPages,PageVaddr,FaultCount,ReprotectCount\n";
 	for (const auto& p: snap.top_pages) {

@@ -374,7 +374,11 @@ bool CommandScheduler::TakeDueCadenceSubmit() {
 uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::SubmitReason reason) {
 	EXIT_IF(m_command.IsInvalid());
 
-	m_command.End();
+	{
+		Common::AuditProfiler::ScopedStageTimer end_timer(
+		    Common::AuditProfiler::PipelineStage::CommandEnd);
+		m_command.End();
+	}
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;
 	EXIT_IF(graphics.queue == nullptr);
@@ -382,6 +386,10 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::Subm
 	vk::Result result;
 	uint64_t   tick;
 	{
+		const auto t_sub_start = Common::AuditProfiler::IsEnabled()
+		                             ? Common::AuditProfiler::Clock::now()
+		                             : Common::AuditProfiler::Clock::time_point {};
+
 		Common::LockGuard lock(graphics.queue_mutex);
 		tick = m_master.NextTick();
 		submit.AddSignal(m_master.Handle(), tick);
@@ -403,6 +411,18 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::Subm
 		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
 
 		result = graphics.queue.submit(1, &submit_info, nullptr);
+
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto t_sub_end = Common::AuditProfiler::Clock::now();
+			const auto sub_ns    = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(t_sub_end - t_sub_start)
+			        .count());
+			Common::AuditProfiler::RecordPipelineStage(Common::AuditProfiler::PipelineStage::Submit,
+			                                           sub_ns);
+			Common::AuditProfiler::RecordTraceEvent(
+			    Common::AuditProfiler::TraceEventType::VulkanSubmit, sub_ns, tick,
+			    static_cast<uint64_t>(reason));
+		}
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
 	if (Common::AuditProfiler::IsEnabled()) {

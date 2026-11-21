@@ -278,6 +278,9 @@ std::pair<uint8_t*, uint64_t> StreamBuffer::Map(uint64_t size, uint64_t alignmen
 	m_wait_bound  = wait_bound;
 	m_offset      = aligned_offset;
 	m_mapped_size = mapped_size;
+	if (Common::AuditProfiler::IsEnabled()) {
+		Common::AuditProfiler::RecordStreamBufferAlloc(mapped_size, wrap, m_offset + mapped_size);
+	}
 	return {Mapped().data() + m_offset, m_offset};
 }
 
@@ -330,9 +333,21 @@ bool StreamBuffer::WaitPendingOperations(const std::vector<Watch>& watches,
 		if (!Scheduler().IsFree(watch.tick) && !allow_wait) {
 			return false;
 		}
+		const auto t_wait_start = Common::AuditProfiler::IsEnabled()
+		                              ? Common::AuditProfiler::Clock::now()
+		                              : Common::AuditProfiler::Clock::time_point {};
+
 		Scheduler().Wait(watch.tick, Common::AuditProfiler::GpuWaitReason::StreamBufferWait);
 		if (Usage() == MemoryUsage::Download) {
 			Scheduler().WaitPriorityOperations(watch.tick);
+		}
+
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto t_wait_end = Common::AuditProfiler::Clock::now();
+			const auto wait_ns    = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(t_wait_end - t_wait_start)
+			        .count());
+			Common::AuditProfiler::RecordStreamBufferWaitEvent(wait_ns, watch.tick);
 		}
 		wait_bound = watch.upper_bound;
 		++wait_cursor;

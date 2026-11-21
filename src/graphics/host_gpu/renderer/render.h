@@ -237,7 +237,15 @@ private:
 	bool             m_lod_stats = Config::LodStatsEnabled();
 	GraphicsBindings m_graphics_bindings;
 	// The current draw's targets; PrepareDrawRenderState resolves them again for each draw.
-	DrawTargets                          m_targets;
+	DrawTargets m_targets;
+	struct CachedTargetsSignature {
+		uint32_t                mrt_mask     = 0;
+		uint32_t                rt_mask      = 0;
+		uint64_t                depth_base   = 0;
+		std::array<uint64_t, 8> color_bases  = {};
+		uint8_t                 msaa_samples = 0;
+		bool                    valid        = false;
+	} m_cached_targets_sig;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                 m_bound_images;
 	std::vector<vk::DescriptorImageInfo> m_descriptor_images;

@@ -117,6 +117,12 @@ static void PrintUsage() {
 	         "lookups (default: on).\n");
 	::printf("  --no-pipeline-cache-mru              Disable MRU fast-path for graphics pipeline "
 	         "lookups.\n");
+	::printf("  --pipeline-key-cache                 Cache and elide redundant pipeline key builds "
+	         "(default: on).\n");
+	::printf("  --no-pipeline-key-cache              Disable pipeline key caching.\n");
+	::printf("  --draw-state-dirty-check             Elide redundant draw state and render target "
+	         "preparations (default: on).\n");
+	::printf("  --no-draw-state-dirty-check          Disable draw state dirty checking.\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -324,6 +330,10 @@ static constexpr Flag FLAGS[] = {
     {"--no-redundant-bind-elision", &ConfigOptions::redundant_bind_elision_enabled, false},
     {"--pipeline-cache-mru", &ConfigOptions::pipeline_cache_mru_enabled, true},
     {"--no-pipeline-cache-mru", &ConfigOptions::pipeline_cache_mru_enabled, false},
+    {"--pipeline-key-cache", &ConfigOptions::pipeline_key_cache_enabled, true},
+    {"--no-pipeline-key-cache", &ConfigOptions::pipeline_key_cache_enabled, false},
+    {"--draw-state-dirty-check", &ConfigOptions::draw_state_dirty_check_enabled, true},
+    {"--no-draw-state-dirty-check", &ConfigOptions::draw_state_dirty_check_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif

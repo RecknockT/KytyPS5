@@ -61,6 +61,18 @@ void MasterSemaphore::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason r
 		const auto wait_ns = static_cast<uint64_t>(
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
 		Common::AuditProfiler::RecordGpuWait(reason, wait_ns);
+		Common::AuditProfiler::RecordPipelineStage(Common::AuditProfiler::PipelineStage::SyncWaits,
+		                                           wait_ns);
+		auto trace_type = Common::AuditProfiler::TraceEventType::TimelineWait;
+		if (reason == Common::AuditProfiler::GpuWaitReason::StreamBufferWait) {
+			trace_type = Common::AuditProfiler::TraceEventType::StreamBufferWait;
+		} else if (reason == Common::AuditProfiler::GpuWaitReason::BufferReadback) {
+			trace_type = Common::AuditProfiler::TraceEventType::BufferReadback;
+		} else if (reason == Common::AuditProfiler::GpuWaitReason::PriorityOperation) {
+			trace_type = Common::AuditProfiler::TraceEventType::PriorityOperation;
+		}
+		Common::AuditProfiler::RecordTraceEvent(trace_type, wait_ns, tick,
+		                                        static_cast<uint64_t>(reason));
 	}
 	Refresh();
 }

@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -895,6 +896,9 @@ static bool ResolvePrimitiveRestart(const CommandBuffer&         buffer,
 
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
                                             DrawRenderState& state) {
+	Common::AuditProfiler::ScopedStageTimer stage_timer(
+	    Common::AuditProfiler::PipelineStage::RenderStatePrep);
+
 	m_context.GetImageHeap().BeginDraw();
 	m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state);
 	// Vertex programs the host cannot run are not compiled.
@@ -910,57 +914,95 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	                         &ShaderVertexInputInfo::stage)) {
 		return false;
 	}
-	auto& targets       = m_targets;
-	targets.color_count = 0;
-	for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
-		if ((state.mrt_mask & (1u << slot)) != 0) {
-			ResolveRenderColorTarget(buffer, targets.colors[targets.color_count], slot);
-			if (targets.colors[targets.color_count].image_id) {
-				targets.color_count++;
+	auto& targets = m_targets;
+
+	const auto& hw                 = buffer.GetRegisters();
+	const auto  current_rt_mask    = hw.GetRenderTargetMask();
+	const auto  current_depth_base = hw.GetDepthRenderTarget().z_read_base_addr;
+	const auto  current_msaa       = hw.GetAaConfig().msaa_num_samples;
+
+	bool targets_unchanged = false;
+	if (Config::DrawStateDirtyCheckEnabled() && m_cached_targets_sig.valid &&
+	    m_cached_targets_sig.mrt_mask == state.mrt_mask &&
+	    m_cached_targets_sig.rt_mask == current_rt_mask &&
+	    m_cached_targets_sig.depth_base == current_depth_base &&
+	    m_cached_targets_sig.msaa_samples == current_msaa) {
+		targets_unchanged = true;
+		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
+			if ((state.mrt_mask & (1u << slot)) != 0) {
+				if (m_cached_targets_sig.color_bases[slot] != hw.GetRenderTarget(slot).base.addr) {
+					targets_unchanged = false;
+					break;
+				}
 			}
 		}
 	}
-	ResolveRenderDepthTarget(buffer, targets.depth);
-	// TODO(PPSA09243): Vulkan passes take one sample count. Where PS5 attachments mix counts,
-	// keep those matching the raster count instead of resolving multisampled shadows.
-	const auto colors       = std::span {targets.colors, targets.color_count};
-	const auto pass_samples = targets.depth.image_id ? targets.depth.desc.info.samples
-	                                                 : targets.colors[0].desc.info.samples;
-	if (std::ranges::any_of(colors, [&](const RenderColorInfo& color) {
-		    return color.desc.info.samples != pass_samples;
-	    })) {
-		const auto raster =
-		    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
-		// Resolving marked every target; a dropped one is no attachment of this pass, so it must
-		// not stay marked, or a stage sampling it expects an attachment layout that is never set.
-		std::array<ImageId, RENDER_COLOR_ATTACHMENTS_MAX + 1> unmarked {};
-		size_t                                                unmarked_count = 0;
-		for (const auto& color: colors) {
-			if (color.desc.info.samples != raster) unmarked[unmarked_count++] = color.image_id;
-		}
-		const auto dropped = std::ranges::remove_if(colors, [&](const RenderColorInfo& color) {
-			return color.desc.info.samples != raster;
-		});
-		targets.color_count -= static_cast<uint32_t>(dropped.size());
-		if (targets.depth.image_id && targets.depth.desc.info.samples != raster) {
-			unmarked[unmarked_count++] = targets.depth.image_id;
-			targets.depth              = {};
-		}
-		auto&      cache = m_context.GetTextureCache();
-		const auto kept  = std::span {targets.colors, targets.color_count};
-		for (size_t i = 0; i < unmarked_count; i++) {
-			const auto id = unmarked[i];
-			if (targets.depth.image_id == id ||
-			    std::ranges::any_of(kept,
-			                        [&](const RenderColorInfo& c) { return c.image_id == id; })) {
-				continue;
+
+	if (!targets_unchanged) {
+		targets.color_count = 0;
+		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
+			if ((state.mrt_mask & (1u << slot)) != 0) {
+				ResolveRenderColorTarget(buffer, targets.colors[targets.color_count], slot);
+				if (targets.colors[targets.color_count].image_id) {
+					targets.color_count++;
+				}
 			}
-			cache.GetImage(id).binding.is_target = false;
 		}
-		static std::atomic_bool logged = false;
-		if (!logged.exchange(true, std::memory_order_relaxed)) {
-			Log::WriteToConsoleAndLog(
-			    "Warning: dropping attachments whose sample count differs from the raster.\n");
+		ResolveRenderDepthTarget(buffer, targets.depth);
+		// TODO(PPSA09243): Vulkan passes take one sample count. Where PS5 attachments mix counts,
+		// keep those matching the raster count instead of resolving multisampled shadows.
+		const auto colors       = std::span {targets.colors, targets.color_count};
+		const auto pass_samples = targets.depth.image_id    ? targets.depth.desc.info.samples
+		                          : targets.color_count > 0 ? targets.colors[0].desc.info.samples
+		                                                    : 0;
+		if (pass_samples > 0 && std::ranges::any_of(colors, [&](const RenderColorInfo& color) {
+			    return color.desc.info.samples != pass_samples;
+		    })) {
+			const auto raster =
+			    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
+			// Resolving marked every target; a dropped one is no attachment of this pass, so it
+			// must not stay marked, or a stage sampling it expects an attachment layout that is
+			// never set.
+			std::array<ImageId, RENDER_COLOR_ATTACHMENTS_MAX + 1> unmarked {};
+			size_t                                                unmarked_count = 0;
+			for (const auto& color: colors) {
+				if (color.desc.info.samples != raster) unmarked[unmarked_count++] = color.image_id;
+			}
+			const auto dropped = std::ranges::remove_if(colors, [&](const RenderColorInfo& color) {
+				return color.desc.info.samples != raster;
+			});
+			targets.color_count -= static_cast<uint32_t>(dropped.size());
+			if (targets.depth.image_id && targets.depth.desc.info.samples != raster) {
+				unmarked[unmarked_count++] = targets.depth.image_id;
+				targets.depth              = {};
+			}
+			auto&      cache = m_context.GetTextureCache();
+			const auto kept  = std::span {targets.colors, targets.color_count};
+			for (size_t i = 0; i < unmarked_count; i++) {
+				const auto id = unmarked[i];
+				if (targets.depth.image_id == id ||
+				    std::ranges::any_of(
+				        kept, [&](const RenderColorInfo& c) { return c.image_id == id; })) {
+					continue;
+				}
+				cache.GetImage(id).binding.is_target = false;
+			}
+			static std::atomic_bool logged = false;
+			if (!logged.exchange(true, std::memory_order_relaxed)) {
+				Log::WriteToConsoleAndLog(
+				    "Warning: dropping attachments whose sample count differs from the raster.\n");
+			}
+		}
+
+		if (Config::DrawStateDirtyCheckEnabled()) {
+			m_cached_targets_sig.mrt_mask     = state.mrt_mask;
+			m_cached_targets_sig.rt_mask      = current_rt_mask;
+			m_cached_targets_sig.depth_base   = current_depth_base;
+			m_cached_targets_sig.msaa_samples = current_msaa;
+			for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
+				m_cached_targets_sig.color_bases[slot] = hw.GetRenderTarget(slot).base.addr;
+			}
+			m_cached_targets_sig.valid = true;
 		}
 	}
 
@@ -1185,39 +1227,56 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	auto&                            bindings = m_graphics_bindings;
 	std::array<PreparedBindings*, 4> descriptor_stages {};
 	uint32_t                         stage_count = 0;
-	for (uint32_t i = 0; i < vertex_stages.size(); i++) {
-		PrepareBindings(state.vertex_info[i].stage, bindings.vertex[i]);
-		descriptor_stages[stage_count++] = &bindings.vertex[i];
+	{
+		Common::AuditProfiler::ScopedStageTimer desc_timer(
+		    Common::AuditProfiler::PipelineStage::DescriptorPrep);
+		for (uint32_t i = 0; i < vertex_stages.size(); i++) {
+			PrepareBindings(state.vertex_info[i].stage, bindings.vertex[i]);
+			descriptor_stages[stage_count++] = &bindings.vertex[i];
+		}
+		if (state.ps_active) {
+			PrepareBindings(state.ps_input_info.stage, bindings.pixel);
+			descriptor_stages[stage_count++] = &bindings.pixel;
+		}
+		const auto stages = std::span {descriptor_stages.data(), stage_count};
+		PrepareGraphicsBindings(stages, std::span {m_targets.colors, m_targets.color_count});
 	}
-	if (state.ps_active) {
-		PrepareBindings(state.ps_input_info.stage, bindings.pixel);
-		descriptor_stages[stage_count++] = &bindings.pixel;
-	}
-	const auto stages = std::span {descriptor_stages.data(), stage_count};
-	PrepareGraphicsBindings(stages, std::span {m_targets.colors, m_targets.color_count});
-	PreparedVertexBuffers vertex_bindings;
-	PreparedIndexBuffer   index_binding;
-	vk::DeviceAddress     mesh_indices = 0;
-	if (!mesh_active) {
-		AcquireVertexBuffers(buffer, state.vertex_info[0], vertex_bindings);
-		index_binding = PrepareIndexBuffer(buffer, index_source);
-	} else if (draw.indexed) {
-		const auto [indices, offset] =
-		    m_context.GetBufferCache().ObtainBuffer(index_begin, index_end - index_begin, false);
-		mesh_indices = indices->BufferDeviceAddress() + offset + (index_source.address & 3u);
-	}
+	const auto                   stages = std::span {descriptor_stages.data(), stage_count};
+	PreparedVertexBuffers        vertex_bindings;
+	PreparedIndexBuffer          index_binding;
+	vk::DeviceAddress            mesh_indices = 0;
 	std::pair<Buffer*, uint64_t> args_buffer {};
-	if (emit.indirect.address != 0) {
-		const auto size = static_cast<uint64_t>(emit.indirect.count - 1) * emit.indirect.stride +
-		                  (draw.indexed ? sizeof(vk::DrawIndexedIndirectCommand)
-		                                : sizeof(vk::DrawIndirectCommand));
-		args_buffer = m_context.GetBufferCache().ObtainBuffer(emit.indirect.address, size, false);
-		EXIT_IF((args_buffer.second & 3u) != 0);
+	{
+		Common::AuditProfiler::ScopedStageTimer buf_timer(
+		    Common::AuditProfiler::PipelineStage::BufferPrep);
+		if (!mesh_active) {
+			AcquireVertexBuffers(buffer, state.vertex_info[0], vertex_bindings);
+			index_binding = PrepareIndexBuffer(buffer, index_source);
+		} else if (draw.indexed) {
+			const auto [indices, offset] = m_context.GetBufferCache().ObtainBuffer(
+			    index_begin, index_end - index_begin, false);
+			mesh_indices = indices->BufferDeviceAddress() + offset + (index_source.address & 3u);
+		}
+		if (emit.indirect.address != 0) {
+			const auto size =
+			    static_cast<uint64_t>(emit.indirect.count - 1) * emit.indirect.stride +
+			    (draw.indexed ? sizeof(vk::DrawIndexedIndirectCommand)
+			                  : sizeof(vk::DrawIndirectCommand));
+			args_buffer =
+			    m_context.GetBufferCache().ObtainBuffer(emit.indirect.address, size, false);
+			EXIT_IF((args_buffer.second & 3u) != 0);
+		}
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	using ShaderRecompiler::IR::PushData;
 	vk::ImageAspectFlags feedback_aspects;
-	const auto rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
-	                                            m_targets.depth, feedback_aspects, stages);
+	RenderState          rendering;
+	{
+		Common::AuditProfiler::ScopedStageTimer barrier_timer(
+		    Common::AuditProfiler::PipelineStage::BarriersTransitions);
+		rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
+		                                 m_targets.depth, feedback_aspects, stages);
+	}
 	vk::DeviceAddress task_params = 0;
 	if (mesh_task) {
 		const MeshTaskParams params {
@@ -1240,43 +1299,47 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.
 	auto vk_buffer = buffer.Handle();
-	if (!mesh_active) {
-		CommitVertexBuffers(buffer, vertex_bindings);
-	}
-	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
-	if (!mesh_active) {
-		CommitIndexBuffer(buffer, index_binding);
-	}
-	using ShaderRecompiler::IR::PushData;
-	const auto draw_dwords =
-	    PushData::GraphicsDrawDwords(mesh_active, state.ps_input_info.object_primitive_id);
-	if (draw_dwords != 0) {
-		std::array<uint32_t, PushData::MeshDrawDwordCount> draw_data {};
-		if (mesh_task) {
-			draw_data[0] = static_cast<uint32_t>(task_params);
-			draw_data[1] = static_cast<uint32_t>(task_params >> 32u);
-		} else if (mesh_active) {
-			draw_data = {draw.index_count, static_cast<uint32_t>(emit.vertex_offset),
-			             index_source.guest_element_size, static_cast<uint32_t>(mesh_indices),
-			             static_cast<uint32_t>(mesh_indices >> 32u)};
-		} else {
-			draw_data[0] = buffer.GetUserConfig().GetObjectId();
+	{
+		Common::AuditProfiler::ScopedStageTimer rec_timer(
+		    Common::AuditProfiler::PipelineStage::CommandRecording);
+		if (!mesh_active) {
+			CommitVertexBuffers(buffer, vertex_bindings);
 		}
-		vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages, 0,
-		                        draw_dwords * sizeof(uint32_t), draw_data.data());
-	}
-	if (const auto planes = vertex_stages.back().user_clip_planes; planes != 0) {
-		vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages,
-		                        PushData::UserClipPlaneDword * sizeof(uint32_t),
-		                        std::bit_width(planes) * 4u * sizeof(uint32_t),
-		                        buffer.GetRegisters().GetUserClipPlanes().data());
-	}
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
+		if (!mesh_active) {
+			CommitIndexBuffer(buffer, index_binding);
+		}
+		using ShaderRecompiler::IR::PushData;
+		const auto draw_dwords =
+		    PushData::GraphicsDrawDwords(mesh_active, state.ps_input_info.object_primitive_id);
+		if (draw_dwords != 0) {
+			std::array<uint32_t, PushData::MeshDrawDwordCount> draw_data {};
+			if (mesh_task) {
+				draw_data[0] = static_cast<uint32_t>(task_params);
+				draw_data[1] = static_cast<uint32_t>(task_params >> 32u);
+			} else if (mesh_active) {
+				draw_data = {draw.index_count, static_cast<uint32_t>(emit.vertex_offset),
+				             index_source.guest_element_size, static_cast<uint32_t>(mesh_indices),
+				             static_cast<uint32_t>(mesh_indices >> 32u)};
+			} else {
+				draw_data[0] = buffer.GetUserConfig().GetObjectId();
+			}
+			vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages, 0,
+			                        draw_dwords * sizeof(uint32_t), draw_data.data());
+		}
+		if (const auto planes = vertex_stages.back().user_clip_planes; planes != 0) {
+			vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages,
+			                        PushData::UserClipPlaneDword * sizeof(uint32_t),
+			                        std::bit_width(planes) * 4u * sizeof(uint32_t),
+			                        buffer.GetRegisters().GetUserClipPlanes().data());
+		}
 
-	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
-	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), m_targets.depth,
-	                           rendering);
-	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
-	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
+		auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
+		UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), m_targets.depth,
+		                           rendering);
+		dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
+		dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
+	}
 
 	if (std::any_of(
 	        vertex_stages.begin(), vertex_stages.end(),
@@ -1293,44 +1356,55 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
 		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
-	if (shader_write_stages) {
-		// As for dispatches, buffer writes wait for earlier accesses to the memory.
-		buffer.EndRendering();
-		ShaderWriteHazardBarrier(vk_buffer, shader_write_stages);
+	{
+		Common::AuditProfiler::ScopedStageTimer barrier_timer(
+		    Common::AuditProfiler::PipelineStage::BarriersTransitions);
+		if (shader_write_stages) {
+			// As for dispatches, buffer writes wait for earlier accesses to the memory.
+			buffer.EndRendering();
+			ShaderWriteHazardBarrier(vk_buffer, shader_write_stages);
+		}
+		buffer.BeginRendering(rendering);
 	}
-	buffer.BeginRendering(rendering);
-	buffer.BindGraphicsPipeline(pipeline.pipeline);
-	auto&         occlusion_queries = m_context.GetOcclusionQueries();
-	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
-	if (mesh_task) {
-		vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
-	} else if (mesh_active) {
-		const MeshGridLimits grid {limits.maxMeshWorkGroupCount[0], limits.maxMeshWorkGroupCount[1],
-		                           limits.maxMeshWorkGroupTotalCount};
-		ForEachMeshSlice(mesh_groups, draw.instance_count, grid, [&](const MeshSlice& slice) {
-			if (slice.base_group != 0 || slice.base_instance != 0) {
-				const std::array<uint32_t, 2> bases {slice.base_group, slice.base_instance};
-				vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages,
-				                        PushData::MeshBaseGroupDword * sizeof(uint32_t),
-				                        sizeof(bases), bases.data());
-			}
-			vk_buffer.drawMeshTasksEXT(slice.groups, slice.instances, 1);
-		});
-	} else if (args_buffer.first == nullptr) {
-		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
-	} else if (draw.indexed) {
-		vk_buffer.drawIndexedIndirect(args_buffer.first->Handle(), args_buffer.second,
-		                              emit.indirect.count, emit.indirect.stride);
-	} else {
-		vk_buffer.drawIndirect(args_buffer.first->Handle(), args_buffer.second, emit.indirect.count,
-		                       emit.indirect.stride);
+	{
+		Common::AuditProfiler::ScopedStageTimer rec_timer(
+		    Common::AuditProfiler::PipelineStage::CommandRecording);
+		buffer.BindGraphicsPipeline(pipeline.pipeline);
+		auto&         occlusion_queries = m_context.GetOcclusionQueries();
+		const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
+		if (mesh_task) {
+			vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
+		} else if (mesh_active) {
+			const MeshGridLimits grid {limits.maxMeshWorkGroupCount[0],
+			                           limits.maxMeshWorkGroupCount[1],
+			                           limits.maxMeshWorkGroupTotalCount};
+			ForEachMeshSlice(mesh_groups, draw.instance_count, grid, [&](const MeshSlice& slice) {
+				if (slice.base_group != 0 || slice.base_instance != 0) {
+					const std::array<uint32_t, 2> bases {slice.base_group, slice.base_instance};
+					vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_stages,
+					                        PushData::MeshBaseGroupDword * sizeof(uint32_t),
+					                        sizeof(bases), bases.data());
+				}
+				vk_buffer.drawMeshTasksEXT(slice.groups, slice.instances, 1);
+			});
+		} else if (args_buffer.first == nullptr) {
+			EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+		} else if (draw.indexed) {
+			vk_buffer.drawIndexedIndirect(args_buffer.first->Handle(), args_buffer.second,
+			                              emit.indirect.count, emit.indirect.stride);
+		} else {
+			vk_buffer.drawIndirect(args_buffer.first->Handle(), args_buffer.second,
+			                       emit.indirect.count, emit.indirect.stride);
+		}
+		occlusion_queries.End(vk_buffer, occlusion_query);
 	}
-	occlusion_queries.End(vk_buffer, occlusion_query);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DrawInstances, draw.instance_count);
 	m_context.GetCommandScheduler().NoteRecordedWork();
 
 	if (shader_write_stages) {
+		Common::AuditProfiler::ScopedStageTimer barrier_timer(
+		    Common::AuditProfiler::PipelineStage::BarriersTransitions);
 		buffer.EndRendering();
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
 	}

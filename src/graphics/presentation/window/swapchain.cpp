@@ -918,9 +918,25 @@ Swapchain::Status Swapchain::Present() {
 
 	vk::Result result;
 	{
+		const auto t_pres_start = Common::AuditProfiler::IsEnabled()
+		                              ? Common::AuditProfiler::Clock::now()
+		                              : Common::AuditProfiler::Clock::time_point {};
+
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
+
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto t_pres_end = Common::AuditProfiler::Clock::now();
+			const auto pres_ns    = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(t_pres_end - t_pres_start)
+			        .count());
+			Common::AuditProfiler::RecordPipelineStage(
+			    Common::AuditProfiler::PipelineStage::Present, pres_ns);
+			Common::AuditProfiler::RecordTraceEvent(
+			    Common::AuditProfiler::TraceEventType::SwapchainPresent, pres_ns, m_image_index, 0);
+		}
 	}
+	Common::AuditProfiler::NoteGpuThreadFrame();
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:

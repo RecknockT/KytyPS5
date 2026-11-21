@@ -225,6 +225,8 @@ struct ClipControl {
 	bool    force_viewport_index_from_vs_enable = false;
 
 	[[nodiscard]] bool IsZClipEnabled() const { return !min_z_clip_disable && !max_z_clip_disable; }
+
+	bool operator==(const ClipControl&) const = default;
 };
 
 struct DepthControl {
@@ -270,6 +272,8 @@ struct ModeControl {
 	bool    vtx_window_offset_enable = false;
 	bool    provoking_vtx_last       = false;
 	bool    persp_corr_dis           = false;
+
+	bool operator==(const ModeControl&) const = default;
 };
 
 struct PolyOffset {
@@ -291,6 +295,8 @@ struct BlendControl {
 	uint8_t alpha_destblend      = 0;
 	bool    separate_alpha_blend = true;
 	bool    enable               = false;
+
+	bool operator==(const BlendControl&) const = default;
 };
 
 struct BlendColor {
@@ -342,6 +348,8 @@ struct AaConfig {
 	bool    aa_mask_centroid_dtmn = false;
 	uint8_t max_sample_dist       = 0;
 	uint8_t msaa_exposed_samples  = 0;
+
+	bool operator==(const AaConfig&) const = default;
 };
 
 struct Viewport {
@@ -630,7 +638,7 @@ public:
 
 	void                   SetRenderTargetMask(uint32_t mask) { m_render_target_mask = mask; }
 	[[nodiscard]] uint32_t GetRenderTargetMask() const { return m_render_target_mask; }
-	[[nodiscard]] bool HasObjectPrimitiveIdOutput() const {
+	[[nodiscard]] bool     HasObjectPrimitiveIdOutput() const {
 		return (m_sh_regs.m_vgtDrawPayloadCntl & 1u) != 0 &&
 		       (m_render_target_mask & 0xf0000000u) != 0;
 	}
@@ -945,8 +953,8 @@ public:
 private:
 	static void SetUserDataAddressWord(uint64_t& address, uint32_t word, uint32_t value) {
 		const auto shift = word * 32u;
-		address = (address & ~(uint64_t {0xffffffffu} << shift)) |
-		          (static_cast<uint64_t>(value) << shift);
+		address          = (address & ~(uint64_t {0xffffffffu} << shift)) |
+		                   (static_cast<uint64_t>(value) << shift);
 	}
 
 	VertexShaderInfo  m_vs;

@@ -1,6 +1,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -466,6 +467,7 @@ void GuestGpu::ThreadRun(void* data) {
 	}
 #endif
 	g_gpu_state = gpu;
+	Common::AuditProfiler::NoteGpuThreadStart();
 
 	for (;;) {
 		Submission                   submission;
@@ -682,7 +684,20 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			continue;
 		}
 
+		const auto t_dec_start = Common::AuditProfiler::IsEnabled()
+		                             ? Common::AuditProfiler::Clock::now()
+		                             : Common::AuditProfiler::Clock::time_point {};
+
 		auto handler = g_cp_op_func[opcode];
+
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto t_dec_end = Common::AuditProfiler::Clock::now();
+			Common::AuditProfiler::RecordPipelineStage(
+			    Common::AuditProfiler::PipelineStage::Pm4Decode,
+			    static_cast<uint64_t>(
+			        std::chrono::duration_cast<std::chrono::nanoseconds>(t_dec_end - t_dec_start)
+			            .count()));
+		}
 
 		if (handler == nullptr) {
 			const auto offset = cursor.offset_dw;
@@ -699,8 +714,19 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n", offset, packet_header);
 		}
 
+		const auto t_disp_start = Common::AuditProfiler::IsEnabled()
+		                              ? Common::AuditProfiler::Clock::now()
+		                              : Common::AuditProfiler::Clock::time_point {};
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto t_disp_end = Common::AuditProfiler::Clock::now();
+			Common::AuditProfiler::RecordPipelineStage(
+			    Common::AuditProfiler::PipelineStage::Pm4Dispatch,
+			    static_cast<uint64_t>(
+			        std::chrono::duration_cast<std::chrono::nanoseconds>(t_disp_end - t_disp_start)
+			            .count()));
+		}
 		EXIT_IF(packet_dw > remaining_dw);
 		if (execution.m_suspended) {
 			return;

@@ -13,6 +13,8 @@
 
 namespace Common::AuditProfiler {
 
+using Clock = std::chrono::steady_clock;
+
 /// State of an audit capture session.
 enum class CaptureState : uint32_t {
 	Idle = 0,         ///< Profiler is disabled or inactive.
@@ -74,6 +76,93 @@ enum class SubmitReason : uint32_t {
 	Count
 };
 
+/// Classification of rendering pipeline stages for fine-grained timing.
+enum class PipelineStage : uint32_t {
+	Pm4Decode = 0,       ///< PM4 decode loop in CommandProcessor::Process
+	Pm4Dispatch,         ///< PM4 packet handler dispatch
+	RenderStatePrep,     ///< PrepareDrawRenderState (targets resolution, sample checks)
+	PipelineKeyBuild,    ///< MakeGraphicsPipelineKey construction
+	PipelineLookup,      ///< PipelineCache MRU and hash table lookup
+	DescriptorPrep,      ///< PrepareBindings & CommitBindings
+	BarriersTransitions, ///< Resource transitions and pipeline barriers
+	BufferPrep,          ///< Vertex & index buffer preparation and commit
+	CommandRecording,    ///< EmitDrawPrimitives (vkCmdDraw/vkCmdDrawIndexed)
+	CommandEnd,          ///< vkEndCommandBuffer
+	Submit,              ///< vkQueueSubmit in CommandScheduler::Submit
+	SyncWaits,           ///< Timeline semaphore / MasterSemaphore wait
+	Present,             ///< Swapchain presentation (vkQueuePresentKHR)
+	Count
+};
+
+/// Temporal trace event types for hitch correlation.
+enum class TraceEventType : uint16_t {
+	None = 0,
+	TimelineWait,
+	VulkanSubmit,
+	StreamBufferWait,
+	BufferReadback,
+	PriorityOperation,
+	SwapchainPresent,
+	WriteFault,
+	Reprotect,
+	PipelineCompile,
+	Other,
+	Count
+};
+
+struct TraceEvent {
+	uint64_t       timestamp_us = 0;
+	uint64_t       duration_ns  = 0;
+	uint64_t       tick         = 0;
+	uint64_t       data         = 0;
+	uint32_t       tid          = 0;
+	TraceEventType type         = TraceEventType::None;
+};
+
+struct PipelineStageMetrics {
+	uint64_t count           = 0;
+	uint64_t total_ns        = 0;
+	uint64_t max_ns          = 0;
+	uint64_t min_ns          = 0;
+	double   total_ms        = 0.0;
+	double   avg_us          = 0.0;
+	double   max_ms          = 0.0;
+	double   ms_per_frame    = 0.0;
+	double   pct_thread_time = 0.0;
+};
+
+struct DetailedHitchInfo {
+	uint64_t    frame_index  = 0;
+	double      frame_ms     = 0.0;
+	uint64_t    timestamp_ms = 0;
+	std::string dominant_blocker;
+	double      blocker_duration_ms = 0.0;
+	uint32_t    blocker_thread_id   = 0;
+	uint64_t    blocker_tick        = 0;
+	uint64_t    blocker_address     = 0;
+	std::string correlation_confidence;
+};
+
+struct StreamBufferSnapshotStats {
+	uint32_t normal_size_mb   = 64;
+	uint32_t actual_size_mb   = 64;
+	uint32_t download_size_mb = 64;
+	uint64_t total_allocs     = 0;
+	uint64_t total_wraps      = 0;
+	uint64_t total_bytes      = 0;
+	uint64_t high_water_bytes = 0;
+	uint64_t wait_events      = 0;
+	uint64_t wait_total_ns    = 0;
+	uint64_t wait_max_ns      = 0;
+	uint64_t last_wait_tick   = 0;
+	double   total_mb         = 0.0;
+	double   mb_per_frame     = 0.0;
+	double   high_water_mb    = 0.0;
+	double   wait_total_ms    = 0.0;
+	double   wait_avg_ms      = 0.0;
+	double   wait_max_ms      = 0.0;
+};
+
 struct HotPageInfo {
 	uint64_t page_vaddr      = 0;
 	uint64_t fault_count     = 0;
@@ -116,6 +205,8 @@ struct ProfileSnapshot {
 	bool     extended_stream_buffer_enabled = false;
 	bool     redundant_bind_elision_enabled = true;
 	bool     pipeline_cache_mru_enabled     = true;
+	bool     pipeline_key_cache_enabled     = true;
+	bool     draw_state_dirty_check_enabled = true;
 
 	// Capture lifecycle metadata
 	std::string capture_id;
@@ -221,6 +312,25 @@ struct ProfileSnapshot {
 	uint64_t redundant_pipeline_binds     = 0;
 	uint64_t redundant_vertex_binds       = 0;
 	uint64_t redundant_index_binds        = 0;
+
+	// Stage 8 additions: fine-grained pipeline stage timing metrics
+	std::array<PipelineStageMetrics, static_cast<size_t>(PipelineStage::Count)> pipeline_stages {};
+
+	// Stage 8 additions: CPU and GPU execution & synchronization separation
+	double   gpu_thread_wall_clock_ms       = 0.0;
+	double   gpu_thread_cpu_time_ms         = 0.0;
+	double   gpu_thread_cpu_utilization_pct = 0.0;
+	double   gpu_thread_wait_time_ms        = 0.0;
+	bool     gpu_timestamps_supported       = false;
+	double   gpu_execution_time_ms          = 0.0;
+	double   gpu_execution_avg_per_frame_ms = 0.0;
+	uint64_t gpu_queries_recorded           = 0;
+
+	// Stage 8 additions: StreamBuffer audit snapshot
+	StreamBufferSnapshotStats stream_buffer_stats {};
+
+	// Stage 8 additions: Detailed hitch correlation records
+	std::vector<DetailedHitchInfo> detailed_hitches;
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;
@@ -310,6 +420,59 @@ bool ExportAll(const std::string& json_path, const std::string& csv_path,
 
 /// Returns human-readable label for submit reason.
 [[nodiscard]] const char* GetSubmitReasonName(SubmitReason reason) noexcept;
+
+/// Records fine-grained timing for a rendering pipeline stage.
+void RecordPipelineStage(PipelineStage stage, uint64_t duration_ns) noexcept;
+
+/// Returns human-readable label for rendering pipeline stage.
+[[nodiscard]] const char* GetPipelineStageName(PipelineStage stage) noexcept;
+
+/// Records a temporal trace event into the preallocated ring buffer.
+void RecordTraceEvent(TraceEventType type, uint64_t duration_ns, uint64_t tick = 0,
+                      uint64_t data = 0) noexcept;
+
+/// Returns human-readable label for trace event type.
+[[nodiscard]] const char* GetTraceEventTypeName(TraceEventType type) noexcept;
+
+/// Records StreamBuffer allocation and wraparound event.
+void RecordStreamBufferAlloc(uint64_t bytes, bool wrap, uint64_t high_water = 0) noexcept;
+
+/// Records StreamBuffer wait event.
+void RecordStreamBufferWaitEvent(uint64_t wait_ns, uint64_t tick) noexcept;
+
+/// Notifies profiler of GPU thread start for thread CPU time sampling.
+void NoteGpuThreadStart() noexcept;
+
+/// Notifies profiler of GPU thread frame boundary.
+void NoteGpuThreadFrame() noexcept;
+
+/// Records physical GPU execution time from timestamps.
+void RecordGpuExecutionTime(uint64_t duration_ns) noexcept;
+
+/// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
+class ScopedStageTimer {
+public:
+	explicit ScopedStageTimer(PipelineStage stage) noexcept
+	    : m_stage(stage), m_active(IsCaptureRunning()) {
+		if (m_active) {
+			m_start = std::chrono::steady_clock::now();
+		}
+	}
+	~ScopedStageTimer() noexcept {
+		if (m_active) {
+			const auto end = std::chrono::steady_clock::now();
+			const auto ns  = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(end - m_start).count());
+			RecordPipelineStage(m_stage, ns);
+		}
+	}
+	KYTY_CLASS_NO_COPY(ScopedStageTimer);
+
+private:
+	PipelineStage                         m_stage;
+	bool                                  m_active;
+	std::chrono::steady_clock::time_point m_start;
+};
 
 } // namespace Common::AuditProfiler
 

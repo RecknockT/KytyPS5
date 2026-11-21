@@ -350,6 +350,14 @@ bool PipelineCacheMruEnabled() {
 	return g_config != nullptr ? g_config->pipeline_cache_mru_enabled : true;
 }
 
+bool PipelineKeyCacheEnabled() {
+	return g_config != nullptr ? g_config->pipeline_key_cache_enabled : true;
+}
+
+bool DrawStateDirtyCheckEnabled() {
+	return g_config != nullptr ? g_config->draw_state_dirty_check_enabled : true;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;
