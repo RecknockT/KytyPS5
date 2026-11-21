@@ -44,7 +44,19 @@ Se verificó el script de ejecución [stage4_3_cadence_partial.cmd](file:///c:/U
 
 ---
 
-## 3. Protocolo Riguroso de Benchmark para el Usuario
+## 4. Resolución de Incidencia: Error de Inicio 0xc000007b (STATUS_INVALID_IMAGE_FORMAT)
+
+### 4.1 Causa Raíz Confirmada
+- El ejecutable `kyty_emulator.exe` es una imagen PE de 64 bits (`x64`) que enlaza dinámicamente con `libwinpthread-1.dll`.
+- La versión de 64 bits de esta biblioteca (`libwinpthread-1.dll`, x64) se genera dentro de `_Build/windows/`.
+- Al haberse copiado temporalmente `kyty_emulator.exe` a la raíz del repositorio sin su DLL dependiente, el cargador de Windows (*Windows Loader*) recurrió a la variable de entorno `PATH` para resolver la dependencia.
+- En el `PATH` del sistema se encontraba instalada una versión de **32 bits (x86)** de `libwinpthread-1.dll` perteneciente a `Google.PlatformTools` (`C:\Users\Recko\AppData\Local\Microsoft\WinGet\Packages\Google.PlatformTools_...\platform-tools\libwinpthread-1.dll`).
+- Al intentar inyectar un módulo de 32 bits en un proceso de 64 bits, Windows canceló inmediatamente la inicialización del proceso arrojando `STATUS_INVALID_IMAGE_FORMAT` (NTSTATUS `0xC000007B`).
+
+### 4.2 Solución Aplicada
+1. Se eliminó la copia huérfana de `kyty_emulator.exe` en la raíz.
+2. Se actualizó [stage4_3_cadence_partial.cmd](file:///c:/Users/Recko/Documents/github/kyty/stage4_3_cadence_partial.cmd) para que apunte directamente al ejecutable empaquetado en `_Build\windows\kyty_emulator.exe`, donde reside la versión correcta de 64 bits de `libwinpthread-1.dll`.
+3. Se comprobó la carga completa del emulador y el reconocimiento de todos los parámetros de la Etapa 4.3 sin errores.
 
 Para garantizar que los resultados de esta validación final sean comparables, repetibles y libres de sesgos de carga inicial, siga estrictamente estos pasos:
 
