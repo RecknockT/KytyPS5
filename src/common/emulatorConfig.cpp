@@ -366,6 +366,22 @@ bool DescriptorCacheEnabled() {
 	return g_config != nullptr ? g_config->descriptor_cache_enabled : true;
 }
 
+bool ProgramCacheMruEnabled() {
+	return g_config != nullptr ? g_config->program_cache_mru_enabled : true;
+}
+
+bool CoalesceReadFaultsEnabled() {
+	return g_config != nullptr ? g_config->coalesce_read_faults_enabled : true;
+}
+
+bool GpuTimestampsEnabled() {
+	return g_config != nullptr ? g_config->gpu_timestamps_enabled : true;
+}
+
+bool DiagnosticSkipWaterPassEnabled() {
+	return g_config != nullptr ? g_config->diagnostic_skip_water_enabled : false;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;

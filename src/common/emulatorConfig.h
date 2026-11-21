@@ -110,6 +110,10 @@ struct ConfigOptions {
 	bool     draw_state_dirty_check_enabled = false;
 	bool     ensure_pipeline_cache_enabled  = true;
 	bool     descriptor_cache_enabled       = true;
+	bool     program_cache_mru_enabled      = true;
+	bool     coalesce_read_faults_enabled   = true;
+	bool     gpu_timestamps_enabled         = true;
+	bool     diagnostic_skip_water_enabled  = false;
 	uint32_t flush_draws                    = 0; // 0 is off
 	bool     tessellation_enabled           = false;
 	bool     occlusion_queries_enabled      = false;
@@ -240,6 +244,10 @@ bool               PipelineKeyCacheEnabled();
 bool               DrawStateDirtyCheckEnabled();
 bool               EnsurePipelineCacheEnabled();
 bool               DescriptorCacheEnabled();
+bool               ProgramCacheMruEnabled();
+bool               CoalesceReadFaultsEnabled();
+bool               GpuTimestampsEnabled();
+bool               DiagnosticSkipWaterPassEnabled();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();
