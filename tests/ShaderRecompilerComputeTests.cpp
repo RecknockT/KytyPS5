@@ -62518,7 +62518,12 @@ void CheckVertexPushTopCache(VulkanHarness &vulkan) {
   map(vertex, Prospero::ShaderBinaryType::kGs, &vertex_user_data);
   map(pixel_a, Prospero::ShaderBinaryType::kPs);
   map(pixel_b, Prospero::ShaderBinaryType::kPs);
-  auto context_owner = std::make_unique<RenderContext>(vulkan.RuntimeContext());
+  const auto store =
+      std::filesystem::temp_directory_path() /
+      fmt::format("kyty_vertex_push_{}.shaders",
+                  std::chrono::steady_clock::now().time_since_epoch().count());
+  auto context_owner =
+      std::make_unique<RenderContext>(vulkan.RuntimeContext(), store);
   auto &context = *context_owner;
   context.InitializeGpu(nullptr);
   auto &cache = context.GetPipelineCache();
@@ -62577,6 +62582,8 @@ void CheckVertexPushTopCache(VulkanHarness &vulkan) {
   });
   context.ShutdownGpu();
   context_owner.reset();
+  std::error_code ec;
+  std::filesystem::remove(store, ec);
   std::printf("[gpu]     %-32s ok\n", name);
 }
 

@@ -67,22 +67,29 @@ VideoOut::VideoOutDriver& RenderContext::GetVideoOut() const {
 }
 
 bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	// The host reports the faulting byte, not the instruction's access width. Both caches
-	// resolve its page; guessing a width can cross the end of a valid guest mapping.
-	constexpr uint64_t fault_size = 1;
-	if (!IsMapped(fault_vaddr, fault_size)) {
+	if (!IsMapped(fault_vaddr, 1)) {
 		return false;
 	}
-	// The access retries once the image write-backs over its page land.
-	if (WaitWriteBacks(fault_vaddr, fault_size)) {
-		return true;
-	}
 	if (access == PageFaultAccess::Write) {
+		// For writes into registered GPU buffers (e.g. vertex/uniform staging), coalesce
+		// unprotection forward across contiguous pages of the buffer up to 64 KB.
+		// This drastically reduces hardware page faults and Windows VirtualProtect syscall storms.
+		constexpr uint64_t MaxCoalesceBytes = 64 * 1024;
+		const uint64_t     extent =
+		    m_buffer_cache.CoalesceWriteFaultRange(fault_vaddr, MaxCoalesceBytes);
+		const uint64_t fault_size = (extent > 1 && IsMapped(fault_vaddr, extent)) ? extent : 1;
+
+		if (WaitWriteBacks(fault_vaddr, fault_size)) {
+			return true;
+		}
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_image_heap.InvalidateMemory(fault_vaddr, fault_size);
 	} else {
-		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+		if (WaitWriteBacks(fault_vaddr, 1)) {
+			return true;
+		}
+		m_buffer_cache.ReadMemory(fault_vaddr, 1);
 	}
 	return true;
 }

@@ -69,7 +69,9 @@ public:
 	~BufferCache();
 	KYTY_CLASS_NO_COPY(BufferCache);
 
-	void InvalidateMemory(uint64_t vaddr, uint64_t size);
+	void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] uint64_t CoalesceWriteFaultRange(uint64_t address,
+	                                               uint64_t max_bytes) const noexcept;
 	// Publishes GPU-written bytes of a range about to lose its host view, without marking pages
 	// CPU-dirty. Registered buffers and their tracker state are otherwise left as they are.
 	void                   FlushGpuDirtyForSuspend(uint64_t vaddr, uint64_t size);
@@ -121,8 +123,8 @@ public:
 	void RecreateFaultedRange(uint64_t vaddr, uint64_t size);
 	// Drops release history and protection inside an unmapped range, which holds new data if it
 	// is mapped again.
-	void               ForgetReleasedRanges(uint64_t vaddr, uint64_t size);
-	void               SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
+	void ForgetReleasedRanges(uint64_t vaddr, uint64_t size);
+	void SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
 	// Uploads the CPU-dirty bytes of the queued ranges `mapped` covers behind one barrier pair.
 	void SynchronizeBda(const RangeSet& mapped);
 	// Queue after the range's state change becomes visible, or a drain could consume it first. A
@@ -174,12 +176,12 @@ private:
 	void                   Register(BufferId id);
 	void                   Unregister(BufferId id);
 	template <bool insert>
-	void               ChangeRegister(BufferId id);
-	void               DeleteBuffer(BufferId id);
+	void ChangeRegister(BufferId id);
+	void DeleteBuffer(BufferId id);
 	// Whether a buffer may be released without a download, meaning the GPU wrote none of it.
 	[[nodiscard]] bool IsStaleReleaseCandidate(const Buffer& buffer);
 	// Releases clean buffers that no binding has used for STALE_RELEASE_AGE_TICKS.
-	void               ReleaseStaleBuffers(uint64_t tick);
+	void ReleaseStaleBuffers(uint64_t tick);
 	// Records a stale release, so a later fault on that range counts as a refault.
 	void               RememberReleasedRange(uint64_t begin, uint64_t end);
 	[[nodiscard]] bool SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t size,
@@ -218,14 +220,15 @@ private:
 	// Resolves a hot entry to the buffer that now owns it, without creating one on a miss.
 	[[nodiscard]] BufferId FindHotBuffer(uint64_t address, uint64_t size);
 	[[nodiscard]] uint64_t EstimateDownloadBytes(uint64_t address, uint64_t size) const;
-	void CollectHotDownloads(BufferId main_id, uint64_t& budget, std::vector<BatchedDownload>& batch);
+	void                   CollectHotDownloads(BufferId main_id, uint64_t& budget,
+	                                           std::vector<BatchedDownload>& batch);
 	// Adds the finished small GPU writes the recent write ring remembers to a batch, skipping
 	// spans already in claimed and charging what it collects to budget.
 	void CollectRecentWrites(RangeSet& claimed, uint64_t& budget,
 	                         std::vector<BatchedDownload>& batch);
 	// Collects one unclaimed piece of a recent write when a single buffer holds it and it fits.
-	void CollectRecentPiece(uint64_t address, uint64_t size, uint64_t& budget,
-	                        std::vector<BatchedDownload>& batch);
+	void               CollectRecentPiece(uint64_t address, uint64_t size, uint64_t& budget,
+	                                      std::vector<BatchedDownload>& batch);
 	[[nodiscard]] bool DownloadWithHotBuffers(BufferId main_id, Buffer& buffer, uint64_t vaddr,
 	                                          uint64_t size);
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
@@ -259,12 +262,12 @@ private:
 	RangeSet                m_bda_sync;
 	RangeSet                m_bda_sync_deferred;
 	// Set while m_bda_sync_deferred may be non-empty. Allows PromoteBdaSync to skip the lock.
-	std::atomic<bool>                          m_has_deferred_bda_sync {false};
-	StreamBuffer                               m_staging_buffer;
-	StreamBuffer                               m_stream_buffer;
-	StreamBuffer                               m_download_buffer;
-	StreamBuffer                               m_device_buffer;
-	TextureCache&                              m_texture_cache;
+	std::atomic<bool> m_has_deferred_bda_sync {false};
+	StreamBuffer      m_staging_buffer;
+	StreamBuffer      m_stream_buffer;
+	StreamBuffer      m_download_buffer;
+	StreamBuffer      m_device_buffer;
+	TextureCache&     m_texture_cache;
 	// Read once because the fault path is hot and the flag must not change while the cache lives.
 	const bool                                 m_batch_hot_readbacks;
 	HotReadbackTable                           m_hot_readbacks;

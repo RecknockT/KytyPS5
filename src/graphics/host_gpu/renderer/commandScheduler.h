@@ -55,8 +55,13 @@ public:
 	void               DeferRelease(Common::UniqueFunction<void>&& operation);
 	void               DeferPriorityOperation(Common::UniqueFunction<void>&& operation);
 	[[nodiscard]] bool HasPendingPriorityOperations();
-	/// Tells the submit cadence that a draw or dispatch went into the current command buffer.
-	void NoteRecordedWork() { m_cadence.NoteWork(); }
+	/// Tells the submit cadence and empty submit elision that work went into the current command
+	/// buffer.
+	void NoteRecordedWork() {
+		m_has_recorded_work = true;
+		m_cadence.NoteWork();
+	}
+	[[nodiscard]] bool HasRecordedWork() const noexcept { return m_has_recorded_work; }
 	/// Returns whether the submit cadence is on, which makes scheduler ticks much faster than
 	/// frames.
 	[[nodiscard]] bool SubmitCadenceEnabled() const noexcept { return m_cadence.Enabled(); }
@@ -138,6 +143,7 @@ private:
 	uint64_t                                  m_priority_active_tick = 0; // 0 while none runs
 	OperationState                            m_operation_state      = OperationState::Open;
 	SubmitCadence                             m_cadence;
+	bool                                      m_has_recorded_work = false;
 };
 
 } // namespace Libs::Graphics

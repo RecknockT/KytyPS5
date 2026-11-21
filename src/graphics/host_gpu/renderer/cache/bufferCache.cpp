@@ -282,6 +282,7 @@ void BufferCache::RecordDownload(const Buffer& buffer, const PendingDownload& pe
 	EXIT_IF(pending.mapped == nullptr);
 	const auto& download = pending.temporary ? *pending.temporary : m_download_buffer;
 
+	m_scheduler.NoteRecordedWork();
 	auto& command = m_scheduler.Current();
 	command.EndRendering();
 	RecordDownloadCopies(command.Handle(), buffer, download, pending.copies, pending.offset,
@@ -538,6 +539,29 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	QueueBdaSync(vaddr, size, !GuestGpu::IsGpuThread());
 }
 
+uint64_t BufferCache::CoalesceWriteFaultRange(uint64_t address, uint64_t max_bytes) const noexcept {
+	if (address == 0 || max_bytes == 0) {
+		return 1;
+	}
+	const auto* owner = m_page_table.Find(address >> PageTable::kPageBits);
+	if (owner == nullptr || IsBufferInvalid(*owner)) {
+		return 1;
+	}
+	const auto& buffer = m_slot_buffers[*owner];
+	if (!buffer.IsInBounds(address, 1)) {
+		return 1;
+	}
+	const uint64_t buffer_end = buffer.CpuAddress() + buffer.Size();
+	if (address >= buffer_end) {
+		return 1;
+	}
+	const uint64_t buffer_remaining = buffer_end - address;
+	uint64_t       extent           = std::min(buffer_remaining, max_bytes);
+	const uint64_t region_remaining = Common::AlignUp(address + 1, TRACKER_REGION_SIZE) - address;
+	extent                          = std::min(extent, region_remaining);
+	return std::max<uint64_t>(extent, 1);
+}
+
 // Downloads the GPU-dirty bytes of every buffer overlapping the range, then clears their
 // ownership. Pages are not marked CPU-dirty, so the cached data stays valid for a later resume.
 void BufferCache::FlushGpuDirtyForSuspend(uint64_t vaddr, uint64_t size) {
@@ -717,6 +741,7 @@ void BufferCache::PublishReadHot() {
 	}
 	m_publish_ranges = std::move(retained);
 	m_download_buffer.Commit();
+	m_scheduler.NoteRecordedWork();
 	auto& command = m_scheduler.Current();
 	command.EndRendering();
 	for (auto& [id, list]: copies) {
@@ -917,6 +942,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 			    first = upload.end;
 		    }
 	    });
+	m_scheduler.NoteRecordedWork();
 	auto& command = m_scheduler.Current();
 	command.EndRendering();
 	const auto              native = command.Handle();

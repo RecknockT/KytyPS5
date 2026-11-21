@@ -173,6 +173,7 @@
         }
         origins.Flush(0, origins.Size());
         if (read == 0) {
+          cache.PromoteBdaSync();
           context.PrepareBda();
           read = mirror.Prepare(tlas);
         }

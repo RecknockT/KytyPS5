@@ -9,3 +9,7 @@ _PipelineCache/
 CMakeUserPresets.json
 kyty_emulator.exe
 *.exe
+audit_profile.json
+audit_profile.csv
+_Trophies/
+

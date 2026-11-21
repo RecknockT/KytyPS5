@@ -348,6 +348,7 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	m_command.m_buffer = m_command_pool.Commit();
 	m_command.Begin();
 	m_dynamic_state.Invalidate();
+	m_has_recorded_work = false;
 	// Any submit starts a new command buffer, so the cadence counts again from its first draw.
 	m_cadence.Reset();
 	return m_command;

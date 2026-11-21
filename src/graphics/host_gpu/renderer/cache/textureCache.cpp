@@ -2114,6 +2114,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 			CommitGpuWrite(m_slot_images[stencil_id]);
 		}
 	}
+	m_scheduler.NoteRecordedWork();
 	command.EndRendering();
 	// Transfer clears use the backing format; aliased clears must encode through their view.
 	if (format != image.backing.format || (image.info.IsVolume() && !full_image)) {
