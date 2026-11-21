@@ -28,10 +28,16 @@ enum class CaptureState : uint32_t {
 /// Execution phase classification (for isolating Loading vs Gameplay).
 enum class ExecutionPhase : uint32_t {
 	Initialization = 0, ///< Emulator boot, module loading, Vulkan initialization.
-	Loading,    ///< Asset loading, shader cache compilation, heavy texture/buffer streaming.
-	Warmup,     ///< Scene reached, waiting for cache/streaming stabilization.
-	Gameplay,   ///< Interactive steady-state gameplay benchmark.
-	Transition, ///< Level transition or pause screen.
+	Loading,        ///< Asset loading, shader cache compilation, heavy texture/buffer streaming.
+	Warmup,         ///< Scene reached, waiting for cache/streaming stabilization.
+	Gameplay,       ///< Interactive steady-state gameplay benchmark.
+	Transition,     ///< Level transition or pause screen.
+	WorldEntryPrep, ///< Stage 8.1: Preparation for entering a world.
+	DescentStart,   ///< Stage 8.1: Spaceship starts descent toward world.
+	ActiveDescent,  ///< Stage 8.1: Spaceship descending through atmosphere.
+	GroundApproach, ///< Stage 8.1: Spaceship approaching landing site.
+	Touchdown,      ///< Stage 8.1: Spaceship landing/touchdown.
+	EarlyGameplay,  ///< Stage 8.1: First seconds of player control after touchdown.
 	Count
 };
 
@@ -207,6 +213,8 @@ struct ProfileSnapshot {
 	bool     pipeline_cache_mru_enabled     = true;
 	bool     pipeline_key_cache_enabled     = true;
 	bool     draw_state_dirty_check_enabled = true;
+	bool     ensure_pipeline_cache_enabled  = true;
+	bool     descriptor_cache_enabled       = true;
 
 	// Capture lifecycle metadata
 	std::string capture_id;
@@ -218,6 +226,11 @@ struct ProfileSnapshot {
 	uint32_t    capture_target_duration_sec = 0;
 	uint32_t    capture_delay_sec           = 0;
 	std::string git_commit;
+	std::string git_revision;
+	std::string git_hash;
+	std::string build_timestamp;
+	std::string compiler;
+	std::string binary_path;
 
 	// Phase-separated metrics
 	PhaseMetrics phase_loading {};
@@ -315,6 +328,9 @@ struct ProfileSnapshot {
 
 	// Stage 8 additions: fine-grained pipeline stage timing metrics
 	std::array<PipelineStageMetrics, static_cast<size_t>(PipelineStage::Count)> pipeline_stages {};
+	double pm4_dispatch_inclusive_ms           = 0.0;
+	double pm4_dispatch_exclusive_ms           = 0.0;
+	double pm4_dispatch_exclusive_ms_per_frame = 0.0;
 
 	// Stage 8 additions: CPU and GPU execution & synchronization separation
 	double   gpu_thread_wall_clock_ms       = 0.0;
@@ -362,6 +378,7 @@ void                         SetExecutionPhase(ExecutionPhase phase) noexcept;
 [[nodiscard]] ExecutionPhase GetExecutionPhase() noexcept;
 [[nodiscard]] const char*    GetExecutionPhaseName(ExecutionPhase phase) noexcept;
 void MarkPhase(ExecutionPhase phase, const char* description = nullptr) noexcept;
+void AdvancePhase() noexcept;
 
 /// Records a write fault on [fault_vaddr] caused by instruction at [rip], taking [duration_ns].
 /// Zero allocation, lock-free, safe to call from exception handlers.

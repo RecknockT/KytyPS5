@@ -923,6 +923,108 @@ TEST_F(AuditProfilerTest, ExportsStage8JsonAndCsvComplete) {
 	std::filesystem::remove("test_stage8.csv");
 }
 
+TEST_F(AuditProfilerTest, ExecutionPhaseLandingTransitionsAndAdvancePhase) {
+	SetExecutionPhase(ExecutionPhase::Gameplay);
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::Gameplay);
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::WorldEntryPrep);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::WorldEntryPrep), "WorldEntryPrep");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::DescentStart);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::DescentStart), "DescentStart");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::ActiveDescent);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::ActiveDescent), "ActiveDescent");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::GroundApproach);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::GroundApproach), "GroundApproach");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::Touchdown);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::Touchdown), "Touchdown");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::EarlyGameplay);
+	EXPECT_STREQ(GetExecutionPhaseName(ExecutionPhase::EarlyGameplay), "EarlyGameplay");
+
+	AdvancePhase();
+	EXPECT_EQ(GetExecutionPhase(), ExecutionPhase::Gameplay);
+}
+
+TEST_F(AuditProfilerTest, Stage8_1CpuGpuSeparationAndExclusiveDispatch) {
+	StartCapture("UnitTestStage8_1Exclusive");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	// Record Pm4Dispatch = 50ms (inclusive)
+	RecordPipelineStage(PipelineStage::Pm4Dispatch, 50'000'000);
+	// Inner draw stages = 15ms + 10ms + 5ms + 5ms + 5ms = 40ms
+	RecordPipelineStage(PipelineStage::RenderStatePrep, 15'000'000);
+	RecordPipelineStage(PipelineStage::DescriptorPrep, 10'000'000);
+	RecordPipelineStage(PipelineStage::BarriersTransitions, 5'000'000);
+	RecordPipelineStage(PipelineStage::BufferPrep, 5'000'000);
+	RecordPipelineStage(PipelineStage::CommandRecording, 5'000'000);
+
+	RecordFrame(50.0);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_DOUBLE_EQ(snap.pm4_dispatch_inclusive_ms, 50.0);
+	EXPECT_DOUBLE_EQ(snap.pm4_dispatch_exclusive_ms, 10.0);
+	EXPECT_DOUBLE_EQ(snap.pm4_dispatch_exclusive_ms_per_frame, 10.0);
+	EXPECT_GT(snap.gpu_thread_wall_clock_ms, 0.0);
+	EXPECT_FALSE(snap.git_commit.empty());
+
+	StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, Stage8_1FrameTimeSeriesExport) {
+	StartCapture("UnitTestStage8_1TimeSeries");
+	EXPECT_TRUE(IsCaptureRunning());
+
+	SetExecutionPhase(ExecutionPhase::ActiveDescent);
+	RecordPipelineStage(PipelineStage::Pm4Dispatch, 20'000'000);
+	RecordPipelineStage(PipelineStage::RenderStatePrep, 8'000'000);
+	RecordFrame(25.0);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_TRUE(ExportAll("test_timeseries.json", "test_timeseries.csv", &snap));
+
+	// Verify frames CSV was created and contains the expected header and row
+	{
+		std::ifstream ff("test_timeseries_frames.csv");
+		ASSERT_TRUE(ff.is_open());
+		std::string header;
+		ASSERT_TRUE(std::getline(ff, header));
+		EXPECT_NE(header.find("frame_index,frame_ms,fps,phase,draws"), std::string::npos);
+		EXPECT_NE(header.find("pm4_dispatch_us"), std::string::npos);
+
+		std::string row;
+		ASSERT_TRUE(std::getline(ff, row));
+		EXPECT_NE(row.find("ActiveDescent"), std::string::npos);
+	}
+
+	StopCapture(CaptureState::Completed);
+
+	std::filesystem::remove("test_timeseries.json");
+	std::filesystem::remove("test_timeseries.csv");
+	std::filesystem::remove("test_timeseries_frames.csv");
+}
+
+TEST_F(AuditProfilerTest, Stage8_1OptimizationFlagsConfig) {
+	EXPECT_TRUE(Config::EnsurePipelineCacheEnabled());
+	EXPECT_TRUE(Config::DescriptorCacheEnabled());
+
+	StartCapture("UnitTestStage8_1Config");
+	const auto snap = TakeSnapshot();
+	EXPECT_TRUE(snap.ensure_pipeline_cache_enabled);
+	EXPECT_TRUE(snap.descriptor_cache_enabled);
+
+	StopCapture(CaptureState::Completed);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {

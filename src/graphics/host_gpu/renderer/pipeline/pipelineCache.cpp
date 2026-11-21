@@ -1417,6 +1417,50 @@ void PipelineCache::UpdateKeyInputCache(const CommandBuffer& command, const Draw
 	kic.valid              = true;
 }
 
+bool PipelineCache::CheckFastKeyInputMatch(const CommandBuffer&   command,
+                                           const DrawRenderState& state, const DrawTargets& targets,
+                                           const std::array<const ShaderModule*, 4>& stages) const {
+	if (!Config::PipelineKeyCacheEnabled() || m_key_input_cache == nullptr ||
+	    !m_key_input_cache->valid || m_last_graphics_pipeline == nullptr) {
+		return false;
+	}
+	const auto vertex_info = state.VertexStages();
+	if (vertex_info.empty()) {
+		return false;
+	}
+	const auto& vs_input_info = vertex_info.front();
+	const bool  ps_active     = state.ps_active;
+	const auto& kic           = *m_key_input_cache;
+
+	if (kic.stages != stages || kic.color_count != targets.color_count ||
+	    kic.mrt_mask != state.mrt_mask || kic.topology != state.topology ||
+	    kic.primitive_restart_enable != state.primitive_restart_enable ||
+	    kic.ps_active != ps_active || kic.depth_image_id != targets.depth.image_id ||
+	    kic.prim_type != static_cast<uint32_t>(command.GetUserConfig().GetPrimType()) ||
+	    kic.buffers_num != vs_input_info.buffers_num ||
+	    kic.resources_num != vs_input_info.resources_num) {
+		return false;
+	}
+	for (uint32_t i = 0; i < targets.color_count; ++i) {
+		if (targets.colors[i].image_id != kic.color_image_ids[i]) {
+			return false;
+		}
+	}
+	const auto& ctx = command.GetRegisters();
+	if (kic.rt_mask != ctx.GetRenderTargetMask() || kic.mode_control != ctx.GetModeControl() ||
+	    kic.clip_control != ctx.GetClipControl() || kic.aa_config != ctx.GetAaConfig() ||
+	    kic.alpha_to_mask != (ps_active && ctx.GetShaderRegisters().AlphaToMask())) {
+		return false;
+	}
+	for (uint32_t i = 0; i < targets.color_count; ++i) {
+		const auto slot = targets.colors[i].target_slot;
+		if (kic.blend_control[slot] != ctx.GetBlendControl(slot)) {
+			return false;
+		}
+	}
+	return kic.vertex_fingerprint == ComputeVertexFingerprint(vs_input_info);
+}
+
 PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
                                                             const DrawRenderState& state,
                                                             const DrawTargets&     targets) {
@@ -1439,47 +1483,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		stages[3] = ps_input_info.stage.module;
 	}
 
-	if (Config::PipelineKeyCacheEnabled() && m_key_input_cache != nullptr &&
-	    m_key_input_cache->valid && m_last_graphics_pipeline != nullptr) {
-		const auto& kic = *m_key_input_cache;
-		if (kic.stages == stages && kic.color_count == targets.color_count &&
-		    kic.mrt_mask == state.mrt_mask && kic.topology == state.topology &&
-		    kic.primitive_restart_enable == state.primitive_restart_enable &&
-		    kic.ps_active == ps_active && kic.depth_image_id == targets.depth.image_id &&
-		    kic.prim_type == static_cast<uint32_t>(command.GetUserConfig().GetPrimType()) &&
-		    kic.buffers_num == vs_input_info.buffers_num &&
-		    kic.resources_num == vs_input_info.resources_num) {
-			bool targets_match = true;
-			for (uint32_t i = 0; i < targets.color_count; ++i) {
-				if (targets.colors[i].image_id != kic.color_image_ids[i]) {
-					targets_match = false;
-					break;
-				}
-			}
-			if (targets_match) {
-				const auto& ctx = command.GetRegisters();
-				if (kic.rt_mask == ctx.GetRenderTargetMask() &&
-				    kic.mode_control == ctx.GetModeControl() &&
-				    kic.clip_control == ctx.GetClipControl() &&
-				    kic.aa_config == ctx.GetAaConfig() &&
-				    kic.alpha_to_mask == (ps_active && ctx.GetShaderRegisters().AlphaToMask())) {
-					bool blend_match = true;
-					for (uint32_t i = 0; i < targets.color_count; ++i) {
-						const auto slot = targets.colors[i].target_slot;
-						if (kic.blend_control[slot] != ctx.GetBlendControl(slot)) {
-							blend_match = false;
-							break;
-						}
-					}
-					if (blend_match &&
-					    kic.vertex_fingerprint == ComputeVertexFingerprint(vs_input_info)) {
-						Common::DebugCounters::Add(
-						    Common::DebugCounters::Counter::PipelineCacheHits);
-						return *m_last_graphics_pipeline;
-					}
-				}
-			}
-		}
+	if (CheckFastKeyInputMatch(command, state, targets, stages)) {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::PipelineCacheHits);
+		return *m_last_graphics_pipeline;
 	}
 
 	const auto key = MakeGraphicsPipelineKey(command, state, targets, stages);

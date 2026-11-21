@@ -108,6 +108,8 @@ struct ConfigOptions {
 	bool     pipeline_cache_mru_enabled     = true;
 	bool     pipeline_key_cache_enabled     = true;
 	bool     draw_state_dirty_check_enabled = true;
+	bool     ensure_pipeline_cache_enabled  = true;
+	bool     descriptor_cache_enabled       = true;
 	uint32_t flush_draws                    = 0; // 0 is off
 	bool     tessellation_enabled           = false;
 	bool     occlusion_queries_enabled      = false;
@@ -236,6 +238,8 @@ bool               RedundantBindElisionEnabled();
 bool               PipelineCacheMruEnabled();
 bool               PipelineKeyCacheEnabled();
 bool               DrawStateDirtyCheckEnabled();
+bool               EnsurePipelineCacheEnabled();
+bool               DescriptorCacheEnabled();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();

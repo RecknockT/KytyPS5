@@ -290,6 +290,10 @@ private:
 	                         const DrawTargets&                        targets,
 	                         const std::array<const ShaderModule*, 4>& stages,
 	                         const ShaderVertexInputInfo&              vs_input_info);
+	[[nodiscard]] bool
+	CheckFastKeyInputMatch(const CommandBuffer& command, const DrawRenderState& state,
+	                       const DrawTargets&                        targets,
+	                       const std::array<const ShaderModule*, 4>& stages) const;
 	std::unordered_map<uint64_t, Pipeline>                    m_compute_pipelines;
 	std::unordered_map<uint64_t, ShaderTessellationInputInfo> m_tess_layouts;
 	// Records everything first created if a shader store is open, and writes the driver cache.

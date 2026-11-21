@@ -39,7 +39,7 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 
 ---
 
-## 3. Estado de Optimizaciones y Flags (Etapas 5 a 8)
+## 3. Estado de Optimizaciones y Flags (Etapas 5 a 8.1)
 
 | Optimización | Flag de Activación | Flag de Desactivación | Estado por Defecto |
 |---|---|---|:---:|
@@ -49,6 +49,8 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 | **Pipeline Cache MRU** (Etapa 7) | `--pipeline-cache-mru` | `--no-pipeline-cache-mru` | **Activado** |
 | **Pipeline Key Cache** (Etapa 8) | `--pipeline-key-cache` | `--no-pipeline-key-cache` | **Activado** |
 | **Draw State Dirty Check** (Etapa 8) | `--draw-state-dirty-check` | `--no-draw-state-dirty-check` | **Activado** |
+| **Ensure Pipeline Cache** (Etapa 8.1) | `--ensure-pipeline-cache` | `--no-ensure-pipeline-cache` | **Activado** |
+| **Descriptor Cache** (Etapa 8.1) | `--descriptor-cache` | `--no-descriptor-cache` | **Activado** |
 | **Extended Stream Buffer** (256 MiB) | `--extended-stream-buffer` | (omitir) | **Desactivado** (64 MiB estándar) |
 
 Para documentación detallada de cada etapa, consulte la carpeta [`docs/performance/`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/).
@@ -57,11 +59,11 @@ Para documentación detallada de cada etapa, consulte la carpeta [`docs/performa
 
 ## 4. Ejecución de Benchmarks en Astro Bot
 
-Para pruebas reproducibles A/B en el juego de referencia (Astro Bot, Title ID `PPSA21567`), utilice el script interactivo en la raíz del repositorio:
-```cmd
-stage8_camera_ab.cmd
-```
-Consulte los detalles del protocolo en [`docs/performance/ETAPA8_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_GUIA_COLABORADOR.md) y el análisis de telemetría en [`docs/performance/ETAPA8_ESTADO_ACTUAL.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_ESTADO_ACTUAL.md).
+Para pruebas reproducibles A/B en el juego de referencia (Astro Bot, Title ID `PPSA21567`), utilice los scripts interactivos en la raíz del repositorio:
+- `stage8_1_camera_and_landing.cmd`: Benchmarks de vista amplia y transición de aterrizaje continua con fases F10 (Etapa 8.1).
+- `stage8_camera_ab.cmd`: Benchmarks de cámara de Etapa 8.
+
+Consulte los detalles del protocolo en [`docs/performance/ETAPA8_1_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_1_GUIA_COLABORADOR.md) y [`docs/performance/ETAPA8_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_GUIA_COLABORADOR.md).
 
 ---
 

@@ -504,6 +504,11 @@ void WindowContext::ProcessEvent(double time_s) {
 					Common::AuditProfiler::ToggleCapture();
 				}
 				return;
+			case SDLK_F10:
+				if (pressed) {
+					Common::AuditProfiler::AdvancePhase();
+				}
+				return;
 #if defined(__APPLE__)
 			case SDLK_P:
 				if ((event->key.mod & SDL_KMOD_GUI) == 0) {

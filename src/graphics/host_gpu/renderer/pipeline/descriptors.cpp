@@ -662,15 +662,43 @@ void RenderExecutor::ResetBindings() {
 		m_context.GetTextureCache().m_slot_images[id].binding = {};
 	}
 	m_bound_images.clear();
+	for (auto& vb: m_graphics_bindings.vertex) {
+		vb.runtime          = nullptr;
+		vb.cached_module    = nullptr;
+		vb.cached_resources = nullptr;
+	}
+	m_graphics_bindings.pixel.runtime          = nullptr;
+	m_graphics_bindings.pixel.cached_module    = nullptr;
+	m_graphics_bindings.pixel.cached_resources = nullptr;
+	m_compute_bindings.runtime                 = nullptr;
+	m_compute_bindings.cached_module           = nullptr;
+	m_compute_bindings.cached_resources        = nullptr;
 }
 
 void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
                                      PreparedBindings&         prepared) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(!runtime);
-	const auto& program         = runtime.module->info;
-	const auto& snapshot        = *runtime.resources;
+	const auto& program  = runtime.module->info;
+	const auto& snapshot = *runtime.resources;
+
+	if (Config::DescriptorCacheEnabled() && prepared.cached_module == runtime.module &&
+	    prepared.cached_resources == runtime.resources &&
+	    prepared.images.size() == program.info.images.size() &&
+	    prepared.samplers.size() == program.info.samplers.size()) {
+		prepared.runtime = &runtime;
+		prepared.shader_data.clear();
+		prepared.shader_data.reserve(program.bindings.ShaderDataDwords());
+		for (const auto reg: program.info.user_data_registers) {
+			prepared.shader_data.push_back(snapshot.user_data[reg - program.user_data_base]);
+		}
+		prepared.shader_data.resize(program.bindings.ShaderDataDwords());
+		return;
+	}
+
 	prepared.runtime            = &runtime;
+	prepared.cached_module      = runtime.module;
+	prepared.cached_resources   = runtime.resources;
 	prepared.gds                = {nullptr, 0, VK_WHOLE_SIZE};
 	prepared.flattened_srt      = {};
 	prepared.shader_data_buffer = {};

@@ -123,6 +123,13 @@ static void PrintUsage() {
 	::printf("  --draw-state-dirty-check             Elide redundant draw state and render target "
 	         "preparations (default: on).\n");
 	::printf("  --no-draw-state-dirty-check          Disable draw state dirty checking.\n");
+	::printf("  --ensure-pipeline-cache              Fast-path MRU pipeline key check in "
+	         "EnsureGraphicsPipeline (default: on).\n");
+	::printf(
+	    "  --no-ensure-pipeline-cache           Disable EnsureGraphicsPipeline fast-path cache.\n");
+	::printf("  --descriptor-cache                   Fast-path descriptor binding caching across "
+	         "draws (default: on).\n");
+	::printf("  --no-descriptor-cache                Disable descriptor binding caching.\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -334,6 +341,10 @@ static constexpr Flag FLAGS[] = {
     {"--no-pipeline-key-cache", &ConfigOptions::pipeline_key_cache_enabled, false},
     {"--draw-state-dirty-check", &ConfigOptions::draw_state_dirty_check_enabled, true},
     {"--no-draw-state-dirty-check", &ConfigOptions::draw_state_dirty_check_enabled, false},
+    {"--ensure-pipeline-cache", &ConfigOptions::ensure_pipeline_cache_enabled, true},
+    {"--no-ensure-pipeline-cache", &ConfigOptions::ensure_pipeline_cache_enabled, false},
+    {"--descriptor-cache", &ConfigOptions::descriptor_cache_enabled, true},
+    {"--no-descriptor-cache", &ConfigOptions::descriptor_cache_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif

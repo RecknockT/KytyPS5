@@ -207,9 +207,14 @@ uint32_t GetCurrentTid() noexcept {
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-uint64_t GetCurrentThreadCpuTimeNs() noexcept {
+static HANDLE g_gpu_thread_handle = nullptr;
+
+uint64_t GetThreadCpuTimeNsFromHandle(HANDLE handle) noexcept {
+	if (handle == nullptr) {
+		return 0;
+	}
 	FILETIME creation {}, exit {}, kernel {}, user {};
-	if (GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user)) {
+	if (::GetThreadTimes(handle, &creation, &exit, &kernel, &user)) {
 		ULARGE_INTEGER k, u;
 		k.LowPart  = kernel.dwLowDateTime;
 		k.HighPart = kernel.dwHighDateTime;
@@ -219,11 +224,63 @@ uint64_t GetCurrentThreadCpuTimeNs() noexcept {
 	}
 	return 0;
 }
+
+uint64_t GetCurrentThreadCpuTimeNs() noexcept {
+	return GetThreadCpuTimeNsFromHandle(::GetCurrentThread());
+}
 #else
 uint64_t GetCurrentThreadCpuTimeNs() noexcept {
 	return 0;
 }
 #endif
+
+uint64_t SampleGpuThreadCpuTimeNs() noexcept {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (g_gpu_thread_handle != nullptr) {
+		const auto ns = GetThreadCpuTimeNsFromHandle(g_gpu_thread_handle);
+		if (ns > 0) {
+			return ns;
+		}
+	}
+#endif
+	return GetCurrentThreadCpuTimeNs();
+}
+
+struct FrameTimeSeriesRecord {
+	uint32_t frame_index            = 0;
+	float    frame_ms               = 0.0f;
+	uint8_t  phase                  = 0;
+	uint32_t draws                  = 0;
+	uint32_t dispatches             = 0;
+	uint32_t submits                = 0;
+	uint32_t pm4_decode_us          = 0;
+	uint32_t pm4_dispatch_us        = 0;
+	uint32_t render_state_prep_us   = 0;
+	uint32_t descriptor_prep_us     = 0;
+	uint32_t pipeline_lookup_us     = 0;
+	uint32_t pipeline_key_build_us  = 0;
+	uint32_t buffer_prep_us         = 0;
+	uint32_t command_recording_us   = 0;
+	uint32_t barriers_us            = 0;
+	uint32_t sync_waits_us          = 0;
+	uint32_t write_faults           = 0;
+	uint32_t stream_buffer_alloc_kb = 0;
+	uint32_t stream_buffer_wait_us  = 0;
+};
+
+std::vector<FrameTimeSeriesRecord> g_frame_timeseries;
+std::mutex                         g_frame_timeseries_mutex;
+
+struct LastFrameCounters {
+	uint64_t draws                 = 0;
+	uint64_t dispatches            = 0;
+	uint64_t submits               = 0;
+	uint64_t write_faults          = 0;
+	uint64_t stream_buffer_bytes   = 0;
+	uint64_t stream_buffer_wait_ns = 0;
+	uint64_t stage_nanos[static_cast<size_t>(PipelineStage::Count)] {};
+};
+LastFrameCounters g_last_frame_counters {};
 
 void UpdateMax(std::atomic<uint64_t>& target, uint64_t value) noexcept {
 	auto current = target.load(std::memory_order_relaxed);
@@ -393,11 +450,19 @@ void Reset() {
 	// Stage 8 additions: Reset Trace event cursor
 	g_trace_event_cursor.store(0, std::memory_order_relaxed);
 
+	{
+		std::lock_guard<std::mutex> lock(g_frame_timeseries_mutex);
+		g_frame_timeseries.clear();
+	}
+	g_last_frame_counters = {};
+
 	g_has_completed_snapshot.store(false, std::memory_order_relaxed);
 }
 
 void StartCapture(const char* trigger_reason) {
 	std::lock_guard lock(g_capture_mutex);
+	SetEnabled(true);
+	Common::DebugCounters::SetEnabled(true);
 	Reset();
 
 	g_current_phase.store(ExecutionPhase::Gameplay, std::memory_order_relaxed);
@@ -450,6 +515,31 @@ void StartCapture(const char* trigger_reason) {
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
 	g_capture_end_time   = Clock::time_point {};
+
+	const auto wall_now_ns = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
+	const auto cpu_now_ns = SampleGpuThreadCpuTimeNs();
+	g_gpu_thread_wall_start_ns.store(wall_now_ns, std::memory_order_relaxed);
+	g_gpu_thread_wall_end_ns.store(wall_now_ns, std::memory_order_relaxed);
+	g_gpu_thread_cpu_start_ns.store(cpu_now_ns, std::memory_order_relaxed);
+	g_gpu_thread_cpu_end_ns.store(cpu_now_ns, std::memory_order_relaxed);
+
+	// Initialize last frame counters for timeseries delta tracking
+	g_last_frame_counters.draws      = Counters::Get(Counters::Counter::Draws);
+	g_last_frame_counters.dispatches = Counters::Get(Counters::Counter::Dispatches);
+	uint64_t init_submits            = 0;
+	for (size_t i = 0; i < static_cast<size_t>(SubmitReason::Count); ++i) {
+		init_submits += g_submit_counts[i].load(std::memory_order_relaxed);
+	}
+	g_last_frame_counters.submits      = init_submits;
+	g_last_frame_counters.write_faults = g_total_faults.load(std::memory_order_relaxed);
+	g_last_frame_counters.stream_buffer_bytes =
+	    g_stream_buffer_bytes.load(std::memory_order_relaxed);
+	g_last_frame_counters.stream_buffer_wait_ns =
+	    g_stream_buffer_wait_total_ns.load(std::memory_order_relaxed);
+	for (size_t s = 0; s < static_cast<size_t>(PipelineStage::Count); ++s) {
+		g_last_frame_counters.stage_nanos[s] = g_stage_nanos[s].load(std::memory_order_relaxed);
+	}
 
 	const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 	                          std::chrono::system_clock::now().time_since_epoch())
@@ -533,8 +623,31 @@ const char* GetExecutionPhaseName(ExecutionPhase phase) noexcept {
 		case ExecutionPhase::Warmup: return "Warmup";
 		case ExecutionPhase::Gameplay: return "Gameplay";
 		case ExecutionPhase::Transition: return "Transition";
+		case ExecutionPhase::WorldEntryPrep: return "WorldEntryPrep";
+		case ExecutionPhase::DescentStart: return "DescentStart";
+		case ExecutionPhase::ActiveDescent: return "ActiveDescent";
+		case ExecutionPhase::GroundApproach: return "GroundApproach";
+		case ExecutionPhase::Touchdown: return "Touchdown";
+		case ExecutionPhase::EarlyGameplay: return "EarlyGameplay";
 		default: return "Unknown";
 	}
+}
+
+void AdvancePhase() noexcept {
+	const auto     cur  = g_current_phase.load(std::memory_order_relaxed);
+	ExecutionPhase next = ExecutionPhase::WorldEntryPrep;
+	switch (cur) {
+		case ExecutionPhase::WorldEntryPrep: next = ExecutionPhase::DescentStart; break;
+		case ExecutionPhase::DescentStart: next = ExecutionPhase::ActiveDescent; break;
+		case ExecutionPhase::ActiveDescent: next = ExecutionPhase::GroundApproach; break;
+		case ExecutionPhase::GroundApproach: next = ExecutionPhase::Touchdown; break;
+		case ExecutionPhase::Touchdown: next = ExecutionPhase::EarlyGameplay; break;
+		case ExecutionPhase::EarlyGameplay: next = ExecutionPhase::Gameplay; break;
+		default: next = ExecutionPhase::WorldEntryPrep; break;
+	}
+	SetExecutionPhase(next);
+	Log::WriteToConsoleAndLog(fmt::format("[AuditProfiler] Execution phase advanced to: {} (F10)\n",
+	                                      GetExecutionPhaseName(next)));
 }
 
 void MarkPhase(ExecutionPhase phase, const char* description) noexcept {
@@ -782,6 +895,84 @@ void RecordFrame(double frame_ms) noexcept {
 		g_captured_frames[index] = frame_ms;
 	}
 
+	if (g_capture_state.load(std::memory_order_relaxed) == CaptureState::Running) {
+		FrameTimeSeriesRecord rec {};
+		rec.frame_index = static_cast<uint32_t>(index);
+		rec.frame_ms    = static_cast<float>(frame_ms);
+		rec.phase       = static_cast<uint8_t>(g_current_phase.load(std::memory_order_relaxed));
+
+		namespace Counters            = Common::DebugCounters;
+		const uint64_t cur_draws      = Counters::Get(Counters::Counter::Draws);
+		const uint64_t cur_dispatches = Counters::Get(Counters::Counter::Dispatches);
+		uint64_t       cur_submits    = 0;
+		for (size_t i = 0; i < static_cast<size_t>(SubmitReason::Count); ++i) {
+			cur_submits += g_submit_counts[i].load(std::memory_order_relaxed);
+		}
+		const uint64_t cur_faults   = g_total_faults.load(std::memory_order_relaxed);
+		const uint64_t cur_sb_bytes = g_stream_buffer_bytes.load(std::memory_order_relaxed);
+		const uint64_t cur_sb_wait  = g_stream_buffer_wait_total_ns.load(std::memory_order_relaxed);
+
+		rec.draws = static_cast<uint32_t>(cur_draws >= g_last_frame_counters.draws
+		                                      ? (cur_draws - g_last_frame_counters.draws)
+		                                      : 0);
+		rec.dispatches =
+		    static_cast<uint32_t>(cur_dispatches >= g_last_frame_counters.dispatches
+		                              ? (cur_dispatches - g_last_frame_counters.dispatches)
+		                              : 0);
+		rec.submits = static_cast<uint32_t>(cur_submits >= g_last_frame_counters.submits
+		                                        ? (cur_submits - g_last_frame_counters.submits)
+		                                        : 0);
+		rec.write_faults =
+		    static_cast<uint32_t>(cur_faults >= g_last_frame_counters.write_faults
+		                              ? (cur_faults - g_last_frame_counters.write_faults)
+		                              : 0);
+		rec.stream_buffer_alloc_kb =
+		    static_cast<uint32_t>((cur_sb_bytes >= g_last_frame_counters.stream_buffer_bytes
+		                               ? (cur_sb_bytes - g_last_frame_counters.stream_buffer_bytes)
+		                               : 0) /
+		                          1024);
+		rec.stream_buffer_wait_us =
+		    static_cast<uint32_t>((cur_sb_wait >= g_last_frame_counters.stream_buffer_wait_ns
+		                               ? (cur_sb_wait - g_last_frame_counters.stream_buffer_wait_ns)
+		                               : 0) /
+		                          1000);
+
+		auto get_stage_us = [&](PipelineStage stage) -> uint32_t {
+			const auto     s     = static_cast<size_t>(stage);
+			const uint64_t cur   = g_stage_nanos[s].load(std::memory_order_relaxed);
+			const uint64_t delta = (cur >= g_last_frame_counters.stage_nanos[s])
+			                           ? (cur - g_last_frame_counters.stage_nanos[s])
+			                           : 0;
+			g_last_frame_counters.stage_nanos[s] = cur;
+			return static_cast<uint32_t>(delta / 1000);
+		};
+
+		rec.pm4_decode_us         = get_stage_us(PipelineStage::Pm4Decode);
+		rec.pm4_dispatch_us       = get_stage_us(PipelineStage::Pm4Dispatch);
+		rec.render_state_prep_us  = get_stage_us(PipelineStage::RenderStatePrep);
+		rec.descriptor_prep_us    = get_stage_us(PipelineStage::DescriptorPrep);
+		rec.pipeline_lookup_us    = get_stage_us(PipelineStage::PipelineLookup);
+		rec.pipeline_key_build_us = get_stage_us(PipelineStage::PipelineKeyBuild);
+		rec.buffer_prep_us        = get_stage_us(PipelineStage::BufferPrep);
+		rec.command_recording_us  = get_stage_us(PipelineStage::CommandRecording);
+		rec.barriers_us           = get_stage_us(PipelineStage::BarriersTransitions);
+		rec.sync_waits_us         = get_stage_us(PipelineStage::SyncWaits);
+
+		g_last_frame_counters.draws                 = cur_draws;
+		g_last_frame_counters.dispatches            = cur_dispatches;
+		g_last_frame_counters.submits               = cur_submits;
+		g_last_frame_counters.write_faults          = cur_faults;
+		g_last_frame_counters.stream_buffer_bytes   = cur_sb_bytes;
+		g_last_frame_counters.stream_buffer_wait_ns = cur_sb_wait;
+
+		{
+			std::lock_guard<std::mutex> lock(g_frame_timeseries_mutex);
+			if (g_frame_timeseries.size() < MAX_CAPTURED_FRAMES) {
+				g_frame_timeseries.push_back(rec);
+			}
+		}
+	}
+
 	// Track hitches and stuttering (zero allocations, lock-free atomics)
 	if (frame_ms >= 50.0) {
 		g_hitches_50ms.fetch_add(1, std::memory_order_relaxed);
@@ -888,14 +1079,20 @@ const char* GetPipelineStageName(PipelineStage stage) noexcept {
 
 void RecordTraceEvent(TraceEventType type, uint64_t duration_ns, uint64_t tick,
                       uint64_t data) noexcept {
-	if (!IsEnabled()) {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	if (duration_ns < 1'000'000 && type != TraceEventType::StreamBufferWait &&
+	    type != TraceEventType::BufferReadback && type != TraceEventType::PriorityOperation &&
+	    type != TraceEventType::PipelineCompile && type != TraceEventType::WriteFault &&
+	    type != TraceEventType::Reprotect) {
 		return;
 	}
 	const auto idx =
 	    g_trace_event_cursor.fetch_add(1, std::memory_order_relaxed) % TRACE_EVENT_RING_CAPACITY;
 	const auto now          = Clock::now();
 	const auto timestamp_us = static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+	    std::chrono::duration_cast<std::chrono::microseconds>(now - g_capture_start_time).count());
 	g_trace_event_ring[idx].timestamp_us = timestamp_us;
 	g_trace_event_ring[idx].duration_ns  = duration_ns;
 	g_trace_event_ring[idx].tick         = tick;
@@ -944,10 +1141,18 @@ void RecordStreamBufferWaitEvent(uint64_t wait_ns, uint64_t target_tick) noexcep
 }
 
 void NoteGpuThreadStart() noexcept {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (g_gpu_thread_handle != nullptr) {
+		::CloseHandle(g_gpu_thread_handle);
+		g_gpu_thread_handle = nullptr;
+	}
+	::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentThread(), ::GetCurrentProcess(),
+	                  &g_gpu_thread_handle, 0, FALSE, DUPLICATE_SAME_ACCESS);
+#endif
 	const auto wall_ns = static_cast<uint64_t>(
 	    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
 	        .count());
-	const auto cpu_ns = GetCurrentThreadCpuTimeNs();
+	const auto cpu_ns = SampleGpuThreadCpuTimeNs();
 	g_gpu_thread_wall_start_ns.store(wall_ns, std::memory_order_relaxed);
 	g_gpu_thread_cpu_start_ns.store(cpu_ns, std::memory_order_relaxed);
 }
@@ -956,7 +1161,7 @@ void NoteGpuThreadFrame() noexcept {
 	const auto wall_ns = static_cast<uint64_t>(
 	    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
 	        .count());
-	const auto cpu_ns = GetCurrentThreadCpuTimeNs();
+	const auto cpu_ns = SampleGpuThreadCpuTimeNs();
 	g_gpu_thread_wall_end_ns.store(wall_ns, std::memory_order_relaxed);
 	g_gpu_thread_cpu_end_ns.store(cpu_ns, std::memory_order_relaxed);
 }
@@ -985,7 +1190,28 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.pipeline_cache_mru_enabled     = Config::PipelineCacheMruEnabled();
 	snapshot.pipeline_key_cache_enabled     = Config::PipelineKeyCacheEnabled();
 	snapshot.draw_state_dirty_check_enabled = Config::DrawStateDirtyCheckEnabled();
+	snapshot.ensure_pipeline_cache_enabled  = Config::EnsurePipelineCacheEnabled();
+	snapshot.descriptor_cache_enabled       = Config::DescriptorCacheEnabled();
 	snapshot.git_commit                     = KYTY_GIT_VERSION;
+	snapshot.git_revision                   = KYTY_GIT_REVISION;
+	snapshot.git_hash                       = KYTY_GIT_HASH;
+	snapshot.build_timestamp                = __DATE__ " " __TIME__;
+#if defined(__clang__)
+	snapshot.compiler =
+	    fmt::format("Clang {}.{}.{}", __clang_major__, __clang_minor__, __clang_patchlevel__);
+#elif defined(_MSC_VER)
+	snapshot.compiler = fmt::format("MSVC {}", _MSC_VER);
+#else
+	snapshot.compiler = "Unknown";
+#endif
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	wchar_t mod_path[MAX_PATH] = {};
+	::GetModuleFileNameW(nullptr, mod_path, MAX_PATH);
+	std::wstring ws(mod_path);
+	snapshot.binary_path = std::string(ws.begin(), ws.end());
+#else
+	snapshot.binary_path = "Unknown";
+#endif
 
 	const auto state = g_capture_state.load(std::memory_order_relaxed);
 	switch (state) {
@@ -1366,10 +1592,24 @@ ProfileSnapshot TakeSnapshot() {
 		snapshot.gpu_thread_wall_clock_ms = static_cast<double>(wall_end - wall_start) / 1e6;
 	} else if (snapshot.capture_real_duration_ms > 0) {
 		snapshot.gpu_thread_wall_clock_ms = static_cast<double>(snapshot.capture_real_duration_ms);
+	} else {
+		const auto cap_now =
+		    (state == CaptureState::Completed || state == CaptureState::Interrupted)
+		        ? g_capture_end_time
+		        : Clock::now();
+		if (g_capture_start_time.time_since_epoch().count() > 0 &&
+		    cap_now >= g_capture_start_time) {
+			const auto nanos =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(cap_now - g_capture_start_time)
+			        .count();
+			snapshot.gpu_thread_wall_clock_ms = std::max(0.001, static_cast<double>(nanos) / 1e6);
+		}
 	}
 
-	if (cpu_end > cpu_start) {
-		snapshot.gpu_thread_cpu_time_ms = static_cast<double>(cpu_end - cpu_start) / 1e6;
+	const auto current_gpu_cpu = SampleGpuThreadCpuTimeNs();
+	const auto final_cpu_end   = (current_gpu_cpu > cpu_start) ? current_gpu_cpu : cpu_end;
+	if (final_cpu_end > cpu_start) {
+		snapshot.gpu_thread_cpu_time_ms = static_cast<double>(final_cpu_end - cpu_start) / 1e6;
 	} else {
 		snapshot.gpu_thread_cpu_time_ms = snapshot.gpu_thread_busy_ms;
 	}
@@ -1388,6 +1628,24 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.gpu_execution_time_ms =
 	    static_cast<double>(g_gpu_execution_total_ns.load(std::memory_order_relaxed)) / 1e6;
 	snapshot.gpu_queries_recorded = g_gpu_execution_count.load(std::memory_order_relaxed);
+
+	// Stage 8.1: PM4 Dispatch inclusive vs. exclusive breakdown
+	snapshot.pm4_dispatch_inclusive_ms =
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Dispatch)].total_ms;
+	const double inner_stages_ms =
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::RenderStatePrep)].total_ms +
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::DescriptorPrep)].total_ms +
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::BarriersTransitions)].total_ms +
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::BufferPrep)].total_ms +
+	    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::CommandRecording)].total_ms;
+	snapshot.pm4_dispatch_exclusive_ms =
+	    (snapshot.pm4_dispatch_inclusive_ms > inner_stages_ms)
+	        ? (snapshot.pm4_dispatch_inclusive_ms - inner_stages_ms)
+	        : 0.0;
+	if (snapshot.total_frames > 0) {
+		snapshot.pm4_dispatch_exclusive_ms_per_frame =
+		    snapshot.pm4_dispatch_exclusive_ms / static_cast<double>(snapshot.total_frames);
+	}
 
 	// Stage 8 additions: StreamBuffer audit
 	snapshot.stream_buffer_stats.total_allocs =
@@ -1423,7 +1681,7 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.stream_buffer_stats.wait_max_ms =
 	    static_cast<double>(snapshot.stream_buffer_stats.wait_max_ns) / 1e6;
 
-	// Stage 8 additions: Detailed hitch correlation
+	// Stage 8 additions: Detailed hitch correlation with temporal filtering
 	const uint64_t total_trace_events = g_trace_event_cursor.load(std::memory_order_relaxed);
 	const size_t trace_ring_count = std::min<size_t>(total_trace_events, TRACE_EVENT_RING_CAPACITY);
 
@@ -1433,15 +1691,25 @@ ProfileSnapshot TakeSnapshot() {
 		hitch.frame_ms     = sf.frame_ms;
 		hitch.timestamp_ms = sf.timestamp_ms;
 
+		const double sf_end_ms   = static_cast<double>(sf.timestamp_ms);
+		const double sf_start_ms = (sf_end_ms > sf.frame_ms) ? (sf_end_ms - sf.frame_ms) : 0.0;
+
 		uint64_t best_duration_ns = 0;
 		size_t   best_event_idx   = SIZE_MAX;
 
 		for (size_t e = 0; e < trace_ring_count; ++e) {
 			const auto& evt = g_trace_event_ring[e];
 			if (evt.type == TraceEventType::None) continue;
-			if (evt.duration_ns > best_duration_ns) {
-				best_duration_ns = evt.duration_ns;
-				best_event_idx   = e;
+			const double evt_end_ms   = static_cast<double>(evt.timestamp_us) / 1000.0;
+			const double evt_dur_ms   = static_cast<double>(evt.duration_ns) / 1e6;
+			const double evt_start_ms = (evt_end_ms > evt_dur_ms) ? (evt_end_ms - evt_dur_ms) : 0.0;
+
+			// Check temporal overlap with slow frame window (+- 15 ms margin)
+			if (evt_end_ms >= (sf_start_ms - 15.0) && evt_start_ms <= (sf_end_ms + 15.0)) {
+				if (evt.duration_ns > best_duration_ns) {
+					best_duration_ns = evt.duration_ns;
+					best_event_idx   = e;
+				}
 			}
 		}
 
@@ -1468,7 +1736,7 @@ ProfileSnapshot TakeSnapshot() {
 			hitch.blocker_thread_id      = 0;
 			hitch.blocker_tick           = 0;
 			hitch.blocker_address        = 0;
-			hitch.correlation_confidence = "Medium";
+			hitch.correlation_confidence = "Low";
 		}
 
 		snapshot.detailed_hitches.push_back(hitch);
@@ -1522,6 +1790,11 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"target_duration_seconds", snap.capture_target_duration_sec},
 	    {"delay_seconds", snap.capture_delay_sec},
 	    {"git_commit", snap.git_commit},
+	    {"git_revision", snap.git_revision},
+	    {"git_hash", snap.git_hash},
+	    {"build_timestamp", snap.build_timestamp},
+	    {"compiler", snap.compiler},
+	    {"binary_path", snap.binary_path},
 	    {"config",
 	     {
 	         {"gpu_submit_cadence", snap.cadence_enabled},
@@ -1533,6 +1806,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"pipeline_cache_mru", snap.pipeline_cache_mru_enabled},
 	         {"pipeline_key_cache", snap.pipeline_key_cache_enabled},
 	         {"draw_state_dirty_check", snap.draw_state_dirty_check_enabled},
+	         {"ensure_pipeline_cache", snap.ensure_pipeline_cache_enabled},
+	         {"descriptor_cache", snap.descriptor_cache_enabled},
 	     }},
 	};
 
@@ -1776,8 +2051,13 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"gpu_thread_cpu_time_ms", snap.gpu_thread_cpu_time_ms},
 	    {"gpu_thread_cpu_utilization_pct", snap.gpu_thread_cpu_utilization_pct},
 	    {"gpu_thread_wait_time_ms", snap.gpu_thread_wait_time_ms},
+	    {"gpu_timestamps_supported", snap.gpu_timestamps_supported},
 	    {"gpu_execution_time_ms", snap.gpu_execution_time_ms},
+	    {"gpu_execution_avg_per_frame_ms", snap.gpu_execution_avg_per_frame_ms},
 	    {"gpu_queries_recorded", snap.gpu_queries_recorded},
+	    {"pm4_dispatch_inclusive_ms", snap.pm4_dispatch_inclusive_ms},
+	    {"pm4_dispatch_exclusive_ms", snap.pm4_dispatch_exclusive_ms},
+	    {"pm4_dispatch_exclusive_ms_per_frame", snap.pm4_dispatch_exclusive_ms_per_frame},
 	};
 
 	j["stream_buffer_audit"] = {
@@ -1833,6 +2113,11 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Metadata,TargetDurationSeconds,{}\n", snap.capture_target_duration_sec);
 	out << fmt::format("Metadata,DelaySeconds,{}\n", snap.capture_delay_sec);
 	out << fmt::format("Metadata,GitCommit,{}\n", snap.git_commit);
+	out << fmt::format("Metadata,GitRevision,{}\n", snap.git_revision);
+	out << fmt::format("Metadata,GitHash,{}\n", snap.git_hash);
+	out << fmt::format("Metadata,BuildTimestamp,{}\n", snap.build_timestamp);
+	out << fmt::format("Metadata,Compiler,{}\n", snap.compiler);
+	out << fmt::format("Metadata,BinaryPath,{}\n", snap.binary_path);
 	out << fmt::format("Metadata,CadenceEnabled,{}\n", snap.cadence_enabled ? 1 : 0);
 	out << fmt::format("Metadata,CadenceIntervalUs,{}\n", snap.cadence_interval_us);
 	out << fmt::format("Metadata,PartialRefreshEnabled,{}\n", snap.partial_refresh_enabled ? 1 : 0);
@@ -1844,6 +2129,10 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   snap.pipeline_key_cache_enabled ? 1 : 0);
 	out << fmt::format("Metadata,DrawStateDirtyCheckEnabled,{}\n",
 	                   snap.draw_state_dirty_check_enabled ? 1 : 0);
+	out << fmt::format("Metadata,EnsurePipelineCacheEnabled,{}\n",
+	                   snap.ensure_pipeline_cache_enabled ? 1 : 0);
+	out << fmt::format("Metadata,DescriptorCacheEnabled,{}\n",
+	                   snap.descriptor_cache_enabled ? 1 : 0);
 
 	out << fmt::format("Frametime,TotalFrames,{}\n", snap.total_frames);
 	out << fmt::format("Frametime,EffectiveFps,{:.2f}\n", snap.effective_fps);
@@ -2008,6 +2297,12 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   snap.gpu_thread_wait_time_ms);
 	out << fmt::format("CpuGpuSeparation,GpuExecutionTimeMs,{:.2f}\n", snap.gpu_execution_time_ms);
 	out << fmt::format("CpuGpuSeparation,GpuQueriesRecorded,{}\n", snap.gpu_queries_recorded);
+	out << fmt::format("CpuGpuSeparation,Pm4DispatchInclusiveMs,{:.2f}\n",
+	                   snap.pm4_dispatch_inclusive_ms);
+	out << fmt::format("CpuGpuSeparation,Pm4DispatchExclusiveMs,{:.2f}\n",
+	                   snap.pm4_dispatch_exclusive_ms);
+	out << fmt::format("CpuGpuSeparation,Pm4DispatchExclusiveMsPerFrame,{:.2f}\n",
+	                   snap.pm4_dispatch_exclusive_ms_per_frame);
 
 	out << fmt::format("StreamBuffer,TotalAllocations,{}\n", snap.stream_buffer_stats.total_allocs);
 	out << fmt::format("StreamBuffer,TotalWraparounds,{}\n", snap.stream_buffer_stats.total_wraps);
@@ -2055,6 +2350,38 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	return true;
 }
 
+static bool ExportFramesCsv(const std::string& filepath) {
+	std::lock_guard<std::mutex> lock(g_frame_timeseries_mutex);
+	if (g_frame_timeseries.empty()) {
+		return false;
+	}
+	std::ofstream out(filepath, std::ios::out | std::ios::trunc);
+	if (!out.is_open()) {
+		Log::WriteToConsoleAndLog(
+		    fmt::format("[AuditProfiler] Error: Could not open frames CSV file: {}\n", filepath));
+		return false;
+	}
+	out << "frame_index,frame_ms,fps,phase,draws,dispatches,submits,pm4_decode_us,pm4_dispatch_us,"
+	       "render_state_prep_us,descriptor_prep_us,pipeline_lookup_us,pipeline_key_build_us,"
+	       "buffer_prep_us,command_recording_us,barriers_us,sync_waits_us,write_faults,stream_"
+	       "buffer_alloc_kb,stream_buffer_wait_us\n";
+	for (const auto& r: g_frame_timeseries) {
+		const double fps = r.frame_ms > 0.0f ? (1000.0 / r.frame_ms) : 0.0;
+		out << fmt::format(
+		    "{},{:.3f},{:.2f},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n", r.frame_index,
+		    r.frame_ms, fps, GetExecutionPhaseName(static_cast<ExecutionPhase>(r.phase)), r.draws,
+		    r.dispatches, r.submits, r.pm4_decode_us, r.pm4_dispatch_us, r.render_state_prep_us,
+		    r.descriptor_prep_us, r.pipeline_lookup_us, r.pipeline_key_build_us, r.buffer_prep_us,
+		    r.command_recording_us, r.barriers_us, r.sync_waits_us, r.write_faults,
+		    r.stream_buffer_alloc_kb, r.stream_buffer_wait_us);
+	}
+	out.close();
+	Log::WriteToConsoleAndLog(
+	    fmt::format("[AuditProfiler] Exported {} per-frame time series records to {}\n",
+	                g_frame_timeseries.size(), filepath));
+	return true;
+}
+
 bool ExportAll(const std::string& json_path, const std::string& csv_path,
                const ProfileSnapshot* existing_snap) {
 	ProfileSnapshot        local_snap;
@@ -2065,6 +2392,16 @@ bool ExportAll(const std::string& json_path, const std::string& csv_path,
 	}
 	const bool json_ok = ExportJson(json_path, snap_ptr);
 	const bool csv_ok  = ExportCsv(csv_path, snap_ptr);
+
+	std::string frames_csv_path;
+	const auto  dot_pos = json_path.rfind('.');
+	if (dot_pos != std::string::npos) {
+		frames_csv_path = json_path.substr(0, dot_pos) + "_frames.csv";
+	} else {
+		frames_csv_path = json_path + "_frames.csv";
+	}
+	ExportFramesCsv(frames_csv_path);
+
 	return json_ok && csv_ok;
 }
 

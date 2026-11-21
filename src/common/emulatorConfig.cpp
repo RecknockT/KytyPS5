@@ -358,6 +358,14 @@ bool DrawStateDirtyCheckEnabled() {
 	return g_config != nullptr ? g_config->draw_state_dirty_check_enabled : true;
 }
 
+bool EnsurePipelineCacheEnabled() {
+	return g_config != nullptr ? g_config->ensure_pipeline_cache_enabled : true;
+}
+
+bool DescriptorCacheEnabled() {
+	return g_config != nullptr ? g_config->descriptor_cache_enabled : true;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;
