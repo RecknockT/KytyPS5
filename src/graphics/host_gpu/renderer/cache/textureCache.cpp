@@ -37,7 +37,7 @@ namespace {
 
 // Scheduler ticks. Each submit is a tick, so this was about two or three frames before the submit
 // cadence began to submit many times per frame.
-constexpr uint64_t NumFramesBeforeRemoval = 16;
+constexpr uint64_t NumFramesBeforeRemoval = 32;
 // With the submit cadence on, the age counts garbage collector ticks, which come once per frame
 // whatever the submit rate. Three keeps the protection of the 32 scheduler ticks above.
 constexpr uint64_t NumGcTicksBeforeRemoval = 3;
