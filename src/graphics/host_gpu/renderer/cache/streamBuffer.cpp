@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -326,7 +327,7 @@ bool StreamBuffer::WaitPendingOperations(const std::vector<Watch>& watches,
 		if (!Scheduler().IsFree(watch.tick) && !allow_wait) {
 			return false;
 		}
-		Scheduler().Wait(watch.tick);
+		Scheduler().Wait(watch.tick, Common::AuditProfiler::GpuWaitReason::StreamBufferWait);
 		if (Usage() == MemoryUsage::Download) {
 			Scheduler().WaitPriorityOperations(watch.tick);
 		}

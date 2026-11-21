@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptorHeap.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
@@ -26,7 +27,7 @@ DescriptorHeap::DescriptorHeap(GraphicContext& graphics, MasterSemaphore& master
 DescriptorHeap::~DescriptorHeap() {
 	m_graphics.device.destroyDescriptorPool(m_current_pool, nullptr);
 	for (const auto& [pool, tick]: m_pending_pools) {
-		m_master_semaphore.Wait(tick);
+		m_master_semaphore.Wait(tick, Common::AuditProfiler::GpuWaitReason::DescriptorHeap);
 		m_graphics.device.destroyDescriptorPool(pool, nullptr);
 	}
 }

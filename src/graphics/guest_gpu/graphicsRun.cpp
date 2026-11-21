@@ -259,7 +259,7 @@ void CommandProcessor::FlushForCadence() {
 		return;
 	}
 	// Not BufferFlush, which also publishes the occlusion queries and so waits on the GPU.
-	GetScheduler().Flush();
+	GetScheduler().Flush(Common::AuditProfiler::SubmitReason::Cadence);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::CadenceSubmits);
 }
 

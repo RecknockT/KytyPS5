@@ -75,11 +75,11 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 }
 
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics,
-                                   bool submit_cadence)
+                                   bool submit_cadence, std::chrono::microseconds cadence_interval)
     : m_master(graphics), m_context(context), m_graphics(graphics),
       m_command_pool(graphics, m_master), m_command(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }),
-      m_cadence(submit_cadence) {}
+      m_cadence(submit_cadence, cadence_interval) {}
 
 CommandScheduler::~CommandScheduler() {
 	Shutdown();
@@ -107,9 +107,9 @@ void CommandScheduler::Shutdown() {
 		m_operation_state = OperationState::Draining;
 	}
 	if (!m_command.IsInvalid()) {
-		Submit();
+		Submit({}, Common::AuditProfiler::SubmitReason::Drain);
 	}
-	m_master.Wait(CurrentTick() - 1);
+	m_master.Wait(CurrentTick() - 1, Common::AuditProfiler::GpuWaitReason::CommandSchedulerDrain);
 	PopPendingOperations();
 	DrainPriorityOperations();
 	m_priority_thread.request_stop();
@@ -139,13 +139,13 @@ void CommandScheduler::Begin(HW::Context& registers, HW::UserConfig& user_config
 	}
 }
 
-void CommandScheduler::Flush() {
+void CommandScheduler::Flush(Common::AuditProfiler::SubmitReason reason) {
 	SubmitInfo submit;
-	Flush(submit);
+	Flush(submit, reason);
 }
 
-void CommandScheduler::Flush(SubmitInfo& submit) {
-	Submit(submit);
+void CommandScheduler::Flush(SubmitInfo& submit, Common::AuditProfiler::SubmitReason reason) {
+	Submit(submit, reason);
 	BeginNext();
 }
 
@@ -156,26 +156,27 @@ void CommandScheduler::Finish() {
 		SealReleasesLocked();
 	}
 	if (!m_command.IsInvalid()) {
-		Submit();
+		Submit({}, Common::AuditProfiler::SubmitReason::Drain);
 	}
-	m_master.Wait(CurrentTick() - 1);
+	m_master.Wait(CurrentTick() - 1, Common::AuditProfiler::GpuWaitReason::CommandSchedulerDrain);
 	BeginNext();
 	PopPendingOperations();
 }
 
-void CommandScheduler::Wait(uint64_t tick) {
+void CommandScheduler::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason reason) {
 	EXIT_IF(tick > CurrentTick());
 	if (tick == CurrentTick()) {
 		CheckActive();
 		// A stream-buffer wrap can wait while a draw is being prepared through a reference to
 		// Current(). The wrapper stays stable while its pooled Vulkan buffer is retired. Deferred
 		// resources are released only at the next GPU operation boundary.
-		const auto submitted_tick = Submit();
+		const auto submitted_tick =
+		    Submit({}, Common::AuditProfiler::SubmitReason::Synchronization);
 		EXIT_IF(submitted_tick != tick);
-		m_master.Wait(tick);
+		m_master.Wait(tick, reason);
 		BeginNext();
 	} else {
-		m_master.Wait(tick);
+		m_master.Wait(tick, reason);
 	}
 }
 
@@ -287,7 +288,7 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			m_priority_operations.pop();
 			m_priority_active_tick = operation.tick;
 		}
-		m_master.Wait(operation.tick);
+		m_master.Wait(operation.tick, Common::AuditProfiler::GpuWaitReason::PriorityOperation);
 		if (!stop.stop_requested()) {
 			RunOperation(std::move(operation.callback));
 		}
@@ -369,7 +370,7 @@ bool CommandScheduler::TakeDueCadenceSubmit() {
 	return submit;
 }
 
-uint64_t CommandScheduler::Submit(SubmitInfo submit) {
+uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::SubmitReason reason) {
 	EXIT_IF(m_command.IsInvalid());
 
 	m_command.End();
@@ -403,6 +404,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		result = graphics.queue.submit(1, &submit_info, nullptr);
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
+	if (Common::AuditProfiler::IsEnabled()) {
+		Common::AuditProfiler::RecordSubmit(reason);
+	}
 
 	if (result != vk::Result::eSuccess) {
 		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);

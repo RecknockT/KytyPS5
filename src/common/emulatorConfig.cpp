@@ -279,7 +279,7 @@ bool AudioCompileHoldEnabled() {
 }
 
 bool GpuSubmitCadenceEnabled() {
-	return g_config->gpu_submit_cadence_enabled;
+	return g_config != nullptr ? g_config->gpu_submit_cadence_enabled : false;
 }
 
 bool TrophyEnabled() {
@@ -309,6 +309,37 @@ const std::string& GetLaunchActivity() {
 
 bool PollBackoffEnabled() {
 	return g_config->poll_backoff_enabled;
+}
+
+bool AuditFaultsEnabled() {
+	return g_config != nullptr ? g_config->audit_faults_enabled : false;
+}
+
+bool AuditManualTriggerEnabled() {
+	return g_config != nullptr ? g_config->audit_manual_trigger : false;
+}
+
+bool ExtendedStreamBufferEnabled() {
+	return g_config != nullptr ? g_config->extended_stream_buffer_enabled : false;
+}
+
+const std::string& GetAuditExportPath() {
+	static const std::string empty;
+	return g_config != nullptr ? g_config->audit_export_path : empty;
+}
+
+uint64_t GetGpuSubmitCadenceIntervalUs() {
+	return g_config != nullptr && g_config->gpu_submit_cadence_interval_us > 0
+	           ? g_config->gpu_submit_cadence_interval_us
+	           : 1000;
+}
+
+uint32_t GetAuditCaptureDelaySec() {
+	return g_config != nullptr ? g_config->audit_capture_delay_sec : 0;
+}
+
+uint32_t GetAuditCaptureDurationSec() {
+	return g_config != nullptr ? g_config->audit_capture_duration_sec : 0;
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS

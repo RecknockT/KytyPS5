@@ -2,6 +2,7 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -77,7 +78,31 @@ static void PrintSystemInfo() {
 	     std::thread::hardware_concurrency());
 }
 
+static void ExportAuditProfile() {
+	if (!Config::AuditFaultsEnabled()) {
+		return;
+	}
+	static std::atomic<bool> s_exported {false};
+	if (s_exported.exchange(true)) {
+		return;
+	}
+	Common::AuditProfiler::StopCapture(Common::AuditProfiler::CaptureState::Interrupted);
+	std::string path = Config::GetAuditExportPath();
+	if (path.empty()) {
+		path = "audit_profile.json";
+	}
+	std::string csv_path = path;
+	if (csv_path.ends_with(".json")) {
+		csv_path = csv_path.substr(0, csv_path.size() - 5) + ".csv";
+	} else {
+		csv_path += ".csv";
+	}
+	Common::AuditProfiler::ExportAll(path, csv_path);
+	Log::WriteToConsoleAndLog(fmt::format("Audit profile exported to {} and {}\n", path, csv_path));
+}
+
 static void KytyClose() {
+	ExportAuditProfile();
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
 	rt->Clear();
@@ -117,6 +142,17 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 	subsystems.Initialize<Config::Lifecycle>();
 	Config::Load(cfg);
 	subsystems.Initialize<Log::Lifecycle>();
+
+	if (cfg.audit_faults_enabled) {
+		Common::AuditProfiler::InitCapture(cfg.audit_capture_delay_sec,
+		                                   cfg.audit_capture_duration_sec, cfg.audit_export_path,
+		                                   cfg.audit_manual_trigger);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "Audit profiler enabled (--audit-faults, delay={}s, duration={}s, manual_trigger={}, "
+		    "export={})\n",
+		    cfg.audit_capture_delay_sec, cfg.audit_capture_duration_sec, cfg.audit_manual_trigger,
+		    cfg.audit_export_path.empty() ? "audit_profile.json" : cfg.audit_export_path));
+	}
 
 	if (Common::File::IsFileExisting(param_json)) {
 		Loader::SystemContentLoadParamSfo(param_json);
@@ -160,6 +196,7 @@ static void Execute(const std::filesystem::path& game_patch) {
 		Common::Singleton<Loader::RuntimeLinker>::Instance()->Execute(game_patch);
 	}).detach();
 	Libs::Graphics::WindowRun();
+	ExportAuditProfile();
 	std::quick_exit(0);
 }
 
@@ -197,6 +234,8 @@ void Run(const RunOptions& options) {
 	EXIT_NOT_IMPLEMENTED(ok != 0);
 
 	// Guest threads are still running, so skip KytyClose() and only flush emergency state.
+	ok = at_quick_exit(ExportAuditProfile);
+	EXIT_NOT_IMPLEMENTED(ok != 0);
 	ok = at_quick_exit(Common::Subsystems::EmergencyShutdownActive);
 	EXIT_NOT_IMPLEMENTED(ok != 0);
 

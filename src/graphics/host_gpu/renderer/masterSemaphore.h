@@ -1,6 +1,7 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_MASTERSEMAPHORE_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_MASTERSEMAPHORE_H_
 
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
@@ -29,7 +30,9 @@ public:
 	[[nodiscard]] vk::Semaphore Handle() const noexcept { return m_semaphore; }
 
 	void Refresh();
-	void Wait(uint64_t tick);
+	void
+	Wait(uint64_t                             tick,
+	     Common::AuditProfiler::GpuWaitReason reason = Common::AuditProfiler::GpuWaitReason::Other);
 
 private:
 	GraphicContext&       m_graphics;

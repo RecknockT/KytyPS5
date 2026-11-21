@@ -1,5 +1,6 @@
 #include "graphics/presentation/performanceOverlay.h"
 
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
@@ -90,6 +91,9 @@ struct FrameWindow {
 			next               = (next + 1) % FRAME_HISTORY;
 			count              = std::min(count + 1, FRAME_HISTORY);
 			max_ms             = std::max(max_ms, ms);
+			if (Common::AuditProfiler::IsEnabled()) {
+				Common::AuditProfiler::RecordFrame(ms);
+			}
 			if (average_ms > 0.0f && ms > 50.0f && ms >= 2.0f * average_ms) {
 				auto& hitch = hitches[next_hitch];
 				hitch.time  = now;
@@ -119,6 +123,9 @@ struct Snapshot {
 	double                              fps          = 0.0;
 	double                              frame_ms     = 0.0;
 	double                              max_frame_ms = 0.0;
+	double                              p50_frame_ms = 0.0;
+	double                              p95_frame_ms = 0.0;
+	double                              p99_frame_ms = 0.0;
 	double                              low_fps      = 0.0; // From the 99th percentile.
 	double                              stalled_s    = 0.0;
 	uint32_t                            guest_width  = 0;
@@ -546,8 +553,17 @@ void DrawCompact(const Snapshot& shown) {
 void DrawFramesAndCpu(const Snapshot& shown, vk::Extent2D extent) {
 	const auto& host = shown.host;
 	if (BeginSection("Frames")) {
+		if (shown.p50_frame_ms > 0.0) {
+			Row("Frametime P50", Fmt("%.1f ms", shown.p50_frame_ms),
+			    FrameTimeColor(shown.p50_frame_ms));
+			Row("Frametime P95", Fmt("%.1f ms", shown.p95_frame_ms),
+			    FrameTimeColor(shown.p95_frame_ms));
+			Row("Frametime P99", Fmt("%.1f ms", shown.p99_frame_ms),
+			    FrameTimeColor(shown.p99_frame_ms));
+		}
 		if (shown.low_fps > 0.0) {
-			Row("1% low", Fmt("%.1f FPS", shown.low_fps), FrameTimeColor(1000.0 / shown.low_fps));
+			Row("1% low (from P99)", Fmt("%.1f FPS", shown.low_fps),
+			    FrameTimeColor(1000.0 / shown.low_fps));
 		}
 		Row("Worst frame", Fmt("%.1f ms", shown.max_frame_ms), FrameTimeColor(shown.max_frame_ms));
 		Row("Hitches (10 s)", Fmt("%zu", shown.recent_hitches),
@@ -851,11 +867,18 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 		shown.hitch_activity = HitchActivity(shown.last_hitch);
 		shown_details        = details;
 		if (shown.history_count > 0) {
-			auto       sorted     = shown.history;
-			const auto end        = sorted.begin() + shown.history_count;
-			const auto percentile = sorted.begin() + shown.history_count * 99 / 100;
-			std::nth_element(sorted.begin(), percentile, end);
-			shown.low_fps = *percentile > 0.0f ? 1000.0 / *percentile : 0.0;
+			auto       sorted = shown.history;
+			const auto end    = sorted.begin() + shown.history_count;
+			std::sort(sorted.begin(), end);
+			const size_t p50_idx = shown.history_count * 50 / 100;
+			const size_t p95_idx =
+			    std::min(shown.history_count * 95 / 100, shown.history_count - 1);
+			const size_t p99_idx =
+			    std::min(shown.history_count * 99 / 100, shown.history_count - 1);
+			shown.p50_frame_ms = sorted[p50_idx];
+			shown.p95_frame_ms = sorted[p95_idx];
+			shown.p99_frame_ms = sorted[p99_idx];
+			shown.low_fps      = sorted[p99_idx] > 0.0f ? 1000.0 / sorted[p99_idx] : 0.0;
 		}
 		Refresh(shown, graphics, now, generation);
 	}
@@ -908,6 +931,27 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 #else
 		ImGui::TextDisabled(details ? "Shift+F2 compact   F2 hide" : "Shift+F2 details   F2 hide");
 #endif
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto state      = Common::AuditProfiler::GetCaptureState();
+			const auto phase_name = Common::AuditProfiler::GetExecutionPhaseName(
+			    Common::AuditProfiler::GetExecutionPhase());
+			if (state == Common::AuditProfiler::CaptureState::WaitingForHotkey) {
+				ImGui::TextColored(Color(MEDIUM),
+				                   "[F9] Audit: READY (%s) - Press F9 in target scene", phase_name);
+			} else if (state == Common::AuditProfiler::CaptureState::Running) {
+				const auto dur_s    = Common::AuditProfiler::GetCaptureDurationMs() / 1000;
+				const auto target_s = Common::AuditProfiler::GetTargetDurationSec();
+				if (target_s > 0) {
+					ImGui::TextColored(Color(BAD), "[F9] Audit: RECORDING %llus/%us (%s)", dur_s,
+					                   target_s, phase_name);
+				} else {
+					ImGui::TextColored(Color(BAD), "[F9] Audit: RECORDING %llus (%s)", dur_s,
+					                   phase_name);
+				}
+			} else if (state == Common::AuditProfiler::CaptureState::Completed) {
+				ImGui::TextColored(Color(GOOD), "[F9] Audit: COMPLETED (Exported)");
+			}
+		}
 	}
 	const float bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
 	ImGui::End();

@@ -1,8 +1,11 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "graphics/host_gpu/graphicContext.h"
+
+#include <chrono>
 
 namespace Libs::Graphics {
 
@@ -34,7 +37,7 @@ void MasterSemaphore::Refresh() {
 	}
 }
 
-void MasterSemaphore::Wait(uint64_t tick) {
+void MasterSemaphore::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason reason) {
 	if (IsFree(tick)) {
 		return;
 	}
@@ -50,8 +53,15 @@ void MasterSemaphore::Wait(uint64_t tick) {
 
 	Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::GpuWaits,
 	                                         Common::DebugCounters::Counter::GpuWaitNs);
+	const auto                         start = std::chrono::steady_clock::now();
 	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	const auto end    = std::chrono::steady_clock::now();
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	if (Common::AuditProfiler::IsEnabled()) {
+		const auto wait_ns = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+		Common::AuditProfiler::RecordGpuWait(reason, wait_ns);
+	}
 	Refresh();
 }
 

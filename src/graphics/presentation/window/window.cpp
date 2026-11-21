@@ -1,6 +1,7 @@
 ﻿#include "graphics/presentation/window.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -57,7 +58,6 @@ struct EventKeyboard {
 	double   timestamp_seconds;
 };
 
-
 static Controller::Axis ControllerAxisFromSdl(int axis_id) {
 	switch (axis_id) {
 		case SDL_GAMEPAD_AXIS_LEFTX: return Controller::Axis::LeftX;
@@ -71,8 +71,7 @@ static Controller::Axis ControllerAxisFromSdl(int axis_id) {
 }
 
 static bool ControllerAxisIsTrigger(int axis_id) {
-	return axis_id == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
-	       axis_id == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
+	return axis_id == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || axis_id == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
 }
 
 static int ControllerAxisValueFromSdl(int axis_id, int axis_value) {
@@ -201,7 +200,7 @@ static void ToggleDesktopFullscreen() {
 		return;
 	}
 
-	const auto flags = static_cast<uint32_t>(SDL_GetWindowFlags(g_window->window));
+	const auto flags      = static_cast<uint32_t>(SDL_GetWindowFlags(g_window->window));
 	const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0u;
 	if (!SDL_SetWindowFullscreen(g_window->window, !fullscreen)) {
 		LOGF("Toggle fullscreen failed: %s\n", SDL_GetError());
@@ -500,6 +499,11 @@ void WindowContext::ProcessEvent(double time_s) {
 					Controller::CycleKeyboardPlayer();
 				}
 				return;
+			case SDLK_F9:
+				if (pressed) {
+					Common::AuditProfiler::ToggleCapture();
+				}
+				return;
 #if defined(__APPLE__)
 			case SDLK_P:
 				if ((event->key.mod & SDL_KMOD_GUI) == 0) {
@@ -723,9 +727,8 @@ void WindowContext::ProcessEvent(double time_s) {
 				                      sensor.sensor == SDL_SENSOR_ACCEL ? Controller::Sensor::Accel
 				                                                        : Controller::Sensor::Gyro,
 				                      sensor.data,
-				                      sensor.sensor_timestamp != 0
-				                          ? sensor.sensor_timestamp / 1000
-				                          : sensor.timestamp / 1000);
+				                      sensor.sensor_timestamp != 0 ? sensor.sensor_timestamp / 1000
+				                                                   : sensor.timestamp / 1000);
 			}
 			break;
 		}
@@ -815,7 +818,7 @@ static void WindowCreate(WindowContext& context) {
 	if (std::getenv("SDL_VULKAN_LIBRARY") == nullptr) {
 		if (const char* base_path = SDL_GetBasePath(); base_path != nullptr) {
 			const std::string base_path_str = base_path;
-			std::string moltenvk_path = base_path_str + "libMoltenVK.dylib";
+			std::string       moltenvk_path = base_path_str + "libMoltenVK.dylib";
 			if (!Common::File::IsFileExisting(moltenvk_path)) {
 				moltenvk_path = base_path_str + "../Frameworks/libMoltenVK.dylib";
 			}
@@ -946,8 +949,8 @@ static void WindowLoadPngIcon(const std::filesystem::path& path, WindowIcon* ico
 
 	EXIT_IF(icon->pixels == nullptr);
 
-	icon->surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, icon->pixels,
-	                                      width * 4);
+	icon->surface =
+	    SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, icon->pixels, width * 4);
 	EXIT_NOT_IMPLEMENTED(icon->surface == nullptr);
 }
 
@@ -982,7 +985,7 @@ void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
 	static constexpr auto build_type = KYTY_BUILD == KYTY_BUILD_DEBUG ? "Debug" : "Release";
 
 	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
-	auto text = fmt::format(
+	auto        text        = fmt::format(
 	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
 	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),

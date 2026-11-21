@@ -1,6 +1,7 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_COMMANDSCHEDULER_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_COMMANDSCHEDULER_H_
 
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/uniqueFunction.h"
 #include "graphics/host_gpu/renderer/dynamicState.h"
@@ -23,21 +24,28 @@ public:
 	/// Creates a scheduler. Only the render scheduler asks for the submit cadence. The presenter's
 	/// scheduler submits at its own frame boundaries and must never split its command buffer, so
 	/// every caller states the choice.
-	CommandScheduler(RenderContext& context, GraphicContext& graphics, bool submit_cadence = false);
+	CommandScheduler(RenderContext& context, GraphicContext& graphics, bool submit_cadence = false,
+	                 std::chrono::microseconds cadence_interval = SubmitCadenceInterval);
 	~CommandScheduler();
 	KYTY_CLASS_NO_COPY(CommandScheduler);
 
-	void           Begin(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders);
-	void           EndRendering() { m_command.EndRendering(); }
-	void           Flush();
-	void           Flush(SubmitInfo& submit);
-	void           Finish();
+	void Begin(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders);
+	void EndRendering() { m_command.EndRendering(); }
+	void Flush(Common::AuditProfiler::SubmitReason reason =
+	               Common::AuditProfiler::SubmitReason::ExplicitFlush);
+	void Flush(SubmitInfo& submit, Common::AuditProfiler::SubmitReason reason =
+	                                   Common::AuditProfiler::SubmitReason::ExplicitFlush);
+	void Finish();
 	CommandBuffer& BeginCommand();
-	uint64_t       Submit(SubmitInfo submit = {});
+	uint64_t
+	Submit(SubmitInfo                          submit = {},
+	       Common::AuditProfiler::SubmitReason reason = Common::AuditProfiler::SubmitReason::Other);
 	// Deferred callbacks can observe an externally owned drain, but cannot initiate shutdown:
 	// the priority runner cannot join itself.
 	void Shutdown();
-	void Wait(uint64_t tick);
+	void
+	Wait(uint64_t                             tick,
+	     Common::AuditProfiler::GpuWaitReason reason = Common::AuditProfiler::GpuWaitReason::Other);
 	void PopPendingOperations();
 	void StartOperation();
 	void DrainPriorityOperations();

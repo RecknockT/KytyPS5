@@ -95,6 +95,13 @@ private:
 // refresh then costs about as much as a full one.
 constexpr uint64_t PartialRefreshMaxFraction = 2;
 
+// For tiled textures, partial merge requires a 3-pass GPU sequence: DownloadForMerge, DetileRegions
+// compute dispatch, and UploadMerged. When the written range is too large (> 25%) or fragmented
+// into many disjoint rectangles, a clean 1-pass full upload is significantly cheaper and avoids
+// GPU compute queue contention that triggers Cadence lag throttling.
+constexpr uint64_t TiledPartialMaxFraction = 4;
+constexpr size_t   MaxTiledPartialRegions  = 4;
+
 // Marks a whole image as newer in a buffer. gpu_mod is cleared first so that the next bind
 // treats the buffer as the source of truth, which is how every non-partial write behaves.
 void MarkWholeBufferWrite(Image& image) {
@@ -297,9 +304,9 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 
 void TextureCache::ConfigureGarbageCollectionBudget(uint64_t available_budget) {
 	constexpr int64_t GiB = 1024ll * 1024 * 1024;
-	const auto budget = static_cast<int64_t>(std::min<uint64_t>(available_budget, INT64_MAX));
-	const auto threshold = std::min<int64_t>(budget, 8 * GiB);
-	m_pressure_gc_memory = static_cast<uint64_t>(
+	const auto budget     = static_cast<int64_t>(std::min<uint64_t>(available_budget, INT64_MAX));
+	const auto threshold  = std::min<int64_t>(budget, 8 * GiB);
+	m_pressure_gc_memory  = static_cast<uint64_t>(
 	    std::max<int64_t>(std::min(budget - 6 * threshold / 10, budget - GiB), GiB + GiB / 2));
 	m_critical_gc_memory = static_cast<uint64_t>(
 	    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
@@ -307,8 +314,7 @@ void TextureCache::ConfigureGarbageCollectionBudget(uint64_t available_budget) {
 	m_trigger_gc_memory = m_pressure_gc_memory;
 	if (const auto* legacy = std::getenv("KYTY_TEXTURE_CACHE_EARLY_GC");
 	    legacy != nullptr && std::strcmp(legacy, "1") == 0) {
-		m_trigger_gc_memory =
-		    static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
+		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
 	}
 }
 
@@ -1397,8 +1403,11 @@ void TextureCache::MergeTiledRegions(Image& image, const TiledRefreshPlan& plan)
 // Refreshes a tiled image from only the blocks its written range touches, then drops the buffer
 // mark and keeps gpu_mod. Returns false when the plan does not apply.
 bool TextureCache::RefreshTiledRange(Image& image, GuestRange range) {
+	if (range.size > image.info.data.size / TiledPartialMaxFraction) {
+		return false;
+	}
 	const auto plan = PlanTiledRefresh(image, range);
-	if (!plan) {
+	if (!plan || plan->regions.size() > MaxTiledPartialRegions) {
 		return false;
 	}
 	if (!plan->regions.empty()) {

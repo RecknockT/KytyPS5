@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/logging/log.h"
 #include "gpu_tiler_shaders/fault_buffer_process_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -18,7 +19,7 @@ namespace Libs::Graphics {
 
 namespace {
 
-constexpr size_t MaxPageFaults    = 1024;
+constexpr size_t MaxPageFaults     = 1024;
 constexpr size_t PageFaultAreaSize = MaxPageFaults * sizeof(uint64_t);
 
 } // namespace
@@ -40,22 +41,20 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
 	layout_info.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
 	layout_info.bindingCount = std::size(bindings);
 	layout_info.pBindings    = bindings;
-	RequireVulkanSuccess(
-	    m_graphics.device.createDescriptorSetLayout(&layout_info, nullptr,
-	                                                &m_fault_process_desc_layout),
-	    "create fault-buffer descriptor layout");
+	RequireVulkanSuccess(m_graphics.device.createDescriptorSetLayout(&layout_info, nullptr,
+	                                                                 &m_fault_process_desc_layout),
+	                     "create fault-buffer descriptor layout");
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.setLayoutCount = 1;
 	pipeline_layout_info.pSetLayouts    = &m_fault_process_desc_layout;
-	RequireVulkanSuccess(
-	    m_graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
-	                                           &m_fault_process_pipeline_layout),
-	    "create fault-buffer pipeline layout");
+	RequireVulkanSuccess(m_graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
+	                                                            &m_fault_process_pipeline_layout),
+	                     "create fault-buffer pipeline layout");
 
 	m_fault_process_pipeline =
 	    CreateComputePipeline(m_graphics.device, FAULT_BUFFER_PROCESS_SPV,
-		                      m_fault_process_pipeline_layout, "create fault-buffer pipeline");
+	                          m_fault_process_pipeline_layout, "create fault-buffer pipeline");
 	SetVulkanObjectNameF(m_graphics.device, m_fault_process_pipeline, "Fault Buffer Parser");
 }
 
@@ -67,7 +66,7 @@ FaultManager::~FaultManager() {
 
 void FaultManager::ProcessFaultBuffer() {
 	if (const auto wait_tick = m_fault_areas[m_current_area]; wait_tick != 0) {
-		m_scheduler.Wait(wait_tick);
+		m_scheduler.Wait(wait_tick, Common::AuditProfiler::GpuWaitReason::FaultManager);
 		m_scheduler.PopPendingOperations();
 	}
 
@@ -77,14 +76,14 @@ void FaultManager::ProcessFaultBuffer() {
 	m_download_buffer.Flush(offset, PageFaultAreaSize);
 
 	vk::BufferMemoryBarrier2 pre_barrier {};
-	pre_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
-	pre_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
-	pre_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
-	pre_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
-	pre_barrier.buffer        = m_fault_buffer.Handle();
-	pre_barrier.offset        = 0;
+	pre_barrier.srcStageMask   = vk::PipelineStageFlagBits2::eAllCommands;
+	pre_barrier.srcAccessMask  = vk::AccessFlagBits2::eShaderWrite;
+	pre_barrier.dstStageMask   = vk::PipelineStageFlagBits2::eComputeShader;
+	pre_barrier.dstAccessMask  = vk::AccessFlagBits2::eShaderRead;
+	pre_barrier.buffer         = m_fault_buffer.Handle();
+	pre_barrier.offset         = 0;
 	pre_barrier.size           = m_fault_buffer.Size();
-	auto post_barrier         = pre_barrier;
+	auto post_barrier          = pre_barrier;
 	post_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
 	post_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
 	post_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -103,15 +102,15 @@ void FaultManager::ProcessFaultBuffer() {
 	}
 
 	m_scheduler.EndRendering();
-	auto command = m_scheduler.Current().Handle();
+	auto               command = m_scheduler.Current().Handle();
 	vk::DependencyInfo dependency {};
 	dependency.dependencyFlags          = vk::DependencyFlagBits::eByRegion;
 	dependency.bufferMemoryBarrierCount = 1;
 	dependency.pBufferMemoryBarriers    = &pre_barrier;
 	command.pipelineBarrier2(dependency);
 	command.bindPipeline(vk::PipelineBindPoint::eCompute, m_fault_process_pipeline);
-	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute,
-	                             m_fault_process_pipeline_layout, 0, writes);
+	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, m_fault_process_pipeline_layout,
+	                             0, writes);
 	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 128; // Four words per invocation.
 	const auto num_workgroups = (num_threads + 63) / 64;
 	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);

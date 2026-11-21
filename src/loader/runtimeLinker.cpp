@@ -1,6 +1,7 @@
 #include "loader/runtimeLinker.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -679,9 +680,22 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
-		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
-			Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
-			return true;
+		if (Common::AuditProfiler::IsEnabled()) {
+			const auto start = std::chrono::steady_clock::now();
+			if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
+				const auto end         = std::chrono::steady_clock::now();
+				const auto duration_ns = static_cast<uint64_t>(
+				    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+				Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
+				Common::AuditProfiler::RecordFault(info->access_violation_vaddr,
+				                                   info->exception_address, duration_ns);
+				return true;
+			}
+		} else {
+			if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
+				Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
+				return true;
+			}
 		}
 		if (const auto length = Libs::Graphics::ShaderRecompiler::IR::SrtWalkerLoadLength(
 		        info->exception_address)) {

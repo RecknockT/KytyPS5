@@ -76,9 +76,12 @@ static void PrintUsage() {
 	::printf("  --shader-cache                       Keep compiled shaders and pipelines between "
 	         "boots (default: on).\n");
 	::printf("  --no-shader-cache                    Disable shader caching between boots.\n");
-	::printf("  --no-async-shader-compile            Compile shaders on the render thread, which waits for\n"
-	         "                                       them. By default they compile on worker threads and\n"
-	         "                                       draws using a shader still being compiled are skipped.\n");
+	::printf("  --no-async-shader-compile            Compile shaders on the render thread, which "
+	         "waits for\n"
+	         "                                       them. By default they compile on worker "
+	         "threads and\n"
+	         "                                       draws using a shader still being compiled are "
+	         "skipped.\n");
 	::printf(
 	    "  --tessellation                      Draw tessellation patches; skipped by default.\n");
 	::printf("  --occlusion-queries                  Count occlusion query samples on the GPU.\n");
@@ -107,9 +110,11 @@ static void PrintUsage() {
 	         "unmapped range.\n");
 	::printf("  --partial-buffer-refresh             Refresh only the buffer-written part of an "
 	         "image.\n");
-	::printf("  --batch-hot-readbacks                When a fault readback waits for the GPU, also read\n"
-	         "                                       back recently faulted buffers and finished small\n"
-	         "                                       GPU writes.\n");
+	::printf(
+	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
+	    "read\n"
+	    "                                       back recently faulted buffers and finished small\n"
+	    "                                       GPU writes.\n");
 	::printf(
 	    "  --flush-draws <num>                  Submit GPU work every <num> draws; 0 is off.\n");
 	::printf(
@@ -132,6 +137,26 @@ static void PrintUsage() {
 	::printf("  --redzone                            Protect the guest SysV red zone.\n");
 #endif
 	::printf("  --keymap <Control=Input>             DualSense mapping; may be repeated.\n");
+	::printf("  --audit-faults                       Record low-overhead profiling data for page "
+	         "faults,\n"
+	         "                                       re-protections, GPU waits and queue "
+	         "submissions.\n");
+	::printf("  --audit-export <path>                Path to export audit profile (JSON/CSV) at "
+	         "shutdown.\n");
+	::printf("  --audit-capture-delay <sec>          Wait <sec> seconds before starting audit "
+	         "capture.\n");
+	::printf("  --audit-capture-duration <sec>       Automatically stop and export capture after "
+	         "<sec> seconds.\n");
+	::printf("  --audit-manual-trigger               Do not start capture at launch; wait for F9 "
+	         "hotkey in target scene.\n");
+	::printf("  --gpu-submit-cadence-ms <ms>         Interval for periodic GPU submit cadence in "
+	         "ms (default 1.0).\n");
+	::printf("  --gpu-submit-cadence-interval-us <u> Interval for periodic GPU submit cadence in "
+	         "us (default 1000).\n");
+	::printf("  --extended-stream-buffer             Expand stream and download ring buffers "
+	         "(256/128 MiB) to\n"
+	         "                                       mitigate queue wrap stalls and stuttering "
+	         "under cadence.\n");
 	::printf("  --rd                                 Enable RenderDoc capture.\n");
 }
 
@@ -212,6 +237,26 @@ static bool ParseUserId(const std::string& value, int32_t& out) {
 	return true;
 }
 
+static bool ParseUint64(const std::string& value, uint64_t& out) {
+	uint64_t number   = 0;
+	auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+	if (error != std::errc {} || end != value.data() + value.size()) {
+		return false;
+	}
+	out = number;
+	return true;
+}
+
+static bool ParseDouble(const std::string& value, double& out) {
+	char*        end = nullptr;
+	const double d   = std::strtod(value.c_str(), &end);
+	if (end == value.c_str() || *end != '\0') {
+		return false;
+	}
+	out = d;
+	return true;
+}
+
 using Config::ConfigOptions;
 
 struct Flag {
@@ -264,6 +309,10 @@ static constexpr Flag FLAGS[] = {
     {"--skip-notice-screen", &ConfigOptions::skip_notice_screen},
     {"--no-poll-backoff", &ConfigOptions::poll_backoff_enabled, false},
     {"--keep-gpu-cache-on-reuse", &ConfigOptions::keep_gpu_cache_on_reuse},
+    {"--audit-faults", &ConfigOptions::audit_faults_enabled},
+    {"--audit-manual-trigger", &ConfigOptions::audit_manual_trigger},
+    {"--audit-wait-for-hotkey", &ConfigOptions::audit_manual_trigger},
+    {"--extended-stream-buffer", &ConfigOptions::extended_stream_buffer_enabled},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif
@@ -480,6 +529,31 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--printf-output-file") {
 			options.config.printf_output_file = Common::PathFromUtf8(value);
+		} else if (arg == "--audit-export") {
+			options.config.audit_export_path = value;
+		} else if (arg == "--audit-capture-delay") {
+			if (!ParseUint32(value, options.config.audit_capture_delay_sec)) {
+				::printf("invalid audit capture delay: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--audit-capture-duration") {
+			if (!ParseUint32(value, options.config.audit_capture_duration_sec)) {
+				::printf("invalid audit capture duration: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--gpu-submit-cadence-ms") {
+			double ms = 0.0;
+			if (!ParseDouble(value, ms) || ms <= 0.0) {
+				::printf("invalid cadence ms: %s\n", value.c_str());
+				return false;
+			}
+			options.config.gpu_submit_cadence_interval_us = static_cast<uint64_t>(ms * 1000.0);
+		} else if (arg == "--gpu-submit-cadence-interval-us") {
+			if (!ParseUint64(value, options.config.gpu_submit_cadence_interval_us) ||
+			    options.config.gpu_submit_cadence_interval_us == 0) {
+				::printf("invalid cadence interval us: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--keymap") {
 			const auto split = value.find('=');
 			if (split == std::string::npos || split == 0 || split + 1 == value.size()) {

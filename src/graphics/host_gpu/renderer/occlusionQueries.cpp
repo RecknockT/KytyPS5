@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/occlusionQueries.h"
 
+#include "common/auditProfiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
@@ -54,7 +55,8 @@ void OcclusionQueries::Dump(uint64_t address) {
 
 void OcclusionQueries::PublishDumps() {
 	if (const auto last = m_dumps.back().queries; last != m_read) {
-		m_scheduler.Wait(m_dumps.back().tick);
+		m_scheduler.Wait(m_dumps.back().tick,
+		                 Common::AuditProfiler::GpuWaitReason::OcclusionQueries);
 		// The unread queries wrap around the pool at most once.
 		for (uint64_t read = m_read; read < last;) {
 			const auto first = static_cast<uint32_t>(read % QUERY_COUNT);
@@ -62,8 +64,8 @@ void OcclusionQueries::PublishDumps() {
 			    static_cast<uint32_t>(std::min<uint64_t>(last - read, QUERY_COUNT - first));
 			RequireVulkanSuccess(
 			    m_device.getQueryPoolResults(m_pool, first, count, count * sizeof(uint64_t),
-				                             m_results.data() + first, sizeof(uint64_t),
-				                             vk::QueryResultFlagBits::e64),
+			                                 m_results.data() + first, sizeof(uint64_t),
+			                                 vk::QueryResultFlagBits::e64),
 			    "vkGetQueryPoolResults");
 			m_device.resetQueryPool(m_pool, first, count);
 			read += count;

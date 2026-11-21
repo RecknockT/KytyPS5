@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -49,7 +50,8 @@ public:
 	FramePool(WindowContext& window, CommandScheduler& scheduler)
 	    : m_window(window), m_scheduler(scheduler) {}
 	~FramePool() {
-		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
+		m_scheduler.Wait(m_scheduler.CurrentTick() - 1,
+		                 Common::AuditProfiler::GpuWaitReason::Swapchain);
 		for (auto& frame: m_frames) {
 			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
 			if (frame->image.image != nullptr) {
@@ -102,7 +104,7 @@ public:
 		frame->busy = true;
 		m_mutex.Unlock();
 
-		m_scheduler.Wait(frame->present_tick);
+		m_scheduler.Wait(frame->present_tick, Common::AuditProfiler::GpuWaitReason::Swapchain);
 		return frame;
 	}
 
@@ -577,7 +579,8 @@ bool Swapchain::NeedsResize() const {
 Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 	// Repeated frames can wrap the semaphore ring without acquiring a new source frame.
 	// Wait for the submission that consumed this slot before signaling it again.
-	scheduler.Wait(m_image_acquired_ticks[m_frame_index]);
+	scheduler.Wait(m_image_acquired_ticks[m_frame_index],
+	               Common::AuditProfiler::GpuWaitReason::Swapchain);
 	const auto result = m_window.graphic_ctx.device.acquireNextImageKHR(
 	    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
 	    &m_image_index);
@@ -893,12 +896,17 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 	SubmitInfo submit;
 	submit.AddWait(m_image_acquired[m_frame_index], 1, vk::PipelineStageFlagBits::eTransfer);
 	submit.AddSignal(m_render_complete[m_image_index]);
-	const auto tick                       = scheduler.Submit(submit);
+	const auto tick = scheduler.Submit(submit, Common::AuditProfiler::SubmitReason::Presentation);
 	m_image_acquired_ticks[m_frame_index] = tick;
 	return tick;
 }
 
 Swapchain::Status Swapchain::Present() {
+	if (Common::AuditProfiler::IsEnabled() &&
+	    Common::AuditProfiler::GetExecutionPhase() ==
+	        Common::AuditProfiler::ExecutionPhase::Initialization) {
+		Common::AuditProfiler::SetExecutionPhase(Common::AuditProfiler::ExecutionPhase::Loading);
+	}
 	const auto         ready = m_render_complete[m_image_index];
 	vk::PresentInfoKHR present {};
 	present.sType              = vk::StructureType::ePresentInfoKHR;
@@ -981,7 +989,8 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 		Common::LockGuard lock(m_impl->present_mutex);
 		auto&             command = m_impl->present_scheduler.BeginCommand();
 		frame->Clear(command, clear);
-		frame->present_tick = m_impl->present_scheduler.Submit();
+		frame->present_tick =
+		    m_impl->present_scheduler.Submit({}, Common::AuditProfiler::SubmitReason::Presentation);
 	}
 	return *frame;
 }

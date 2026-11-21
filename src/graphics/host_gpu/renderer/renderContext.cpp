@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -13,7 +14,8 @@ namespace Libs::Graphics {
 
 RenderContext::RenderContext(GraphicContext& graphics, const std::filesystem::path& shader_store)
     : m_graphics(graphics), m_render_executor(*this),
-      m_command_scheduler(*this, graphics, Config::GpuSubmitCadenceEnabled()),
+      m_command_scheduler(*this, graphics, Config::GpuSubmitCadenceEnabled(),
+                          std::chrono::microseconds(Config::GetGpuSubmitCadenceIntervalUs())),
       m_descriptor_heap(graphics, m_command_scheduler.GetMasterSemaphore()),
       m_sampler_cache(graphics),
       m_buffer_cache(graphics, m_command_scheduler, m_page_manager, m_texture_cache),
@@ -92,9 +94,11 @@ bool RenderContext::WaitWriteBacks(uint64_t vaddr, uint64_t size) {
 	}
 	// The GPU thread can fault inside a draw, so it submits without running deferred operations.
 	if (GuestGpu::IsGpuThread()) {
-		m_command_scheduler.Wait(tick);
+		m_command_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::TextureWriteBack);
 	} else if (tick == m_command_scheduler.CurrentTick()) {
-		GetGpu().SendCommandSync([this, tick] { m_command_scheduler.Wait(tick); });
+		GetGpu().SendCommandSync([this, tick] {
+			m_command_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::TextureWriteBack);
+		});
 	}
 	m_command_scheduler.WaitPriorityOperations(tick);
 	return true;

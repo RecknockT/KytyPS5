@@ -108,19 +108,26 @@ struct ConfigOptions {
 	bool     tessellation_enabled      = false;
 	bool     occlusion_queries_enabled = false;
 	// Lets the GPU start on a long command stream instead of idling until the end-of-slice submit.
-	bool        gpu_submit_cadence_enabled = false;
-	bool        relaxed_shader_float       = false;
-	bool        native_rt                  = false;
-	bool        lod_stats_enabled          = false;
-	bool        audio_compile_hold_enabled = false;
-	bool        trophy_enabled             = true;
-	uint32_t    trophy_duration_seconds    = 6;
-	bool        perf_overlay_enabled       = false;
-	bool        playgo_hack_enabled        = false;
-	bool        skip_notice_screen         = false;
+	bool        gpu_submit_cadence_enabled     = false;
+	uint64_t    gpu_submit_cadence_interval_us = 1000;
+	bool        relaxed_shader_float           = false;
+	bool        native_rt                      = false;
+	bool        lod_stats_enabled              = false;
+	bool        audio_compile_hold_enabled     = false;
+	bool        trophy_enabled                 = true;
+	uint32_t    trophy_duration_seconds        = 6;
+	bool        perf_overlay_enabled           = false;
+	bool        playgo_hack_enabled            = false;
+	bool        skip_notice_screen             = false;
 	std::string launch_activity;
 	// Back-to-back failed zero-timeout event-flag polls back off: yield, then sleep briefly.
-	bool poll_backoff_enabled = true;
+	bool        poll_backoff_enabled           = true;
+	bool        audit_faults_enabled           = false;
+	bool        audit_manual_trigger           = false;
+	bool        extended_stream_buffer_enabled = false;
+	std::string audit_export_path;
+	uint32_t    audit_capture_delay_sec    = 0;
+	uint32_t    audit_capture_duration_sec = 0;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	bool red_zone_protection_enabled = false;
 #endif
@@ -204,8 +211,8 @@ bool     LodStatsEnabled();
 bool     AudioCompileHoldEnabled();
 // Makes a fault readback that waits for the GPU also read back GPU-written bytes of buffers that
 // recently faulted.
-bool BatchHotReadbacksEnabled();
-bool TrophyEnabled();
+bool     BatchHotReadbacksEnabled();
+bool     TrophyEnabled();
 uint32_t GetTrophyDurationSeconds();
 bool     PlayGoHackEnabled();
 bool     SkipNoticeScreen();
@@ -214,6 +221,13 @@ bool KeepGpuCacheOnReuse();
 // Activity ID of the one-shot launchActivity game intent; empty sends none.
 const std::string& GetLaunchActivity();
 bool               PollBackoffEnabled();
+bool               AuditFaultsEnabled();
+bool               AuditManualTriggerEnabled();
+bool               ExtendedStreamBufferEnabled();
+const std::string& GetAuditExportPath();
+uint64_t           GetGpuSubmitCadenceIntervalUs();
+uint32_t           GetAuditCaptureDelaySec();
+uint32_t           GetAuditCaptureDurationSec();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();

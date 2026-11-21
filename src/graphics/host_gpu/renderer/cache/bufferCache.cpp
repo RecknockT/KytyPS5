@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -312,7 +313,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		    [this, pending = std::move(pending)] { PublishDownload(pending); });
 	} else {
 		const auto tick = m_scheduler.CurrentTick();
-		m_scheduler.Wait(tick);
+		m_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::BufferReadback);
 		m_scheduler.WaitPriorityOperations(tick);
 		PublishDownload(pending);
 	}
@@ -396,16 +397,16 @@ void BufferCache::CollectRecentWrites(RangeSet& claimed, uint64_t& budget,
 	// write the ring never records, such as a large buffer or an image, that is bound but not yet
 	// recorded. Like the hot buffers, this relies on no readback running between such a bind and
 	// its recording.
-	m_recent_writes.ForEachNewest(known_tick - 1, [&](uint64_t address, uint64_t size,
-	                                                  bool finished) {
-		if (finished) {
-			ForEachUnclaimed(claimed, address, size, [&](uint64_t piece, uint64_t piece_size) {
-				CollectRecentPiece(piece, piece_size, budget, batch);
-			});
-		}
-		claimed.Add(address, size);
-		return budget > 0;
-	});
+	m_recent_writes.ForEachNewest(
+	    known_tick - 1, [&](uint64_t address, uint64_t size, bool finished) {
+		    if (finished) {
+			    ForEachUnclaimed(claimed, address, size, [&](uint64_t piece, uint64_t piece_size) {
+				    CollectRecentPiece(piece, piece_size, budget, batch);
+			    });
+		    }
+		    claimed.Add(address, size);
+		    return budget > 0;
+	    });
 }
 
 /// Collects the GPU-written bytes of one unclaimed piece of a recent write and counts it for the
@@ -461,7 +462,7 @@ bool BufferCache::DownloadWithHotBuffers(BufferId main_id, Buffer& buffer, uint6
 		RecordDownload(*item.buffer, item.pending);
 	}
 	const auto tick = m_scheduler.CurrentTick();
-	m_scheduler.Wait(tick);
+	m_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::BufferReadback);
 	m_scheduler.WaitPriorityOperations(tick);
 	for (const auto& item: batch) {
 		PublishDownload(item.pending);
@@ -481,8 +482,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                              BDA_PAGETABLE_SIZE),
       m_memory_tracker(page_manager),
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
-      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
-      m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
+      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream,
+                      Config::ExtendedStreamBufferEnabled() ? 256 * MiB : 64 * MiB),
+      m_download_buffer(graphics, scheduler, MemoryUsage::Download,
+                        Config::ExtendedStreamBufferEnabled() ? 128 * MiB : 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_batch_hot_readbacks(Config::BatchHotReadbacksEnabled()) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
@@ -564,7 +567,7 @@ void BufferCache::FlushGpuDirtyForSuspend(uint64_t vaddr, uint64_t size) {
 		// Publish every queued download before the host view goes away, as the garbage collector
 		// does.
 		const auto tick = m_scheduler.CurrentTick();
-		m_scheduler.Wait(tick);
+		m_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::BufferSuspendFlush);
 		m_scheduler.WaitPriorityOperations(tick);
 	}
 	m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
@@ -1090,6 +1093,9 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	auto [dst, dst_offset] = dst_memory ? ObtainBuffer(dst_vaddr, size, true, true, dst_id)
 	                                    : std::pair {&m_gds_buffer, dst_vaddr};
 	dst->CopyFrom(command, *src, src_offset, dst_offset, size);
+	if (Common::AuditProfiler::IsEnabled()) {
+		Common::AuditProfiler::RecordInternalGpuTransfer(size);
+	}
 }
 
 bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
@@ -1262,7 +1268,8 @@ void BufferCache::RunGarbageCollector() {
 
 	// Publish all queued downloads before releasing their tracked pages and owners.
 	const auto completion_tick = m_scheduler.CurrentTick();
-	m_scheduler.Wait(completion_tick);
+	m_scheduler.Wait(completion_tick,
+	                 Common::AuditProfiler::GpuWaitReason::BufferGarbageCollection);
 	m_scheduler.WaitPriorityOperations(completion_tick);
 	for (const auto id: dirty_buffers) {
 		auto& buffer = m_slot_buffers[id];
