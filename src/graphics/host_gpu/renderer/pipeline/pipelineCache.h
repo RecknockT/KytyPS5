@@ -152,7 +152,7 @@ struct DrawRenderState {
 	bool                  indirect_draw = false;
 	// Output: false when the draw must not be skipped while its shaders are built on workers,
 	// because it draws a small cached target (glyphs, UI layers) the game may not redraw.
-	bool                  deferrable    = true;
+	bool deferrable = true;
 
 	[[nodiscard]] std::span<const ShaderVertexInputInfo> VertexStages() const {
 		return {vertex_info.data(), vertex_info[1].stage ? 3u : 1u};
@@ -210,7 +210,7 @@ public:
 		bool                 uses_push_descriptors = false;
 		bool                 uses_image_heap       = false;
 		// A worker is still creating it; only the render thread reads or clears this.
-		bool                 pending               = false;
+		bool pending = false;
 	};
 
 	// Reads the shaders and registers bound in `command` into the state's shader stages.
@@ -222,9 +222,9 @@ public:
 	// With --async-shader-compile, starts the draw's pipeline on a worker if it has none and says
 	// whether it is ready; the draw is skipped until it is. Otherwise true, and
 	// GetGraphicsPipeline creates the pipeline.
-	[[nodiscard]] bool EnsureGraphicsPipeline(const CommandBuffer& command,
+	[[nodiscard]] bool EnsureGraphicsPipeline(const CommandBuffer&   command,
 	                                          const DrawRenderState& state,
-	                                          const DrawTargets& targets);
+	                                          const DrawTargets&     targets);
 	Pipeline& GetGraphicsPipeline(const CommandBuffer& command, const DrawRenderState& state,
 	                              const DrawTargets& targets);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info);
@@ -234,12 +234,12 @@ private:
 
 	struct Program {
 		std::unique_ptr<ShaderRecompiler::ShaderSource> call_source;
-		ShaderRecompiler::IR::ResourcePlan           resource_plan;
-		ShaderRecompiler::IR::ResourceSnapshot       resources;
-		ShaderRecompiler::IR::ResourceSpecialization specialization;
+		ShaderRecompiler::IR::ResourcePlan              resource_plan;
+		ShaderRecompiler::IR::ResourceSnapshot          resources;
+		ShaderRecompiler::IR::ResourceSpecialization    specialization;
 		// A deque, so pipelines being made on workers keep valid pointers to their modules.
-		std::deque<ShaderModule>                     modules;
-		bool                                         skip_dispatch = false;
+		std::deque<ShaderModule> modules;
+		bool                     skip_dispatch = false;
 
 		[[nodiscard]] std::span<const uint32_t> FunctionCode() const;
 		bool RefreshCallSource(const ShaderRecompiler::IR::SrtRuntime& runtime);
@@ -282,8 +282,10 @@ private:
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
 	mutable bool                          m_driver_cache_dirty = false;
 	std::unordered_map<GraphicsPipelineKey, Pipeline, GraphicsPipelineKeyHash> m_graphics_pipelines;
-	std::unordered_map<uint64_t, Pipeline>                                     m_compute_pipelines;
-	std::unordered_map<uint64_t, ShaderTessellationInputInfo>                  m_tess_layouts;
+	GraphicsPipelineKey                                       m_last_graphics_key {};
+	Pipeline*                                                 m_last_graphics_pipeline = nullptr;
+	std::unordered_map<uint64_t, Pipeline>                    m_compute_pipelines;
+	std::unordered_map<uint64_t, ShaderTessellationInputInfo> m_tess_layouts;
 	// Records everything first created if a shader store is open, and writes the driver cache.
 	ShaderStoreWriter m_store;
 
@@ -318,17 +320,16 @@ private:
 	                            uint32_t push_data_cursor, uint32_t push_data_ceiling);
 	// The part of CompileModule that touches no cache state, so a worker can run it.
 	static CompiledStage
-	CompileStage(vk::Device device, const ProgramKey& key,
-	             ShaderRecompiler::CompileOptions                   options,
-	             ShaderRecompiler::TranslateResult                  translated,
+	CompileStage(vk::Device device, const ProgramKey& key, ShaderRecompiler::CompileOptions options,
+	             ShaderRecompiler::TranslateResult                   translated,
 	             const ShaderRecompiler::IR::ResourceSpecialization& specialization,
 	             uint32_t push_data_cursor, uint32_t push_data_ceiling,
 	             std::span<const uint32_t> function_code);
 	ShaderModule& AddModule(Program& program, const ProgramKey& key, CompiledStage compiled);
 	// The pipeline's key, and in `stages` the modules it is made of.
-	GraphicsPipelineKey MakeGraphicsPipelineKey(const CommandBuffer&   command,
-	                                            const DrawRenderState& state,
-	                                            const DrawTargets&     targets,
+	GraphicsPipelineKey MakeGraphicsPipelineKey(const CommandBuffer&                command,
+	                                            const DrawRenderState&              state,
+	                                            const DrawTargets&                  targets,
 	                                            std::array<const ShaderModule*, 4>& stages);
 
 	// pipelineAsync.cpp
@@ -338,12 +339,12 @@ private:
 	                  const InputInfo& input_info, const ShaderRecompiler::CompileOptions& options,
 	                  uint32_t push_data_cursor, AsyncMode mode);
 	// Applies the work the workers have finished. Render thread only.
-	void PumpAsync();
+	void            PumpAsync();
 	static uint64_t FlightId(const ProgramKey& key, uint32_t push_data_cursor,
 	                         const ShaderRecompiler::IR::ResourceSpecialization* specialization);
-	void InitializeDriverCache();
-	void CheckpointDriverCache();
-	void WriteDriverCache() const;
+	void            InitializeDriverCache();
+	void            CheckpointDriverCache();
+	void            WriteDriverCache() const;
 
 	// pipelineSerialization.cpp
 	void WarmUp(const std::filesystem::path& path);

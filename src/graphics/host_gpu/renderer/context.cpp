@@ -1,5 +1,7 @@
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugCounters.h"
+#include "common/emulatorConfig.h"
 #include "common/profiler.h"
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -21,7 +23,10 @@ CommandBuffer::CommandBuffer(CommandScheduler& scheduler)
 
 void CommandBuffer::Begin() {
 	EXIT_IF(m_rendering || IsInvalid());
-	auto buffer = Handle();
+	m_bound_graphics_pipeline = nullptr;
+	m_bound_index_buffer      = {};
+	m_bound_vertex_buffers    = {};
+	auto buffer               = Handle();
 
 	vk::CommandBufferBeginInfo begin_info {};
 	begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
@@ -93,6 +98,56 @@ void CommandBuffer::EndRendering() const {
 	}
 	Handle().endRendering();
 	m_rendering = false;
+}
+
+void CommandBuffer::BindGraphicsPipeline(vk::Pipeline pipeline) const {
+	if (!Config::RedundantBindElisionEnabled() || m_bound_graphics_pipeline != pipeline) {
+		Handle().bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+		m_bound_graphics_pipeline = pipeline;
+	} else {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantPipelineBinds);
+	}
+}
+
+void CommandBuffer::BindIndexBuffer(vk::Buffer buffer, vk::DeviceSize offset,
+                                    vk::IndexType type) const {
+	if (!Config::RedundantBindElisionEnabled() || m_bound_index_buffer.buffer != buffer ||
+	    m_bound_index_buffer.offset != offset || m_bound_index_buffer.type != type) {
+		Handle().bindIndexBuffer(buffer, offset, type);
+		m_bound_index_buffer = {buffer, offset, type};
+	} else {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantIndexBinds);
+	}
+}
+
+void CommandBuffer::BindVertexBuffers(uint32_t count, const vk::Buffer* buffers,
+                                      const vk::DeviceSize* offsets,
+                                      const vk::DeviceSize* sizes) const {
+	if (count == 0) {
+		return;
+	}
+	bool matches = Config::RedundantBindElisionEnabled() && (count == m_bound_vertex_buffers.count);
+	if (matches) {
+		for (uint32_t i = 0; i < count; i++) {
+			if (m_bound_vertex_buffers.buffers[i] != buffers[i] ||
+			    m_bound_vertex_buffers.offsets[i] != offsets[i] ||
+			    m_bound_vertex_buffers.sizes[i] != sizes[i]) {
+				matches = false;
+				break;
+			}
+		}
+	}
+	if (!matches) {
+		Handle().bindVertexBuffers2(0, count, buffers, offsets, sizes, nullptr);
+		m_bound_vertex_buffers.count = count;
+		for (uint32_t i = 0; i < count; i++) {
+			m_bound_vertex_buffers.buffers[i] = buffers[i];
+			m_bound_vertex_buffers.offsets[i] = offsets[i];
+			m_bound_vertex_buffers.sizes[i]   = sizes[i];
+		}
+	} else {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantVertexBinds);
+	}
 }
 
 } // namespace Libs::Graphics

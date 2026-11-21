@@ -453,37 +453,41 @@ static vk::Extent2D ClampToBacking(const Image& image, uint32_t base_level, vk::
 	                      std::max(image.info.extent.height >> base_level, 1u)};
 	if (image.backing.image != nullptr) {
 		// What was really allocated, which can differ from what the cache believes.
-		backing.width  = std::min(backing.width, std::max(image.backing.extent.width >> base_level, 1u));
-		backing.height = std::min(backing.height, std::max(image.backing.extent.height >> base_level, 1u));
+		backing.width =
+		    std::min(backing.width, std::max(image.backing.extent.width >> base_level, 1u));
+		backing.height =
+		    std::min(backing.height, std::max(image.backing.extent.height >> base_level, 1u));
 	}
 	if (backing.width >= extent.width && backing.height >= extent.height) {
 		return extent;
 	}
 	static std::atomic<uint32_t> reports {0};
 	if (reports.fetch_add(1, std::memory_order_relaxed) < 32u) {
-		std::printf("Render target: %s 0x%016" PRIx64 " is %ux%u but its image is %ux%u (level %u): "
-		     "render area bounded to the image\n",
-		     kind, address, extent.width, extent.height, backing.width, backing.height,
-		     base_level);
+		std::printf(
+		    "Render target: %s 0x%016" PRIx64 " is %ux%u but its image is %ux%u (level %u): "
+		    "render area bounded to the image\n",
+		    kind, address, extent.width, extent.height, backing.width, backing.height, base_level);
 		std::fflush(stdout);
 	}
 	return {std::min(extent.width, backing.width), std::min(extent.height, backing.height)};
 }
 
-// The same for array layers: a layered pass (a shadow cascade, say) over more layers than the image has
-// writes past its end. Bounded to the image, and logged.
+// The same for array layers: a layered pass (a shadow cascade, say) over more layers than the image
+// has writes past its end. Bounded to the image, and logged.
 static uint32_t ClampLayersToBacking(const Image& image, uint32_t base_layer, uint32_t layer_count,
                                      uint64_t address, const char* kind) {
 	if (image.backing.image == nullptr) {
 		return layer_count;
 	}
-	const uint32_t available = image.backing.layers > base_layer ? image.backing.layers - base_layer : 1u;
+	const uint32_t available =
+	    image.backing.layers > base_layer ? image.backing.layers - base_layer : 1u;
 	if (layer_count <= available) {
 		return layer_count;
 	}
 	static std::atomic<uint32_t> reports {0};
 	if (reports.fetch_add(1, std::memory_order_relaxed) < 32u) {
-		std::printf("Render target: %s 0x%016" PRIx64 " renders %u layers from layer %u but its image has %u: "
+		std::printf("Render target: %s 0x%016" PRIx64
+		            " renders %u layers from layer %u but its image has %u: "
 		            "layers bounded to the image\n",
 		            kind, address, layer_count, base_layer, image.backing.layers);
 		std::fflush(stdout);
@@ -521,11 +525,11 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              buffer.Handle());
 		const auto extent = ClampToBacking(image, view.base_level, target.Extent(),
 		                                   target.desc.info.data.address, "color");
-		state.width             = std::min(state.width, extent.width);
-		state.height            = std::min(state.height, extent.height);
-		state.num_layers        = std::min(state.num_layers,
-		                                   ClampLayersToBacking(image, view.base_layer, view.layer_count,
-		                                                        target.desc.info.data.address, "color"));
+		state.width       = std::min(state.width, extent.width);
+		state.height      = std::min(state.height, extent.height);
+		state.num_layers  = std::min(state.num_layers,
+		                             ClampLayersToBacking(image, view.base_layer, view.layer_count,
+		                                                  target.desc.info.data.address, "color"));
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
 		attachment.image_view       = image_view;
@@ -587,16 +591,15 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
-		const auto depth_extent =
-		    ClampToBacking(image, view.base_level,
-		                   {depth.desc.info.extent.width, depth.desc.info.extent.height},
-		                   depth.desc.info.data.address, "depth");
-		state.width  = std::min(state.width, depth_extent.width);
-		state.height = std::min(state.height, depth_extent.height);
-		state.num_layers          = std::min(state.num_layers,
-		                                     ClampLayersToBacking(image, view.base_layer, view.layer_count,
-		                                                          depth.desc.info.data.address, "depth"));
-		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
+		const auto depth_extent = ClampToBacking(
+		    image, view.base_level, {depth.desc.info.extent.width, depth.desc.info.extent.height},
+		    depth.desc.info.data.address, "depth");
+		state.width        = std::min(state.width, depth_extent.width);
+		state.height       = std::min(state.height, depth_extent.height);
+		state.num_layers   = std::min(state.num_layers,
+		                              ClampLayersToBacking(image, view.base_layer, view.layer_count,
+		                                                   depth.desc.info.data.address, "depth"));
+		const auto aspects = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;
 		attachment.image_view     = image_view;
 		attachment.image_layout   = layout;
@@ -990,20 +993,19 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 	return prepared;
 }
 
-static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
+static void CommitVertexBuffers(const CommandBuffer&         buffer,
                                 const PreparedVertexBuffers& prepared) {
 	if (prepared.count != 0) {
-		// Guest descriptor bounds must survive allocation merging in the cache.
-		vk_buffer.bindVertexBuffers2(0, prepared.count, prepared.buffers.data(),
-		                             prepared.offsets.data(), prepared.sizes.data(), nullptr);
+		buffer.BindVertexBuffers(prepared.count, prepared.buffers.data(), prepared.offsets.data(),
+		                         prepared.sizes.data());
 	}
 }
 
-static void CommitIndexBuffer(vk::CommandBuffer vk_buffer, const PreparedIndexBuffer& prepared) {
+static void CommitIndexBuffer(const CommandBuffer& buffer, const PreparedIndexBuffer& prepared) {
 	if (prepared.buffer == nullptr) {
 		return;
 	}
-	vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
+	buffer.BindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
 }
 
 static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1177,7 +1179,8 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		const auto size = static_cast<uint64_t>(draw.index_count) * index_source.guest_element_size;
 		index_begin     = index_source.address & ~uint64_t {3};
 		index_end       = (index_source.address + size + 3u) & ~uint64_t {3};
-		(void)m_context.GetBufferCache().FindBufferForShaderRead(index_begin, index_end - index_begin);
+		(void)m_context.GetBufferCache().FindBufferForShaderRead(index_begin,
+		                                                         index_end - index_begin);
 	}
 	auto&                            bindings = m_graphics_bindings;
 	std::array<PreparedBindings*, 4> descriptor_stages {};
@@ -1238,11 +1241,11 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	// memory.
 	auto vk_buffer = buffer.Handle();
 	if (!mesh_active) {
-		CommitVertexBuffers(vk_buffer, vertex_bindings);
+		CommitVertexBuffers(buffer, vertex_bindings);
 	}
 	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
 	if (!mesh_active) {
-		CommitIndexBuffer(vk_buffer, index_binding);
+		CommitIndexBuffer(buffer, index_binding);
 	}
 	using ShaderRecompiler::IR::PushData;
 	const auto draw_dwords =
@@ -1296,7 +1299,7 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		ShaderWriteHazardBarrier(vk_buffer, shader_write_stages);
 	}
 	buffer.BeginRendering(rendering);
-	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+	buffer.BindGraphicsPipeline(pipeline.pipeline);
 	auto&         occlusion_queries = m_context.GetOcclusionQueries();
 	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
 	if (mesh_task) {

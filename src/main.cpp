@@ -110,6 +110,13 @@ static void PrintUsage() {
 	         "unmapped range.\n");
 	::printf("  --partial-buffer-refresh             Refresh only the buffer-written part of an "
 	         "image.\n");
+	::printf("  --redundant-bind-elision             Elide redundant Vulkan pipeline and buffer "
+	         "binds (default: on).\n");
+	::printf("  --no-redundant-bind-elision          Disable redundant Vulkan bind elision.\n");
+	::printf("  --pipeline-cache-mru                 Enable MRU fast-path for graphics pipeline "
+	         "lookups (default: on).\n");
+	::printf("  --no-pipeline-cache-mru              Disable MRU fast-path for graphics pipeline "
+	         "lookups.\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -313,6 +320,10 @@ static constexpr Flag FLAGS[] = {
     {"--audit-manual-trigger", &ConfigOptions::audit_manual_trigger},
     {"--audit-wait-for-hotkey", &ConfigOptions::audit_manual_trigger},
     {"--extended-stream-buffer", &ConfigOptions::extended_stream_buffer_enabled},
+    {"--redundant-bind-elision", &ConfigOptions::redundant_bind_elision_enabled, true},
+    {"--no-redundant-bind-elision", &ConfigOptions::redundant_bind_elision_enabled, false},
+    {"--pipeline-cache-mru", &ConfigOptions::pipeline_cache_mru_enabled, true},
+    {"--no-pipeline-cache-mru", &ConfigOptions::pipeline_cache_mru_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif

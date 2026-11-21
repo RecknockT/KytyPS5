@@ -105,6 +105,11 @@ std::atomic<uint64_t> g_baseline_dispatches {0};
 std::atomic<uint64_t> g_baseline_pipelines_created {0};
 std::atomic<uint64_t> g_baseline_shaders_compiled {0};
 std::atomic<uint64_t> g_baseline_gpu_thread_busy_ns {0};
+std::atomic<uint64_t> g_baseline_pipeline_cache_lookups {0};
+std::atomic<uint64_t> g_baseline_pipeline_cache_hits {0};
+std::atomic<uint64_t> g_baseline_redundant_pipeline_binds {0};
+std::atomic<uint64_t> g_baseline_redundant_vertex_binds {0};
+std::atomic<uint64_t> g_baseline_redundant_index_binds {0};
 
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
@@ -344,6 +349,16 @@ void StartCapture(const char* trigger_reason) {
 	                                  std::memory_order_relaxed);
 	g_baseline_gpu_thread_busy_ns.store(Counters::Get(Counters::Counter::GpuThreadBusyNs),
 	                                    std::memory_order_relaxed);
+	g_baseline_pipeline_cache_lookups.store(Counters::Get(Counters::Counter::PipelineCacheLookups),
+	                                        std::memory_order_relaxed);
+	g_baseline_pipeline_cache_hits.store(Counters::Get(Counters::Counter::PipelineCacheHits),
+	                                     std::memory_order_relaxed);
+	g_baseline_redundant_pipeline_binds.store(
+	    Counters::Get(Counters::Counter::RedundantPipelineBinds), std::memory_order_relaxed);
+	g_baseline_redundant_vertex_binds.store(Counters::Get(Counters::Counter::RedundantVertexBinds),
+	                                        std::memory_order_relaxed);
+	g_baseline_redundant_index_binds.store(Counters::Get(Counters::Counter::RedundantIndexBinds),
+	                                       std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -764,6 +779,8 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.partial_refresh_enabled        = Config::PartialBufferRefreshEnabled();
 	snapshot.batch_hot_readbacks_enabled    = Config::BatchHotReadbacksEnabled();
 	snapshot.extended_stream_buffer_enabled = Config::ExtendedStreamBufferEnabled();
+	snapshot.redundant_bind_elision_enabled = Config::RedundantBindElisionEnabled();
+	snapshot.pipeline_cache_mru_enabled     = Config::PipelineCacheMruEnabled();
 	snapshot.git_commit                     = KYTY_GIT_VERSION;
 
 	const auto state = g_capture_state.load(std::memory_order_relaxed);
@@ -1078,6 +1095,35 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.gpu_thread_busy_ms = static_cast<double>(snapshot.gpu_thread_busy_ns) / 1000000.0;
 	snapshot.gpu_thread_busy_ms_per_frame = snapshot.gpu_thread_busy_ms / snap_frames;
 
+	const auto cur_lookups  = Counters::Get(Counters::Counter::PipelineCacheLookups);
+	const auto base_lookups = g_baseline_pipeline_cache_lookups.load(std::memory_order_relaxed);
+	snapshot.pipeline_cache_lookups =
+	    (cur_lookups >= base_lookups) ? (cur_lookups - base_lookups) : cur_lookups;
+
+	const auto cur_hits          = Counters::Get(Counters::Counter::PipelineCacheHits);
+	const auto base_hits         = g_baseline_pipeline_cache_hits.load(std::memory_order_relaxed);
+	snapshot.pipeline_cache_hits = (cur_hits >= base_hits) ? (cur_hits - base_hits) : cur_hits;
+	snapshot.pipeline_cache_hit_pct =
+	    snapshot.pipeline_cache_lookups > 0
+	        ? (100.0 * static_cast<double>(snapshot.pipeline_cache_hits) /
+	           static_cast<double>(snapshot.pipeline_cache_lookups))
+	        : 0.0;
+
+	const auto cur_red_pipe  = Counters::Get(Counters::Counter::RedundantPipelineBinds);
+	const auto base_red_pipe = g_baseline_redundant_pipeline_binds.load(std::memory_order_relaxed);
+	snapshot.redundant_pipeline_binds =
+	    (cur_red_pipe >= base_red_pipe) ? (cur_red_pipe - base_red_pipe) : cur_red_pipe;
+
+	const auto cur_red_vert  = Counters::Get(Counters::Counter::RedundantVertexBinds);
+	const auto base_red_vert = g_baseline_redundant_vertex_binds.load(std::memory_order_relaxed);
+	snapshot.redundant_vertex_binds =
+	    (cur_red_vert >= base_red_vert) ? (cur_red_vert - base_red_vert) : cur_red_vert;
+
+	const auto cur_red_idx  = Counters::Get(Counters::Counter::RedundantIndexBinds);
+	const auto base_red_idx = g_baseline_redundant_index_binds.load(std::memory_order_relaxed);
+	snapshot.redundant_index_binds =
+	    (cur_red_idx >= base_red_idx) ? (cur_red_idx - base_red_idx) : cur_red_idx;
+
 	return snapshot;
 }
 
@@ -1133,6 +1179,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"partial_buffer_refresh", snap.partial_refresh_enabled},
 	         {"batch_hot_readbacks", snap.batch_hot_readbacks_enabled},
 	         {"extended_stream_buffer", snap.extended_stream_buffer_enabled},
+	         {"redundant_bind_elision", snap.redundant_bind_elision_enabled},
+	         {"pipeline_cache_mru", snap.pipeline_cache_mru_enabled},
 	     }},
 	};
 
@@ -1332,6 +1380,12 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"shaders_compiled", snap.shaders_compiled},
 	    {"gpu_thread_busy_ms", snap.gpu_thread_busy_ms},
 	    {"gpu_thread_busy_ms_per_frame", snap.gpu_thread_busy_ms_per_frame},
+	    {"pipeline_cache_lookups", snap.pipeline_cache_lookups},
+	    {"pipeline_cache_hits", snap.pipeline_cache_hits},
+	    {"pipeline_cache_hit_pct", snap.pipeline_cache_hit_pct},
+	    {"redundant_pipeline_binds", snap.redundant_pipeline_binds},
+	    {"redundant_vertex_binds", snap.redundant_vertex_binds},
+	    {"redundant_index_binds", snap.redundant_index_binds},
 	};
 
 	// Legacy backwards-compatible aliases for existing tests and scripts
@@ -1433,6 +1487,14 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("GraphicsWorkload,GpuThreadBusyMs,{:.2f}\n", snap.gpu_thread_busy_ms);
 	out << fmt::format("GraphicsWorkload,GpuThreadBusyMsPerFrame,{:.2f}\n",
 	                   snap.gpu_thread_busy_ms_per_frame);
+	out << fmt::format("GraphicsWorkload,PipelineCacheLookups,{}\n", snap.pipeline_cache_lookups);
+	out << fmt::format("GraphicsWorkload,PipelineCacheHits,{}\n", snap.pipeline_cache_hits);
+	out << fmt::format("GraphicsWorkload,PipelineCacheHitPct,{:.1f}\n",
+	                   snap.pipeline_cache_hit_pct);
+	out << fmt::format("GraphicsWorkload,RedundantPipelineBinds,{}\n",
+	                   snap.redundant_pipeline_binds);
+	out << fmt::format("GraphicsWorkload,RedundantVertexBinds,{}\n", snap.redundant_vertex_binds);
+	out << fmt::format("GraphicsWorkload,RedundantIndexBinds,{}\n", snap.redundant_index_binds);
 
 	out << fmt::format("WriteTracking,TotalFaults,{}\n", snap.total_faults);
 	out << fmt::format("WriteTracking,FaultsPerFrame,{:.1f}\n",

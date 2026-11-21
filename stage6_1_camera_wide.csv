@@ -1,0 +1,305 @@
+# KytyPS5 Audit Profile Export (Interval Consistent Snapshot)
+# Note: ThreadAccumulated times sum concurrent thread execution and cannot be added directly to wall-clock frametime.
+Category,Metric,Value
+Metadata,CaptureId,cap_1a1ff333fc7
+Metadata,CaptureState,Completed
+Metadata,CapturePhase,Gameplay
+Metadata,TriggerReason,ManualHotkeyF9
+Metadata,RealDurationSeconds,30.037
+Metadata,TargetDurationSeconds,30
+Metadata,DelaySeconds,0
+Metadata,GitCommit,KytyPS5-2026-11-20-a1fc5ae-360-g0f9dcf990
+Metadata,CadenceEnabled,1
+Metadata,CadenceIntervalUs,1000
+Metadata,PartialRefreshEnabled,1
+Metadata,BatchHotReadbacksEnabled,0
+Metadata,ExtendedStreamBufferEnabled,0
+Frametime,TotalFrames,618
+Frametime,EffectiveFps,20.57
+Frametime,FrametimeFps,20.54
+Frametime,AvgFrameMs,48.68
+Frametime,MinFrameMs,32.61
+Frametime,MaxFrameMs,66.83
+Frametime,P50FrameMs,49.95
+Frametime,P90FrameMs,50.42
+Frametime,P95FrameMs,50.62
+Frametime,P99FrameMs,51.33
+Stuttering,HitchesGe50ms,271
+Stuttering,HitchesGe100ms,0
+Stuttering,HitchesGe250ms,0
+Stuttering,HitchesGe500ms,0
+Stuttering,HitchesGe1000ms,0
+Stuttering,HitchTimeTotalMs,13680.22
+Timing,TotalVblanks,1802
+Timing,VblankRateHz,59.99
+Timing,TotalFlipsSubmitted,617
+Timing,TotalFlipsCompleted,617
+Timing,FlipRateHz,20.54
+Timing,TotalFlipWaitMs,0.00
+Timing,AvgFlipWaitMs,0.00
+Timing,AudioUpdatesCount,2816
+Timing,AudioTotalSamples,1441792
+Timing,AudioEffectiveHz,48000.53
+Timing,SimulationSpeedRatio,0.3424
+Timing,SimulationSpeedPercent,34.24%
+Timing,EstimatedSimulationSpeedRatioModel60Hz,0.3424
+Timing,EstimatedSimulationSpeedPercentModel60Hz,34.24%
+Timing,SimulationSpeedModelType,TheoreticalModelAssuming60HzFixedTimestep
+GraphicsWorkload,TotalDraws,3109658
+GraphicsWorkload,DrawsPerFrame,5031.81
+GraphicsWorkload,DrawsPerSecond,103527.58
+GraphicsWorkload,TotalDrawInstances,12836860
+GraphicsWorkload,InstancesPerFrame,20771.62
+GraphicsWorkload,TotalIndirectDraws,1851
+GraphicsWorkload,TotalDispatches,144995
+GraphicsWorkload,DispatchesPerFrame,234.62
+GraphicsWorkload,DispatchesPerSecond,4827.21
+GraphicsWorkload,PipelinesCreated,0
+GraphicsWorkload,ShadersCompiled,0
+GraphicsWorkload,GpuThreadBusyMs,30031.05
+GraphicsWorkload,GpuThreadBusyMsPerFrame,48.59
+WriteTracking,TotalFaults,786661
+WriteTracking,FaultsPerFrame,1272.9
+WriteTracking,FaultsPerSecond,26190
+WriteTracking,TotalReprotects,3041145
+WriteTracking,ReprotectsPerFrame,4920.9
+WriteTracking,ThreadAccumulatedHandlerMs,7517.58
+WriteTracking,ThreadAccumulatedHandlerMsPerFrame,12.16
+WriteTracking,AvgHandlerUs,9.56
+WriteTracking,MaxHandlerUs,5267.80
+GpuWaitCount,Other,0
+GpuWaitPerFrame,Other,0.00
+GpuWaitThreadMs,Other,0.000
+GpuWaitThreadMsPerFrame,Other,0.000
+GpuWaitAvgLatencyUs,Other,0.0
+GpuWaitCount,TextureWriteBack,0
+GpuWaitPerFrame,TextureWriteBack,0.00
+GpuWaitThreadMs,TextureWriteBack,0.000
+GpuWaitThreadMsPerFrame,TextureWriteBack,0.000
+GpuWaitAvgLatencyUs,TextureWriteBack,0.0
+GpuWaitCount,BufferReadback,3901
+GpuWaitPerFrame,BufferReadback,6.31
+GpuWaitThreadMs,BufferReadback,4238.562
+GpuWaitThreadMsPerFrame,BufferReadback,6.859
+GpuWaitAvgLatencyUs,BufferReadback,1086.5
+GpuWaitCount,BufferGarbageCollection,0
+GpuWaitPerFrame,BufferGarbageCollection,0.00
+GpuWaitThreadMs,BufferGarbageCollection,0.000
+GpuWaitThreadMsPerFrame,BufferGarbageCollection,0.000
+GpuWaitAvgLatencyUs,BufferGarbageCollection,0.0
+GpuWaitCount,BufferSuspendFlush,0
+GpuWaitPerFrame,BufferSuspendFlush,0.00
+GpuWaitThreadMs,BufferSuspendFlush,0.000
+GpuWaitThreadMsPerFrame,BufferSuspendFlush,0.000
+GpuWaitAvgLatencyUs,BufferSuspendFlush,0.0
+GpuWaitCount,StreamBufferWait,0
+GpuWaitPerFrame,StreamBufferWait,0.00
+GpuWaitThreadMs,StreamBufferWait,0.000
+GpuWaitThreadMsPerFrame,StreamBufferWait,0.000
+GpuWaitAvgLatencyUs,StreamBufferWait,0.0
+GpuWaitCount,OcclusionQueries,0
+GpuWaitPerFrame,OcclusionQueries,0.00
+GpuWaitThreadMs,OcclusionQueries,0.000
+GpuWaitThreadMsPerFrame,OcclusionQueries,0.000
+GpuWaitAvgLatencyUs,OcclusionQueries,0.0
+GpuWaitCount,DescriptorHeap,0
+GpuWaitPerFrame,DescriptorHeap,0.00
+GpuWaitThreadMs,DescriptorHeap,0.000
+GpuWaitThreadMsPerFrame,DescriptorHeap,0.000
+GpuWaitAvgLatencyUs,DescriptorHeap,0.0
+GpuWaitCount,CommandSchedulerDrain,0
+GpuWaitPerFrame,CommandSchedulerDrain,0.00
+GpuWaitThreadMs,CommandSchedulerDrain,0.000
+GpuWaitThreadMsPerFrame,CommandSchedulerDrain,0.000
+GpuWaitAvgLatencyUs,CommandSchedulerDrain,0.0
+GpuWaitCount,PriorityOperation,13662
+GpuWaitPerFrame,PriorityOperation,22.11
+GpuWaitThreadMs,PriorityOperation,12942.823
+GpuWaitThreadMsPerFrame,PriorityOperation,20.943
+GpuWaitAvgLatencyUs,PriorityOperation,947.4
+GpuWaitCount,RayTracing,0
+GpuWaitPerFrame,RayTracing,0.00
+GpuWaitThreadMs,RayTracing,0.000
+GpuWaitThreadMsPerFrame,RayTracing,0.000
+GpuWaitAvgLatencyUs,RayTracing,0.0
+GpuWaitCount,Swapchain,0
+GpuWaitPerFrame,Swapchain,0.00
+GpuWaitThreadMs,Swapchain,0.000
+GpuWaitThreadMsPerFrame,Swapchain,0.000
+GpuWaitAvgLatencyUs,Swapchain,0.0
+GpuWaitCount,FaultManager,0
+GpuWaitPerFrame,FaultManager,0.00
+GpuWaitThreadMs,FaultManager,0.000
+GpuWaitThreadMsPerFrame,FaultManager,0.000
+GpuWaitAvgLatencyUs,FaultManager,0.0
+SubmitCount,Other,0
+SubmitPerFrame,Other,0.00
+SubmitCount,Cadence,20820
+SubmitPerFrame,Cadence,33.69
+SubmitCount,ExplicitFlush,5594
+SubmitPerFrame,ExplicitFlush,9.05
+SubmitCount,Synchronization,3901
+SubmitPerFrame,Synchronization,6.31
+SubmitCount,Presentation,618
+SubmitPerFrame,Presentation,1.00
+SubmitCount,Drain,0
+SubmitPerFrame,Drain,0.00
+SubmitCount,Total,30933
+SubmitPerFrame,Total,50.05
+Transfers,CpuToGpuUploadMB,32742.45
+Transfers,CpuToGpuUploadMBPerFrame,52.98
+Transfers,GpuToCpuReadbackMB,91.95
+Transfers,GpuToCpuReadbackMBPerFrame,0.15
+Transfers,InternalGpuCopyMB,0.04
+Optimization,TexturePartialRefreshes,617
+Optimization,TexturePartialFallbacks,0
+Optimization,TexturePartialUploadMB,38.56
+Optimization,CadenceSubmits,20820
+Optimization,CadenceHeldBack,110600
+PhaseLoading,FrameCount,0
+PhaseLoading,TotalFrameMs,0.00
+PhaseLoading,Faults,0
+PhaseLoading,Reprotects,0
+PhaseLoading,Submits,0
+PhaseLoading,GpuWaitMs,0.00
+PhaseGameplay,FrameCount,618
+PhaseGameplay,TotalFrameMs,30083.17
+PhaseGameplay,Faults,786661
+PhaseGameplay,Reprotects,3041145
+PhaseGameplay,Submits,30933
+PhaseGameplay,GpuWaitMs,17181.38
+
+TopPages,PageVaddr,FaultCount,ReprotectCount
+Page,0x0000000579d2f000,1851,1850
+Page,0x0000000579d8c000,1234,2467
+Page,0x000000050cc30000,994,206
+Page,0x000000050e430000,966,205
+Page,0x000000050b430000,904,205
+Page,0x000000050d56c000,700,206
+Page,0x000000055c008000,696,1232
+Page,0x000000050d54a000,696,206
+Page,0x000000050d55b000,693,206
+Page,0x000000050d57d000,693,206
+Page,0x000000050ed4a000,693,205
+Page,0x000000050bd6c000,690,203
+Page,0x000000050ed6c000,687,205
+Page,0x000000050bd5b000,685,203
+Page,0x000000050ed5b000,678,205
+Page,0x000000050bd4a000,678,203
+Page,0x000000050ed7d000,672,205
+Page,0x000000050bd7d000,668,203
+Page,0x0000000401b3c000,617,616
+Page,0x0000000401038000,617,616
+Page,0x000000040103b000,617,616
+Page,0x000000055ab31000,617,616
+Page,0x000000040103c000,617,616
+Page,0x0000000401039000,617,616
+Page,0x0000000401037000,617,616
+Page,0x000000055ab00000,617,616
+Page,0x000000055ab10000,617,616
+Page,0x000000055ab41000,617,616
+Page,0x000000040103a000,617,616
+Page,0x000000055ab20000,617,616
+Page,0x000000055aaf0000,617,616
+Page,0x000000050d544000,461,205
+Page,0x000000050d566000,457,205
+Page,0x000000050bd66000,450,205
+Page,0x000000050ed66000,450,204
+Page,0x000000050bd44000,449,205
+Page,0x000000050ed44000,447,204
+Page,0x000000050bd77000,446,205
+Page,0x000000050d555000,446,205
+Page,0x000000050d577000,445,205
+Page,0x000000050bd55000,445,205
+Page,0x000000050ed77000,445,204
+Page,0x000000050ed55000,444,204
+Page,0x0000000579d91000,431,1848
+Page,0x0000000506dff000,412,412
+Page,0x0000000400323000,412,412
+Page,0x0000000400325000,412,412
+Page,0x0000000400324000,412,412
+Page,0x0000000400506000,412,412
+Page,0x0000000400322000,412,412
+
+TopRips,InstructionPointer,FaultCount
+RIP,0x0000000920003e55,275819
+RIP,0x0000000920003db6,130345
+RIP,0x0000000920003ef0,46314
+RIP,0x0000000920003fe2,25859
+RIP,0x00000009004b5e48,21134
+RIP,0x000000014002e3ea,19379
+RIP,0x0000000907170928,17522
+RIP,0x00000009072d5e90,14517
+RIP,0x00000009071734a0,14205
+RIP,0x0000000900253a13,12143
+RIP,0x00000009072b4030,9381
+RIP,0x0000000900489197,8636
+RIP,0x000000090709d87c,8208
+RIP,0x0000000907175458,7420
+RIP,0x0000000920003d50,6381
+RIP,0x0000000920003d35,5823
+RIP,0x000000090709e604,5463
+RIP,0x0000000907170955,5237
+RIP,0x000000090709e5a4,5196
+RIP,0x00000009072d5eb8,5172
+RIP,0x00000009200103fe,4254
+RIP,0x00000009200103f9,4205
+RIP,0x00000009200103f4,3965
+RIP,0x00000009200103f0,3884
+RIP,0x00000009071af378,3828
+RIP,0x000000090709e0fd,3712
+RIP,0x00000009200103c6,3548
+RIP,0x00000009004b5e6b,3506
+RIP,0x00000009004874b9,3453
+RIP,0x00000009071734c5,3257
+RIP,0x00000009071734f1,3159
+RIP,0x0000000920003d7b,2907
+RIP,0x00000009072d5f0e,2838
+RIP,0x0000000920004019,2647
+RIP,0x0000000920004039,2643
+RIP,0x00000009200043a9,2614
+RIP,0x0000000920004029,2572
+RIP,0x0000000920003ff5,2552
+RIP,0x0000000920003feb,2516
+RIP,0x0000000920004009,2503
+RIP,0x0000000920003fff,2486
+RIP,0x000000090717547c,2430
+RIP,0x00000009072b4077,2274
+RIP,0x0000000920003ffa,2072
+RIP,0x0000000920004021,2031
+RIP,0x0000000920004011,2025
+RIP,0x0000000920003fe6,1988
+RIP,0x0000000920003ff0,1975
+RIP,0x0000000920004041,1955
+RIP,0x0000000920004004,1954
+
+TopThreads,ThreadId,ThreadName,FaultCount
+Thread,25016,"TID 25016",137132
+Thread,28396,"TID 28396",114327
+Thread,10216,"TID 10216",40104
+Thread,12244,"TID 12244",40042
+Thread,24912,"TID 24912",39988
+Thread,15448,"TID 15448",39876
+Thread,11680,"TID 11680",39785
+Thread,9640,"TID 9640",39739
+Thread,21432,"TID 21432",39585
+Thread,7772,"TID 7772",39427
+Thread,13612,"TID 13612",38932
+Thread,1288,"TID 1288",38837
+Thread,11852,"TID 11852",38274
+Thread,22120,"TID 22120",28625
+Thread,16572,"TID 16572",24382
+Thread,24712,"TID 24712",20957
+Thread,19536,"TID 19536",4729
+Thread,21988,"TID 21988",3118
+Thread,13720,"TID 13720",2905
+Thread,20568,"TID 20568",2781
+Thread,4772,"TID 4772",2771
+Thread,9956,"TID 9956",2468
+Thread,27348,"TID 27348",2231
+Thread,4424,"TID 4424",1781
+Thread,23020,"TID 23020",1754
+Thread,27472,"TID 27472",1506
+Thread,9144,"TID 9144",605
+
+SlowFrames,FrameIndex,FrameMs,TimestampMs

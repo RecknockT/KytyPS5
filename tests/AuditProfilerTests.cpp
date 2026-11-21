@@ -1,4 +1,5 @@
 #include "common/auditProfiler.h"
+#include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 
 #include <algorithm>
@@ -687,6 +688,90 @@ TEST_F(AuditProfilerTest, RecordsTimingAndSimulationMetricsAccurately) {
 
 	std::filesystem::remove("test_timing.json");
 	std::filesystem::remove("test_timing.csv");
+}
+
+TEST_F(AuditProfilerTest, Stage7RenderOptimizationMetricsAndConfig) {
+	// Verify defaults
+	EXPECT_TRUE(Config::RedundantBindElisionEnabled());
+	EXPECT_TRUE(Config::PipelineCacheMruEnabled());
+
+	SetEnabled(true);
+	Common::DebugCounters::SetEnabled(true);
+
+	StartCapture("Stage7OptimizationTest");
+
+	// Simulate draw calls, pipeline lookups and elisions
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws, 100);
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::PipelineCacheLookups, 100);
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::PipelineCacheHits, 85);
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantPipelineBinds, 80);
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantVertexBinds, 70);
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::RedundantIndexBinds, 60);
+
+	RecordFrame(16.6);
+
+	const auto snap = TakeSnapshot();
+	EXPECT_EQ(snap.total_draws, 100u);
+	EXPECT_EQ(snap.pipeline_cache_lookups, 100u);
+	EXPECT_EQ(snap.pipeline_cache_hits, 85u);
+	EXPECT_DOUBLE_EQ(snap.pipeline_cache_hit_pct, 85.0);
+	EXPECT_EQ(snap.redundant_pipeline_binds, 80u);
+	EXPECT_EQ(snap.redundant_vertex_binds, 70u);
+	EXPECT_EQ(snap.redundant_index_binds, 60u);
+	EXPECT_TRUE(snap.redundant_bind_elision_enabled);
+	EXPECT_TRUE(snap.pipeline_cache_mru_enabled);
+
+	// Export to JSON and CSV
+	EXPECT_TRUE(ExportAll("test_stage7.json", "test_stage7.csv", &snap));
+
+	// Verify JSON export
+	{
+		std::ifstream jf("test_stage7.json");
+		ASSERT_TRUE(jf.is_open());
+		nlohmann::json j;
+		jf >> j;
+		ASSERT_TRUE(j.contains("graphics_workload"));
+		EXPECT_EQ(j["graphics_workload"]["pipeline_cache_lookups"], 100);
+		EXPECT_EQ(j["graphics_workload"]["pipeline_cache_hits"], 85);
+		EXPECT_DOUBLE_EQ(j["graphics_workload"]["pipeline_cache_hit_pct"], 85.0);
+		EXPECT_EQ(j["graphics_workload"]["redundant_pipeline_binds"], 80);
+		EXPECT_EQ(j["graphics_workload"]["redundant_vertex_binds"], 70);
+		EXPECT_EQ(j["graphics_workload"]["redundant_index_binds"], 60);
+
+		ASSERT_TRUE(j["metadata"]["config"].contains("redundant_bind_elision"));
+		EXPECT_TRUE(j["metadata"]["config"]["redundant_bind_elision"].get<bool>());
+		ASSERT_TRUE(j["metadata"]["config"].contains("pipeline_cache_mru"));
+		EXPECT_TRUE(j["metadata"]["config"]["pipeline_cache_mru"].get<bool>());
+	}
+
+	// Verify CSV export
+	{
+		std::ifstream cf("test_stage7.csv");
+		ASSERT_TRUE(cf.is_open());
+		std::string line;
+		bool found_lookups = false;
+		bool found_hits = false;
+		bool found_red_pipe = false;
+		bool found_red_vert = false;
+		bool found_red_idx = false;
+		while (std::getline(cf, line)) {
+			if (line.find("GraphicsWorkload,PipelineCacheLookups,100") != std::string::npos) found_lookups = true;
+			if (line.find("GraphicsWorkload,PipelineCacheHits,85") != std::string::npos) found_hits = true;
+			if (line.find("GraphicsWorkload,RedundantPipelineBinds,80") != std::string::npos) found_red_pipe = true;
+			if (line.find("GraphicsWorkload,RedundantVertexBinds,70") != std::string::npos) found_red_vert = true;
+			if (line.find("GraphicsWorkload,RedundantIndexBinds,60") != std::string::npos) found_red_idx = true;
+		}
+		EXPECT_TRUE(found_lookups);
+		EXPECT_TRUE(found_hits);
+		EXPECT_TRUE(found_red_pipe);
+		EXPECT_TRUE(found_red_vert);
+		EXPECT_TRUE(found_red_idx);
+	}
+
+	StopCapture(CaptureState::Completed);
+
+	std::filesystem::remove("test_stage7.json");
+	std::filesystem::remove("test_stage7.csv");
 }
 
 } // namespace

@@ -101,6 +101,11 @@ public:
 	void BeginRendering(const RenderState& state) const;
 	void EndRendering() const;
 
+	void BindGraphicsPipeline(vk::Pipeline pipeline) const;
+	void BindIndexBuffer(vk::Buffer buffer, vk::DeviceSize offset, vk::IndexType type) const;
+	void BindVertexBuffers(uint32_t count, const vk::Buffer* buffers, const vk::DeviceSize* offsets,
+	                       const vk::DeviceSize* sizes) const;
+
 	[[nodiscard]] vk::CommandBuffer Handle() const noexcept { return m_buffer; }
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] RenderContext&    GetContext() const noexcept { return m_context; }
@@ -119,14 +124,28 @@ private:
 	void Begin();
 	void End() const;
 
-	RenderContext&      m_context;
-	GraphicContext&     m_graphics;
-	vk::CommandBuffer   m_buffer = nullptr;
-	mutable RenderState m_render_state;
-	mutable bool        m_rendering   = false;
-	HW::Context*        m_registers   = nullptr;
-	HW::UserConfig*     m_user_config = nullptr;
-	HW::Shader*         m_shaders     = nullptr;
+	RenderContext&       m_context;
+	GraphicContext&      m_graphics;
+	vk::CommandBuffer    m_buffer = nullptr;
+	mutable RenderState  m_render_state;
+	mutable bool         m_rendering               = false;
+	mutable vk::Pipeline m_bound_graphics_pipeline = nullptr;
+	struct BoundIndexBuffer {
+		vk::Buffer     buffer = nullptr;
+		vk::DeviceSize offset = 0;
+		vk::IndexType  type   = vk::IndexType::eUint16;
+	};
+	mutable BoundIndexBuffer m_bound_index_buffer {};
+	struct BoundVertexBuffers {
+		std::array<vk::Buffer, 32>     buffers {};
+		std::array<vk::DeviceSize, 32> offsets {};
+		std::array<vk::DeviceSize, 32> sizes {};
+		uint32_t                       count = 0;
+	};
+	mutable BoundVertexBuffers m_bound_vertex_buffers {};
+	HW::Context*               m_registers   = nullptr;
+	HW::UserConfig*            m_user_config = nullptr;
+	HW::Shader*                m_shaders     = nullptr;
 
 	friend class CommandScheduler;
 	friend struct CommandBufferTestAccess;

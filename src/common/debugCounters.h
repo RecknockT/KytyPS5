@@ -63,6 +63,12 @@ enum class Counter {
 	OverlayNs,
 	AudioHolds,  // GPU stalls that held guest audio, once per stall however many threads waited.
 	AudioHoldNs, // Time from the first held submit of a stall to its end.
+	// Redundant state and pipeline cache metrics.
+	PipelineCacheLookups,
+	PipelineCacheHits,
+	RedundantPipelineBinds,
+	RedundantVertexBinds,
+	RedundantIndexBinds,
 	Count
 };
 

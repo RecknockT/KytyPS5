@@ -114,6 +114,8 @@ struct ProfileSnapshot {
 	bool     partial_refresh_enabled        = false;
 	bool     batch_hot_readbacks_enabled    = false;
 	bool     extended_stream_buffer_enabled = false;
+	bool     redundant_bind_elision_enabled = true;
+	bool     pipeline_cache_mru_enabled     = true;
 
 	// Capture lifecycle metadata
 	std::string capture_id;
@@ -213,6 +215,12 @@ struct ProfileSnapshot {
 	uint64_t gpu_thread_busy_ns           = 0;
 	double   gpu_thread_busy_ms           = 0.0;
 	double   gpu_thread_busy_ms_per_frame = 0.0;
+	uint64_t pipeline_cache_lookups       = 0;
+	uint64_t pipeline_cache_hits          = 0;
+	double   pipeline_cache_hit_pct       = 0.0;
+	uint64_t redundant_pipeline_binds     = 0;
+	uint64_t redundant_vertex_binds       = 0;
+	uint64_t redundant_index_binds        = 0;
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;

@@ -342,6 +342,14 @@ uint32_t GetAuditCaptureDurationSec() {
 	return g_config != nullptr ? g_config->audit_capture_duration_sec : 0;
 }
 
+bool RedundantBindElisionEnabled() {
+	return g_config != nullptr ? g_config->redundant_bind_elision_enabled : true;
+}
+
+bool PipelineCacheMruEnabled() {
+	return g_config != nullptr ? g_config->pipeline_cache_mru_enabled : true;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;

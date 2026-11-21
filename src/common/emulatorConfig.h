@@ -103,10 +103,12 @@ struct ConfigOptions {
 	bool                  skip_redundant_unmap_drains     = false;
 	// Experimental. Keeps GPU buffer caches when direct memory is released and mapped back
 	// unchanged.
-	bool     keep_gpu_cache_on_reuse   = false;
-	uint32_t flush_draws               = 0; // 0 is off
-	bool     tessellation_enabled      = false;
-	bool     occlusion_queries_enabled = false;
+	bool     keep_gpu_cache_on_reuse        = false;
+	bool     redundant_bind_elision_enabled = true;
+	bool     pipeline_cache_mru_enabled     = true;
+	uint32_t flush_draws                    = 0; // 0 is off
+	bool     tessellation_enabled           = false;
+	bool     occlusion_queries_enabled      = false;
 	// Lets the GPU start on a long command stream instead of idling until the end-of-slice submit.
 	bool        gpu_submit_cadence_enabled     = false;
 	uint64_t    gpu_submit_cadence_interval_us = 1000;
@@ -228,6 +230,8 @@ const std::string& GetAuditExportPath();
 uint64_t           GetGpuSubmitCadenceIntervalUs();
 uint32_t           GetAuditCaptureDelaySec();
 uint32_t           GetAuditCaptureDurationSec();
+bool               RedundantBindElisionEnabled();
+bool               PipelineCacheMruEnabled();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();
