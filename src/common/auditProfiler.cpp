@@ -98,6 +98,13 @@ std::atomic<uint64_t> g_baseline_texture_partial_fallbacks {0};
 std::atomic<uint64_t> g_baseline_texture_partial_upload_bytes {0};
 std::atomic<uint64_t> g_baseline_cadence_held_back {0};
 std::atomic<uint64_t> g_baseline_cadence_submits {0};
+std::atomic<uint64_t> g_baseline_draws {0};
+std::atomic<uint64_t> g_baseline_draw_instances {0};
+std::atomic<uint64_t> g_baseline_indirect_draws {0};
+std::atomic<uint64_t> g_baseline_dispatches {0};
+std::atomic<uint64_t> g_baseline_pipelines_created {0};
+std::atomic<uint64_t> g_baseline_shaders_compiled {0};
+std::atomic<uint64_t> g_baseline_gpu_thread_busy_ns {0};
 
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
@@ -324,6 +331,19 @@ void StartCapture(const char* trigger_reason) {
 	                                   std::memory_order_relaxed);
 	g_baseline_cadence_submits.store(Counters::Get(Counters::Counter::CadenceSubmits),
 	                                 std::memory_order_relaxed);
+	g_baseline_draws.store(Counters::Get(Counters::Counter::Draws), std::memory_order_relaxed);
+	g_baseline_draw_instances.store(Counters::Get(Counters::Counter::DrawInstances),
+	                                std::memory_order_relaxed);
+	g_baseline_indirect_draws.store(Counters::Get(Counters::Counter::IndirectDraws),
+	                                std::memory_order_relaxed);
+	g_baseline_dispatches.store(Counters::Get(Counters::Counter::Dispatches),
+	                            std::memory_order_relaxed);
+	g_baseline_pipelines_created.store(Counters::Get(Counters::Counter::PipelinesCreated),
+	                                   std::memory_order_relaxed);
+	g_baseline_shaders_compiled.store(Counters::Get(Counters::Counter::ShadersCompiled),
+	                                  std::memory_order_relaxed);
+	g_baseline_gpu_thread_busy_ns.store(Counters::Get(Counters::Counter::GpuThreadBusyNs),
+	                                    std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -425,6 +445,7 @@ void MarkPhase(ExecutionPhase phase, const char* description) noexcept {
 void InitCapture(uint32_t delay_sec, uint32_t duration_sec, std::string_view export_path,
                  bool manual_trigger) {
 	SetEnabled(true);
+	Common::DebugCounters::SetEnabled(true);
 	if (!export_path.empty()) {
 		SetExportPath(export_path);
 	}
@@ -1014,6 +1035,49 @@ ProfileSnapshot TakeSnapshot() {
 	           snap_duration_sec)
 	        : 0.0;
 
+	// Graphics workload metrics
+	const auto cur_draws  = Counters::Get(Counters::Counter::Draws);
+	const auto base_draws = g_baseline_draws.load(std::memory_order_relaxed);
+	snapshot.total_draws  = (cur_draws >= base_draws) ? (cur_draws - base_draws) : cur_draws;
+	const double snap_frames =
+	    snapshot.total_frames > 0 ? static_cast<double>(snapshot.total_frames) : 1.0;
+	snapshot.draws_per_frame = static_cast<double>(snapshot.total_draws) / snap_frames;
+	snapshot.draws_per_second =
+	    snap_duration_sec > 0.0 ? (static_cast<double>(snapshot.total_draws) / snap_duration_sec)
+	                            : 0.0;
+
+	const auto cur_inst           = Counters::Get(Counters::Counter::DrawInstances);
+	const auto base_inst          = g_baseline_draw_instances.load(std::memory_order_relaxed);
+	snapshot.total_draw_instances = (cur_inst >= base_inst) ? (cur_inst - base_inst) : cur_inst;
+	snapshot.instances_per_frame = static_cast<double>(snapshot.total_draw_instances) / snap_frames;
+
+	const auto cur_ind            = Counters::Get(Counters::Counter::IndirectDraws);
+	const auto base_ind           = g_baseline_indirect_draws.load(std::memory_order_relaxed);
+	snapshot.total_indirect_draws = (cur_ind >= base_ind) ? (cur_ind - base_ind) : cur_ind;
+
+	const auto cur_disp           = Counters::Get(Counters::Counter::Dispatches);
+	const auto base_disp          = g_baseline_dispatches.load(std::memory_order_relaxed);
+	snapshot.total_dispatches     = (cur_disp >= base_disp) ? (cur_disp - base_disp) : cur_disp;
+	snapshot.dispatches_per_frame = static_cast<double>(snapshot.total_dispatches) / snap_frames;
+	snapshot.dispatches_per_second =
+	    snap_duration_sec > 0.0
+	        ? (static_cast<double>(snapshot.total_dispatches) / snap_duration_sec)
+	        : 0.0;
+
+	const auto cur_pipe        = Counters::Get(Counters::Counter::PipelinesCreated);
+	const auto base_pipe       = g_baseline_pipelines_created.load(std::memory_order_relaxed);
+	snapshot.pipelines_created = (cur_pipe >= base_pipe) ? (cur_pipe - base_pipe) : cur_pipe;
+
+	const auto cur_shad       = Counters::Get(Counters::Counter::ShadersCompiled);
+	const auto base_shad      = g_baseline_shaders_compiled.load(std::memory_order_relaxed);
+	snapshot.shaders_compiled = (cur_shad >= base_shad) ? (cur_shad - base_shad) : cur_shad;
+
+	const auto cur_busy         = Counters::Get(Counters::Counter::GpuThreadBusyNs);
+	const auto base_busy        = g_baseline_gpu_thread_busy_ns.load(std::memory_order_relaxed);
+	snapshot.gpu_thread_busy_ns = (cur_busy >= base_busy) ? (cur_busy - base_busy) : cur_busy;
+	snapshot.gpu_thread_busy_ms = static_cast<double>(snapshot.gpu_thread_busy_ns) / 1000000.0;
+	snapshot.gpu_thread_busy_ms_per_frame = snapshot.gpu_thread_busy_ms / snap_frames;
+
 	return snapshot;
 }
 
@@ -1245,8 +1309,29 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"audio_updates_count", snap.audio_updates_count},
 	    {"audio_total_samples", snap.audio_total_samples},
 	    {"audio_effective_hz", snap.audio_effective_hz},
+	    {"estimated_simulation_speed_ratio_model_60hz", snap.simulation_speed_ratio},
+	    {"estimated_simulation_speed_percent_model_60hz", snap.simulation_speed_ratio * 100.0},
+	    {"simulation_speed_model_note",
+	     "Theoretical model estimate assuming 1/60s fixed simulation timestep per completed flip. "
+	     "Not a directly measured internal guest tick counter."},
 	    {"simulation_speed_ratio", snap.simulation_speed_ratio},
 	    {"simulation_speed_percent", snap.simulation_speed_ratio * 100.0},
+	};
+
+	j["graphics_workload"] = {
+	    {"total_draws", snap.total_draws},
+	    {"draws_per_frame", snap.draws_per_frame},
+	    {"draws_per_second", snap.draws_per_second},
+	    {"total_draw_instances", snap.total_draw_instances},
+	    {"instances_per_frame", snap.instances_per_frame},
+	    {"total_indirect_draws", snap.total_indirect_draws},
+	    {"total_dispatches", snap.total_dispatches},
+	    {"dispatches_per_frame", snap.dispatches_per_frame},
+	    {"dispatches_per_second", snap.dispatches_per_second},
+	    {"pipelines_created", snap.pipelines_created},
+	    {"shaders_compiled", snap.shaders_compiled},
+	    {"gpu_thread_busy_ms", snap.gpu_thread_busy_ms},
+	    {"gpu_thread_busy_ms_per_frame", snap.gpu_thread_busy_ms_per_frame},
 	};
 
 	// Legacy backwards-compatible aliases for existing tests and scripts
@@ -1328,6 +1413,26 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Timing,SimulationSpeedRatio,{:.4f}\n", snap.simulation_speed_ratio);
 	out << fmt::format("Timing,SimulationSpeedPercent,{:.2f}%\n",
 	                   snap.simulation_speed_ratio * 100.0);
+	out << fmt::format("Timing,EstimatedSimulationSpeedRatioModel60Hz,{:.4f}\n",
+	                   snap.simulation_speed_ratio);
+	out << fmt::format("Timing,EstimatedSimulationSpeedPercentModel60Hz,{:.2f}%\n",
+	                   snap.simulation_speed_ratio * 100.0);
+	out << "Timing,SimulationSpeedModelType,TheoreticalModelAssuming60HzFixedTimestep\n";
+
+	out << fmt::format("GraphicsWorkload,TotalDraws,{}\n", snap.total_draws);
+	out << fmt::format("GraphicsWorkload,DrawsPerFrame,{:.2f}\n", snap.draws_per_frame);
+	out << fmt::format("GraphicsWorkload,DrawsPerSecond,{:.2f}\n", snap.draws_per_second);
+	out << fmt::format("GraphicsWorkload,TotalDrawInstances,{}\n", snap.total_draw_instances);
+	out << fmt::format("GraphicsWorkload,InstancesPerFrame,{:.2f}\n", snap.instances_per_frame);
+	out << fmt::format("GraphicsWorkload,TotalIndirectDraws,{}\n", snap.total_indirect_draws);
+	out << fmt::format("GraphicsWorkload,TotalDispatches,{}\n", snap.total_dispatches);
+	out << fmt::format("GraphicsWorkload,DispatchesPerFrame,{:.2f}\n", snap.dispatches_per_frame);
+	out << fmt::format("GraphicsWorkload,DispatchesPerSecond,{:.2f}\n", snap.dispatches_per_second);
+	out << fmt::format("GraphicsWorkload,PipelinesCreated,{}\n", snap.pipelines_created);
+	out << fmt::format("GraphicsWorkload,ShadersCompiled,{}\n", snap.shaders_compiled);
+	out << fmt::format("GraphicsWorkload,GpuThreadBusyMs,{:.2f}\n", snap.gpu_thread_busy_ms);
+	out << fmt::format("GraphicsWorkload,GpuThreadBusyMsPerFrame,{:.2f}\n",
+	                   snap.gpu_thread_busy_ms_per_frame);
 
 	out << fmt::format("WriteTracking,TotalFaults,{}\n", snap.total_faults);
 	out << fmt::format("WriteTracking,FaultsPerFrame,{:.1f}\n",

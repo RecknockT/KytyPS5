@@ -634,6 +634,8 @@ TEST_F(AuditProfilerTest, RecordsTimingAndSimulationMetricsAccurately) {
 		EXPECT_DOUBLE_EQ(j["timing_and_simulation"]["avg_flip_wait_ms"], 25.0);
 		EXPECT_EQ(j["timing_and_simulation"]["audio_updates_count"], 93);
 		EXPECT_EQ(j["timing_and_simulation"]["audio_total_samples"], 93 * 512);
+		ASSERT_TRUE(j.contains("graphics_workload"));
+		EXPECT_TRUE(j["timing_and_simulation"].contains("estimated_simulation_speed_ratio_model_60hz"));
 	}
 
 	// Verify CSV contents
@@ -645,6 +647,7 @@ TEST_F(AuditProfilerTest, RecordsTimingAndSimulationMetricsAccurately) {
 		bool found_flips = false;
 		bool found_audio = false;
 		bool found_sim_ratio = false;
+		bool found_graphics_workload = false;
 		while (std::getline(cf, line)) {
 			if (line.find("Timing,TotalVblanks,60") != std::string::npos) {
 				found_vblanks = true;
@@ -658,11 +661,15 @@ TEST_F(AuditProfilerTest, RecordsTimingAndSimulationMetricsAccurately) {
 			if (line.find("Timing,SimulationSpeedRatio,") != std::string::npos) {
 				found_sim_ratio = true;
 			}
+			if (line.find("GraphicsWorkload,TotalDraws,") != std::string::npos) {
+				found_graphics_workload = true;
+			}
 		}
 		EXPECT_TRUE(found_vblanks);
 		EXPECT_TRUE(found_flips);
 		EXPECT_TRUE(found_audio);
 		EXPECT_TRUE(found_sim_ratio);
+		EXPECT_TRUE(found_graphics_workload);
 	}
 
 	// Stop capture and verify late events do not leak

@@ -182,18 +182,37 @@ struct ProfileSnapshot {
 	std::vector<HotThreadInfo> top_threads;
 
 	// Timing and simulation metrics (over the captured interval)
-	uint64_t total_vblanks          = 0;
-	double   vblank_rate_hz         = 0.0;
-	uint64_t total_flips_submitted  = 0;
-	uint64_t total_flips_completed  = 0;
-	double   flip_rate_hz           = 0.0;
-	uint64_t total_flip_wait_ns     = 0;
-	double   total_flip_wait_ms     = 0.0;
-	double   avg_flip_wait_ms       = 0.0;
-	uint64_t audio_updates_count    = 0;
-	uint64_t audio_total_samples    = 0;
-	double   audio_effective_hz     = 0.0;
-	double   simulation_speed_ratio = 0.0; // (flips_completed * (1/60s)) / real_duration_s
+	uint64_t total_vblanks         = 0;
+	double   vblank_rate_hz        = 0.0;
+	uint64_t total_flips_submitted = 0;
+	uint64_t total_flips_completed = 0;
+	double   flip_rate_hz          = 0.0;
+	uint64_t total_flip_wait_ns    = 0;
+	double   total_flip_wait_ms    = 0.0;
+	double   avg_flip_wait_ms      = 0.0;
+	uint64_t audio_updates_count   = 0;
+	uint64_t audio_total_samples   = 0;
+	double   audio_effective_hz    = 0.0;
+	/// Theoretical simulation speed ratio calculated as (flips_completed * (1/60s)) /
+	/// real_duration_s. Note: This is an estimated model conditioned on a 1/60s fixed simulation
+	/// timestep per completed flip, NOT an independently measured physics simulation rate.
+	double simulation_speed_ratio = 0.0;
+
+	// Graphics workload metrics (over the captured interval)
+	uint64_t total_draws                  = 0;
+	double   draws_per_frame              = 0.0;
+	double   draws_per_second             = 0.0;
+	uint64_t total_draw_instances         = 0;
+	double   instances_per_frame          = 0.0;
+	uint64_t total_indirect_draws         = 0;
+	uint64_t total_dispatches             = 0;
+	double   dispatches_per_frame         = 0.0;
+	double   dispatches_per_second        = 0.0;
+	uint64_t pipelines_created            = 0;
+	uint64_t shaders_compiled             = 0;
+	uint64_t gpu_thread_busy_ns           = 0;
+	double   gpu_thread_busy_ms           = 0.0;
+	double   gpu_thread_busy_ms_per_frame = 0.0;
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;
