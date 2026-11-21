@@ -1,0 +1,3 @@
+# Force Windows batch files to always use CRLF line endings to prevent cmd.exe label seek corruption
+*.cmd text eol=crlf
+*.bat text eol=crlf
