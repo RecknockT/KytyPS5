@@ -1,6 +1,7 @@
 #include "libs/audio.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/gpuStall.h"
@@ -109,10 +110,10 @@ public:
 	uint32_t AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking = true);
 	bool     AudioOutGetStatus(Id handle, int* type, int* channels_num);
 
-	Id       AudioInOpen(uint32_t samples_num, uint32_t freq, Format format, bool asynchronous);
-	int      AudioInClose(Id handle);
-	int      AudioInGetSilentState(Id handle);
-	int      AudioInInput(Id handle, void* dest);
+	Id  AudioInOpen(uint32_t samples_num, uint32_t freq, Format format, bool asynchronous);
+	int AudioInClose(Id handle);
+	int AudioInGetSilentState(Id handle);
+	int AudioInInput(Id handle, void* dest);
 
 	static constexpr int OUT_PORTS_MAX = 32;
 	static constexpr int IN_PORTS_MAX  = 8;
@@ -163,8 +164,8 @@ private:
 	static const void*     PrepareOutputBuffer(const PortOut& port, const void* data,
 	                                           std::vector<uint8_t>* buffer, float gain,
 	                                           const float* gains);
-	static bool QueueSdlAudio(PortOut* port, const void* data, bool blocking, float gain,
-	                          const float* gains);
+	static bool            QueueSdlAudio(PortOut* port, const void* data, bool blocking, float gain,
+	                                     const float* gains);
 };
 
 static Audio* g_audio = nullptr;
@@ -275,8 +276,8 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 	desired.format   = SdlFormat(port->format);
 	desired.channels = static_cast<int>(OutputChannels(*port));
 
-	port->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired, nullptr,
-	                                         nullptr);
+	port->stream =
+	    SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired, nullptr, nullptr);
 	if (port->stream == nullptr) {
 		LOGF("AudioOut: SDL_OpenAudioDeviceStream failed: %s\n", SDL_GetError());
 		SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -360,10 +361,10 @@ const void* Audio::PrepareOutputBuffer(const PortOut& port, const void* data,
 
 		for (uint32_t frame = 0; frame < frames; frame++) {
 			for (uint32_t ch = 0; ch < output_channels; ch++) {
-				const auto src_ch = reorder ? SDL_8CH_MAP[ch] : ch;
+				const auto   src_ch = reorder ? SDL_8CH_MAP[ch] : ch;
 				const double sample = src[frame * channels + src_ch] * scales[src_ch];
-				dst[frame * output_channels + ch] = static_cast<int16_t>(
-				    std::clamp(sample, -32768.0, 32767.0));
+				dst[frame * output_channels + ch] =
+				    static_cast<int16_t>(std::clamp(sample, -32768.0, 32767.0));
 			}
 		}
 	}
@@ -380,10 +381,9 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 	}
 
 	std::vector<uint8_t> prepared_buffer;
-	const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer, gain, gains);
-	const auto           output_channels = OutputChannels(*port);
-	const auto           prepared_size =
-	    BytesPerSample(port->format) * output_channels * port->samples_num;
+	const void* prepared_data   = PrepareOutputBuffer(*port, data, &prepared_buffer, gain, gains);
+	const auto  output_channels = OutputChannels(*port);
+	const auto  prepared_size = BytesPerSample(port->format) * output_channels * port->samples_num;
 
 	uint32_t min_queued_size = 0;
 	if (blocking) {
@@ -392,9 +392,9 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 		    buffer_us != 0
 		        ? static_cast<uint32_t>((AUDIO_OUT_TARGET_LATENCY_US + buffer_us - 1) / buffer_us)
 		        : 2u;
-		min_queued_size           = prepared_size * std::clamp(buffers, 2u, 16u);
-		const auto wait_start      = LibKernel::KernelGetProcessTime();
-		auto       queued          = SDL_GetAudioStreamQueued(port->stream);
+		min_queued_size       = prepared_size * std::clamp(buffers, 2u, 16u);
+		const auto wait_start = LibKernel::KernelGetProcessTime();
+		auto       queued     = SDL_GetAudioStreamQueued(port->stream);
 		while (queued > static_cast<int>(min_queued_size)) {
 			if (LibKernel::KernelGetProcessTime() - wait_start > 200000) {
 				SDL_ClearAudioStream(port->stream);
@@ -557,7 +557,7 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 	uint64_t                        deadline   = 0;
 
 	for (uint32_t i = 0; i < num; i++) {
-		auto& port = m_out_ports[params[i].handle.GetId()];
+		auto&       port = m_out_ports[params[i].handle.GetId()];
 		const float gain =
 		    port.type == AUDIO_OUT_PORT_TYPE_PADSPK
 		        ? Controller::GetSettingScale(Controller::Setting::SpeakerVolume)
@@ -565,8 +565,8 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 		        ? Controller::GetSettingScale(Controller::Setting::VibrationIntensity)
 		        : 1.0f;
 
-		uint64_t controller_queued_us = 0;
-		bool controller_uses_bluetooth = false;
+		uint64_t controller_queued_us      = 0;
+		bool     controller_uses_bluetooth = false;
 		if (port.haptics != nullptr) {
 			// Keep the stream alive against close and volume changes.
 			Common::LockGuard lock(m_mutex);
@@ -574,8 +574,7 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 			    port.haptics, Controller::GetActiveControllerId(), params[i].data, port.samples_num,
 			    static_cast<uint32_t>(port.channels_num), FormatIsFloat(port.format), port.volume,
 			    gain, params[i].gains);
-			controller_uses_bluetooth =
-			    Controller::DualSenseHaptics::UsesBluetooth(port.haptics);
+			controller_uses_bluetooth = Controller::DualSenseHaptics::UsesBluetooth(port.haptics);
 		}
 		if (controller_queued_us == 0) {
 			// No DualSense took it (e.g. it was unplugged); a pad speaker port plays on the main
@@ -593,9 +592,10 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 				if (blocking && controller_queued_us > AUDIO_OUT_TARGET_LATENCY_US) {
 					// Limit a stalled USB endpoint to one audio block of waiting.
 					const uint64_t block_us = 1000000ULL * port.samples_num / port.freq;
-					deadline = std::max(deadline, LibKernel::KernelGetProcessTime() +
-					                                  std::min(controller_queued_us - AUDIO_OUT_TARGET_LATENCY_US,
-					                                           block_us));
+					deadline                = std::max(
+					    deadline,
+					    LibKernel::KernelGetProcessTime() +
+					        std::min(controller_queued_us - AUDIO_OUT_TARGET_LATENCY_US, block_us));
 				}
 			}
 		}
@@ -618,6 +618,8 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 	if (deadline > now) {
 		Common::Thread::SleepMicro(deadline - now);
 	}
+
+	Common::AuditProfiler::RecordAudioUpdate(first_port.samples_num, first_port.freq);
 
 	return first_port.samples_num;
 }
@@ -684,7 +686,8 @@ void Audio::CloseSdlDevice(PortIn* port) {
 	}
 }
 
-Audio::Id Audio::AudioInOpen(uint32_t samples_num, uint32_t freq, Format format, bool asynchronous) {
+Audio::Id Audio::AudioInOpen(uint32_t samples_num, uint32_t freq, Format format,
+                             bool asynchronous) {
 	Common::LockGuard lock(m_mutex);
 
 	for (int id = 0; id < IN_PORTS_MAX; id++) {
@@ -710,8 +713,7 @@ Audio::Id Audio::AudioInOpen(uint32_t samples_num, uint32_t freq, Format format,
 }
 
 Audio::PortIn* Audio::GetAudioInPort(Id handle) {
-	if (handle.GetId() < 0 || handle.GetId() >= IN_PORTS_MAX ||
-	    !m_in_ports[handle.GetId()].used) {
+	if (handle.GetId() < 0 || handle.GetId() >= IN_PORTS_MAX || !m_in_ports[handle.GetId()].used) {
 		return nullptr;
 	}
 	return &m_in_ports[handle.GetId()];
@@ -719,7 +721,7 @@ Audio::PortIn* Audio::GetAudioInPort(Id handle) {
 
 int Audio::AudioInClose(Id handle) {
 	Common::LockGuard lock(m_mutex);
-	auto* port = GetAudioInPort(handle);
+	auto*             port = GetAudioInPort(handle);
 	if (port == nullptr) {
 		return AUDIO_IN_ERROR_INVALID_HANDLE;
 	}
@@ -757,9 +759,9 @@ int Audio::AudioInInput(Id handle, void* dest) {
 		port->busy = true;
 		snapshot   = *port;
 	}
-	bool failed = snapshot.stream != nullptr && dest != nullptr &&
-	              (!RecordingDevicePresent(snapshot.device) ||
-	               !SDL_ResumeAudioStreamDevice(snapshot.stream));
+	bool failed =
+	    snapshot.stream != nullptr && dest != nullptr &&
+	    (!RecordingDevicePresent(snapshot.device) || !SDL_ResumeAudioStreamDevice(snapshot.stream));
 
 	const uint64_t block_time = (1000000ULL * snapshot.samples_num) / snapshot.freq;
 	uint64_t       wait_time  = 0;
@@ -775,23 +777,22 @@ int Audio::AudioInInput(Id handle, void* dest) {
 		}
 	}
 	Common::Thread::SleepMicro(wait_time);
-	uint32_t frames = snapshot.samples_num;
+	uint32_t frames    = snapshot.samples_num;
 	bool     timed_out = false;
 	if (dest != nullptr) {
 		if (snapshot.stream != nullptr && !failed) {
-			const int requested = static_cast<int>(frames * snapshot.bytes_per_frame);
-			const auto deadline = LibKernel::KernelGetProcessTime() +
-			                      std::max<uint64_t>(20000, block_time * 4);
-			const auto device = SDL_GetAudioStreamDevice(snapshot.stream);
+			const int  requested = static_cast<int>(frames * snapshot.bytes_per_frame);
+			const auto deadline =
+			    LibKernel::KernelGetProcessTime() + std::max<uint64_t>(20000, block_time * 4);
+			const auto device    = SDL_GetAudioStreamDevice(snapshot.stream);
 			int        available = SDL_GetAudioStreamAvailable(snapshot.stream);
-			while (!snapshot.asynchronous && available >= 0 &&
-			       available < requested &&
+			while (!snapshot.asynchronous && available >= 0 && available < requested &&
 			       device != 0 && !SDL_AudioDevicePaused(device) &&
 			       LibKernel::KernelGetProcessTime() < deadline) {
 				Common::Thread::SleepMicro(1000);
 				available = SDL_GetAudioStreamAvailable(snapshot.stream);
 			}
-			failed = available < 0 || device == 0 || SDL_AudioDevicePaused(device);
+			failed    = available < 0 || device == 0 || SDL_AudioDevicePaused(device);
 			timed_out = !snapshot.asynchronous && available < requested;
 			if (!failed && !timed_out) {
 				if (snapshot.asynchronous) {
@@ -1044,8 +1045,8 @@ namespace AudioIn {
 
 LIB_NAME("AudioIn", "AudioIn");
 
-static int OpenPort(int user_id, int type, int index, uint32_t len, uint32_t freq,
-                    uint32_t param, bool asynchronous) {
+static int OpenPort(int user_id, int type, int index, uint32_t len, uint32_t freq, uint32_t param,
+                    bool asynchronous) {
 	LOGF("\t user_id = %d\n"
 	     "\t type    = %d\n"
 	     "\t index   = %d\n"
@@ -1090,14 +1091,14 @@ static int OpenPort(int user_id, int type, int index, uint32_t len, uint32_t fre
 	return id.ToInt();
 }
 
-int KYTY_SYSV_ABI AudioInOpen(int user_id, int type, int index, uint32_t len,
-                              uint32_t freq, uint32_t param) {
+int KYTY_SYSV_ABI AudioInOpen(int user_id, int type, int index, uint32_t len, uint32_t freq,
+                              uint32_t param) {
 	PRINT_NAME();
 	return OpenPort(user_id, type, index, len, freq, param, false);
 }
 
-int KYTY_SYSV_ABI AudioInHqOpen(int user_id, int type, int index, uint32_t len,
-                                uint32_t freq, uint32_t param) {
+int KYTY_SYSV_ABI AudioInHqOpen(int user_id, int type, int index, uint32_t len, uint32_t freq,
+                                uint32_t param) {
 	PRINT_NAME();
 	return OpenPort(user_id, type, index, len, freq, param, true);
 }

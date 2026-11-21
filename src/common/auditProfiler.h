@@ -180,6 +180,20 @@ struct ProfileSnapshot {
 	std::vector<HotPageInfo>   top_pages;
 	std::vector<HotRipInfo>    top_rips;
 	std::vector<HotThreadInfo> top_threads;
+
+	// Timing and simulation metrics (over the captured interval)
+	uint64_t total_vblanks          = 0;
+	double   vblank_rate_hz         = 0.0;
+	uint64_t total_flips_submitted  = 0;
+	uint64_t total_flips_completed  = 0;
+	double   flip_rate_hz           = 0.0;
+	uint64_t total_flip_wait_ns     = 0;
+	double   total_flip_wait_ms     = 0.0;
+	double   avg_flip_wait_ms       = 0.0;
+	uint64_t audio_updates_count    = 0;
+	uint64_t audio_total_samples    = 0;
+	double   audio_effective_hz     = 0.0;
+	double   simulation_speed_ratio = 0.0; // (flips_completed * (1/60s)) / real_duration_s
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;
@@ -230,6 +244,21 @@ void RecordInternalGpuTransfer(uint64_t bytes) noexcept;
 
 /// Records a frame duration for percentile calculation.
 void RecordFrame(double frame_ms) noexcept;
+
+/// Records a VBlank tick from the presentation thread.
+void RecordVblank() noexcept;
+
+/// Records a frame flip submission to the flip queue.
+void RecordFlipSubmitted() noexcept;
+
+/// Records a completed presentation flip.
+void RecordFlipCompleted() noexcept;
+
+/// Records time spent waiting on the flip queue or flip event.
+void RecordFlipWait(uint64_t wait_ns) noexcept;
+
+/// Records an audio sample batch output.
+void RecordAudioUpdate(uint32_t samples, uint32_t freq) noexcept;
 
 /// Captures a point-in-time snapshot of all profiling metrics.
 [[nodiscard]] ProfileSnapshot TakeSnapshot();

@@ -2,6 +2,7 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -44,33 +45,33 @@ LIB_NAME("VideoOut", "VideoOut");
 
 namespace EventQueue = LibKernel::EventQueue;
 
-constexpr int      VIDEO_OUT_EVENT_FLIP                                 = 0;
-constexpr int      VIDEO_OUT_EVENT_VBLANK                               = 1;
-constexpr int      VIDEO_OUT_EVENT_PRE_VBLANK_START                     = 2;
-constexpr int      VIDEO_OUT_EVENT_SET_MODE                             = 8;
-constexpr int      VIDEO_OUT_TRUE                                       = 1;
-constexpr int      VIDEO_OUT_FALSE                                      = 0;
-constexpr int      VIDEO_OUT_BUS_TYPE_MAIN                              = 0;
-constexpr int      VIDEO_OUT_BUS_TYPE_OVERLAY                           = 1;
-constexpr int      VIDEO_OUT_BUS_TYPE_SUB                               = 2;
+constexpr int      VIDEO_OUT_EVENT_FLIP                                  = 0;
+constexpr int      VIDEO_OUT_EVENT_VBLANK                                = 1;
+constexpr int      VIDEO_OUT_EVENT_PRE_VBLANK_START                      = 2;
+constexpr int      VIDEO_OUT_EVENT_SET_MODE                              = 8;
+constexpr int      VIDEO_OUT_TRUE                                        = 1;
+constexpr int      VIDEO_OUT_FALSE                                       = 0;
+constexpr int      VIDEO_OUT_BUS_TYPE_MAIN                               = 0;
+constexpr int      VIDEO_OUT_BUS_TYPE_OVERLAY                            = 1;
+constexpr int      VIDEO_OUT_BUS_TYPE_SUB                                = 2;
 constexpr int      VIDEO_OUT_BUS_TYPE_HMD2_MAIN                          = 32;
-constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC                            = 1;
-constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC_MULTI                      = 4;
-constexpr int      VIDEO_OUT_FLIP_MODE_SLAVE                            = 8;
-constexpr int      VIDEO_OUT_FLIP_MODE_MASTER                           = 9;
-constexpr int      VIDEO_OUT_BUFFER_INDEX_BLACK                         = -2;
-constexpr int      VIDEO_OUT_BUFFER_INDEX_BLANK                         = -1;
-constexpr int      VIDEO_OUT_BUFFER_NUM_MAX                             = 16;
-constexpr size_t   VIDEO_OUT_FLIP_QUEUE_CAPACITY                        = 16;
-constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX                   = 4;
-constexpr uint64_t VIDEO_OUT_OUTPUT_MODE_DEFAULT                        = 0x0000000000000001ULL;
-constexpr uint64_t VIDEO_OUT_OUTPUT_MODE_119_88HZ                       = 0x000000000000000FULL;
-constexpr uint64_t VIDEO_OUT_REFRESH_RATE_59_94HZ                       = 3;
-constexpr uint64_t VIDEO_OUT_REFRESH_RATE_119_88HZ                      = 13;
-constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED     = 0;
-constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED       = 1;
+constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC                             = 1;
+constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC_MULTI                       = 4;
+constexpr int      VIDEO_OUT_FLIP_MODE_SLAVE                             = 8;
+constexpr int      VIDEO_OUT_FLIP_MODE_MASTER                            = 9;
+constexpr int      VIDEO_OUT_BUFFER_INDEX_BLACK                          = -2;
+constexpr int      VIDEO_OUT_BUFFER_INDEX_BLANK                          = -1;
+constexpr int      VIDEO_OUT_BUFFER_NUM_MAX                              = 16;
+constexpr size_t   VIDEO_OUT_FLIP_QUEUE_CAPACITY                         = 16;
+constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX                    = 4;
+constexpr uint64_t VIDEO_OUT_OUTPUT_MODE_DEFAULT                         = 0x0000000000000001ULL;
+constexpr uint64_t VIDEO_OUT_OUTPUT_MODE_119_88HZ                        = 0x000000000000000FULL;
+constexpr uint64_t VIDEO_OUT_REFRESH_RATE_59_94HZ                        = 3;
+constexpr uint64_t VIDEO_OUT_REFRESH_RATE_119_88HZ                       = 13;
+constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED      = 0;
+constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED        = 1;
 constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_HMD2              = 0x10;
-constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_STRICT_COLORIMETRY = 8;
+constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_STRICT_COLORIMETRY  = 8;
 constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED = 32;
 
 enum class VideoOutEventKind : uintptr_t {
@@ -237,7 +238,7 @@ private:
 		Graphics::Presenter::Frame* frame;
 		bool                        premultiplied_alpha;
 		// Draws before this flip were skipped for shaders still being built.
-		bool                        incomplete;
+		bool incomplete;
 	};
 
 	Graphics::Presenter& m_presenter;
@@ -260,7 +261,7 @@ public:
 	static constexpr std::array VIDEO_OUT_BUSES {VIDEO_OUT_BUS_TYPE_MAIN,
 	                                             VIDEO_OUT_BUS_TYPE_OVERLAY, VIDEO_OUT_BUS_TYPE_SUB,
 	                                             VIDEO_OUT_BUS_TYPE_HMD2_MAIN};
-	static constexpr int VIDEO_OUT_NUM_MAX = VIDEO_OUT_BUSES.size() + 1;
+	static constexpr int        VIDEO_OUT_NUM_MAX = VIDEO_OUT_BUSES.size() + 1;
 
 	Impl(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
 	    : width(width), height(height), m_renderer(presenter.Renderer()), m_presenter(presenter),
@@ -279,7 +280,7 @@ public:
 
 	FlipQueue&               GetFlipQueue() { return m_flip_queue; }
 	Graphics::RenderContext& Renderer() const noexcept { return m_renderer; }
-	bool                     IsHdrSupported() const noexcept { return m_presenter.IsHdrSupported(); }
+	bool IsHdrSupported() const noexcept { return m_presenter.IsHdrSupported(); }
 
 	void VblankBegin();
 	void VblankEnd();
@@ -447,7 +448,7 @@ static int RegisterVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoO
 		Common::LockGuard event_lock(event_state->mutex);
 		const auto        existing =
 		    std::find_if(queues.begin(), queues.end(),
-			             [eq](const auto& candidate) { return candidate->handle == eq; });
+		                 [eq](const auto& candidate) { return candidate->handle == eq; });
 		if (existing != queues.end()) {
 			registration = *existing;
 		} else {
@@ -689,7 +690,7 @@ bool VideoOutDriver::Impl::Close(int handle) {
 	VideoOutEventQueues pre_vblank_events;
 	VideoOutEventQueues vblank_events;
 	VideoOutEventQueues output_mode_events;
-	VideoOutConfig* master = nullptr;
+	VideoOutConfig*     master = nullptr;
 	{
 		Common::LockGuard config_lock(config.mutex);
 		EXIT_IF(config.slave_count != 0);
@@ -704,9 +705,9 @@ bool VideoOutDriver::Impl::Close(int handle) {
 			vblank_events      = std::move(config.events->vblank);
 			output_mode_events = std::move(config.events->output_mode);
 		}
-		config.flip_rate   = 0;
-		master             = config.master;
-		config.master      = nullptr;
+		config.flip_rate = 0;
+		master           = config.master;
+		config.master    = nullptr;
 
 		for (auto& buffer: config.buffers) {
 			buffer = VideoOutBuffer {};
@@ -789,6 +790,7 @@ void VideoOutDriver::Impl::VblankBegin() {
 }
 
 void VideoOutDriver::Impl::VblankEnd() {
+	Common::AuditProfiler::RecordVblank();
 	Common::LockGuard lock(m_mutex);
 
 	for (int i = 1; i < VIDEO_OUT_NUM_MAX; i++) {
@@ -855,6 +857,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 
 bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRequestSource source,
                         uint64_t& request_id) {
+	Common::AuditProfiler::RecordFlipSubmitted();
 	Common::LockGuard lock(m_mutex);
 
 	// A newer slave request replaces the one not yet captured by a master flip.
@@ -991,7 +994,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 
 	bool                special = IsSpecialBufferIndex(index);
 	Graphics::ImageInfo source_info;
-	bool                current = false;
+	bool                current             = false;
 	bool                premultiplied_alpha = false;
 	uint64_t            video_out_format    = 0;
 	bool                headset             = false;
@@ -1003,8 +1006,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		if (current && !special) {
 			const auto& surface = cfg->buffers[index];
 			if (!surface.Occupied()) {
-				EXIT("cannot prepare flip from an unregistered surface, id=%" PRIu64
-				     " index=%d\n",
+				EXIT("cannot prepare flip from an unregistered surface, id=%" PRIu64 " index=%d\n",
 				     request_id, index);
 			}
 			const auto& group   = cfg->groups[surface.group_index];
@@ -1044,7 +1046,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	}
 	prepared->frame               = frame;
 	prepared->premultiplied_alpha = premultiplied_alpha;
-	prepared->incomplete = incomplete;
+	prepared->incomplete          = incomplete;
 }
 
 void FlipQueue::Complete(uint64_t request_id) {
@@ -1069,14 +1071,20 @@ void FlipQueue::Complete(uint64_t request_id) {
 
 void FlipQueue::WaitForSubmitSlot(VideoOutConfig& cfg) {
 	Common::LockGuard lock(m_mutex);
-	auto belongs_to_port = [&cfg](const auto& request) { return request.cfg == &cfg; };
+	auto              belongs_to_port = [&cfg](const auto& request) { return request.cfg == &cfg; };
 	while (std::count_if(m_requests.begin(), m_requests.end(), belongs_to_port) +
 	           std::count_if(m_cpu_requests.begin(), m_cpu_requests.end(), belongs_to_port) >=
 	       VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
 		if (m_requests.empty()) {
 			EXIT("video-out queue is saturated by CPU flips queued behind the current EOP\n");
 		}
+		const auto wait_begin = std::chrono::steady_clock::now();
 		m_submit_slot_cond_var.Wait(&m_mutex);
+		const auto wait_ns =
+		    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                              std::chrono::steady_clock::now() - wait_begin)
+		                              .count());
+		Common::AuditProfiler::RecordFlipWait(wait_ns);
 	}
 }
 
@@ -1089,7 +1097,13 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
 	while (has_request()) {
+		const auto wait_begin = std::chrono::steady_clock::now();
 		m_done_cond_var.Wait(&m_mutex);
+		const auto wait_ns =
+		    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                              std::chrono::steady_clock::now() - wait_begin)
+		                              .count());
+		Common::AuditProfiler::RecordFlipWait(wait_ns);
 	}
 }
 
@@ -1098,7 +1112,7 @@ bool FlipQueue::Flip() {
 
 	m_mutex.Lock();
 	const auto owner = std::find_if(m_requests.begin(), m_requests.end(),
-	                               [](const auto& r) { return r.group == r.id; });
+	                                [](const auto& r) { return r.group == r.id; });
 	if (owner == m_requests.end()) {
 		m_mutex.Unlock();
 		return false;
@@ -1113,11 +1127,11 @@ bool FlipQueue::Flip() {
 		return false;
 	}
 	std::array<Request, VideoOutDriver::Impl::VIDEO_OUT_BUSES.size()> requests {};
-	size_t count = 0;
+	size_t                                                            count = 0;
 	for (auto& request: m_requests) {
 		if (request.group == group) {
 			EXIT_IF(count == requests.size());
-			request.state = RequestState::Presenting;
+			request.state     = RequestState::Presenting;
 			requests[count++] = request;
 		}
 	}
@@ -1128,7 +1142,7 @@ bool FlipQueue::Flip() {
 	// stay valid.
 	std::sort(requests.begin(), requests.begin() + count,
 	          [](const auto& a, const auto& b) { return a.cfg->bus < b.cfg->bus; });
-	bool due = true;
+	bool                                                                                 due = true;
 	std::array<Graphics::Presenter::Layer, VideoOutDriver::Impl::VIDEO_OUT_BUSES.size()> layers {};
 	size_t                      layer_count = 0;
 	Graphics::Presenter::Frame* hidden      = nullptr; // The main port behind the headset image.
@@ -1156,19 +1170,17 @@ bool FlipQueue::Flip() {
 			// --async-shader-compile skipped draws of this frame whose shaders were not ready.
 			// Keep showing the last complete frame instead of one with parts missing, but only
 			// for a few seconds, so a shader that never arrives cannot freeze the picture.
-			constexpr auto MaxHold = std::chrono::seconds {3};
-			const auto        now          = std::chrono::steady_clock::now();
-			const bool     incomplete =
-			    std::any_of(requests.begin(), requests.begin() + count,
-			                [](const auto& r) { return r.incomplete; });
+			constexpr auto MaxHold    = std::chrono::seconds {3};
+			const auto     now        = std::chrono::steady_clock::now();
+			const bool     incomplete = std::any_of(requests.begin(), requests.begin() + count,
+			                                        [](const auto& r) { return r.incomplete; });
 			if (!incomplete) {
 				m_holding = false;
 			} else if (!m_holding) {
 				m_holding    = true;
 				m_hold_since = now;
 			}
-			if (incomplete && now - m_hold_since < MaxHold &&
-			    m_presenter.PresentLastFrame()) {
+			if (incomplete && now - m_hold_since < MaxHold && m_presenter.PresentLastFrame()) {
 				for (size_t i = 0; i < layer_count; i++) {
 					m_presenter.Discard(*layers[i].frame);
 				}
@@ -1194,7 +1206,7 @@ bool FlipQueue::Flip() {
 			it++->state = RequestState::Ready;
 			continue;
 		}
-		auto& r = *it;
+		auto& r            = *it;
 		r.cfg->flip_vblank = r.cfg->vblank_status.count;
 		r.cfg->flip_status.count++;
 		r.cfg->flip_status.processTime              = LibKernel::KernelGetProcessTime();
@@ -1214,6 +1226,7 @@ bool FlipQueue::Flip() {
 		requests[i - 1].cfg->mutex.Unlock();
 	}
 	if (due) {
+		Common::AuditProfiler::RecordFlipCompleted();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&
 		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {
@@ -1229,7 +1242,7 @@ KYTY_SYSV_ABI int VideoOutSetFlipMaster(int slave_handle, int master_handle) {
 }
 
 KYTY_SYSV_ABI void VideoOutAddBufferAttributeOption(VideoOutBufferAttribute2* attribute,
-                                                   uint64_t option) {
+                                                    uint64_t                  option) {
 	PRINT_NAME();
 	EXIT_IF(attribute == nullptr);
 	attribute->option |= option;

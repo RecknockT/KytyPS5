@@ -133,6 +133,15 @@ std::atomic<uint64_t> g_hitches_500ms {0};
 std::atomic<uint64_t> g_hitches_1000ms {0};
 std::atomic<uint64_t> g_hitch_time_ns {0};
 
+// Timing and presentation metrics
+std::atomic<uint64_t> g_vblank_count {0};
+std::atomic<uint64_t> g_flip_submitted_count {0};
+std::atomic<uint64_t> g_flip_completed_count {0};
+std::atomic<uint64_t> g_flip_wait_ns {0};
+std::atomic<uint64_t> g_flip_wait_count {0};
+std::atomic<uint64_t> g_audio_updates_count {0};
+std::atomic<uint64_t> g_audio_total_samples {0};
+
 struct AtomicSlowFrame {
 	std::atomic<uint64_t> frame_index {0};
 	std::atomic<double>   frame_ms {0.0};
@@ -278,6 +287,13 @@ void Reset() {
 	g_phase_gameplay.reprotects.store(0, std::memory_order_relaxed);
 	g_phase_gameplay.submits.store(0, std::memory_order_relaxed);
 	g_phase_gameplay.gpu_wait_ns.store(0, std::memory_order_relaxed);
+	g_vblank_count.store(0, std::memory_order_relaxed);
+	g_flip_submitted_count.store(0, std::memory_order_relaxed);
+	g_flip_completed_count.store(0, std::memory_order_relaxed);
+	g_flip_wait_ns.store(0, std::memory_order_relaxed);
+	g_flip_wait_count.store(0, std::memory_order_relaxed);
+	g_audio_updates_count.store(0, std::memory_order_relaxed);
+	g_audio_total_samples.store(0, std::memory_order_relaxed);
 	g_has_completed_snapshot.store(false, std::memory_order_relaxed);
 }
 
@@ -678,6 +694,43 @@ void RecordFrame(double frame_ms) noexcept {
 	}
 }
 
+void RecordVblank() noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_vblank_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordFlipSubmitted() noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_flip_submitted_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordFlipCompleted() noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_flip_completed_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordFlipWait(uint64_t wait_ns) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_flip_wait_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+	g_flip_wait_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordAudioUpdate(uint32_t samples, uint32_t /*freq*/) noexcept {
+	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	g_audio_updates_count.fetch_add(1, std::memory_order_relaxed);
+	g_audio_total_samples.fetch_add(samples, std::memory_order_relaxed);
+}
+
 ProfileSnapshot TakeSnapshot() {
 	if (g_has_completed_snapshot.load(std::memory_order_acquire)) {
 		return g_completed_snapshot;
@@ -930,6 +983,37 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.phase_gameplay.gpu_wait_ns =
 	    g_phase_gameplay.gpu_wait_ns.load(std::memory_order_relaxed);
 
+	// Timing and simulation metrics
+	const double snap_duration_sec =
+	    snapshot.capture_real_duration_ms > 0 ? (snapshot.capture_real_duration_ms / 1000.0) : 0.0;
+
+	snapshot.total_vblanks = g_vblank_count.load(std::memory_order_relaxed);
+	snapshot.vblank_rate_hz =
+	    snap_duration_sec > 0.0 ? (static_cast<double>(snapshot.total_vblanks) / snap_duration_sec)
+	                            : 0.0;
+	snapshot.total_flips_submitted = g_flip_submitted_count.load(std::memory_order_relaxed);
+	snapshot.total_flips_completed = g_flip_completed_count.load(std::memory_order_relaxed);
+	snapshot.flip_rate_hz =
+	    snap_duration_sec > 0.0
+	        ? (static_cast<double>(snapshot.total_flips_completed) / snap_duration_sec)
+	        : 0.0;
+	snapshot.total_flip_wait_ns = g_flip_wait_ns.load(std::memory_order_relaxed);
+	snapshot.total_flip_wait_ms = static_cast<double>(snapshot.total_flip_wait_ns) / 1000000.0;
+	const auto wait_count       = g_flip_wait_count.load(std::memory_order_relaxed);
+	snapshot.avg_flip_wait_ms =
+	    wait_count > 0 ? (snapshot.total_flip_wait_ms / static_cast<double>(wait_count)) : 0.0;
+	snapshot.audio_updates_count = g_audio_updates_count.load(std::memory_order_relaxed);
+	snapshot.audio_total_samples = g_audio_total_samples.load(std::memory_order_relaxed);
+	snapshot.audio_effective_hz =
+	    snap_duration_sec > 0.0
+	        ? (static_cast<double>(snapshot.audio_total_samples) / snap_duration_sec)
+	        : 0.0;
+	snapshot.simulation_speed_ratio =
+	    snap_duration_sec > 0.0
+	        ? ((static_cast<double>(snapshot.total_flips_completed) * (1.0 / 60.0)) /
+	           snap_duration_sec)
+	        : 0.0;
+
 	return snapshot;
 }
 
@@ -1150,6 +1234,21 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	     }},
 	};
 
+	j["timing_and_simulation"] = {
+	    {"total_vblanks", snap.total_vblanks},
+	    {"vblank_rate_hz", snap.vblank_rate_hz},
+	    {"total_flips_submitted", snap.total_flips_submitted},
+	    {"total_flips_completed", snap.total_flips_completed},
+	    {"flip_rate_hz", snap.flip_rate_hz},
+	    {"total_flip_wait_ms", snap.total_flip_wait_ms},
+	    {"avg_flip_wait_ms", snap.avg_flip_wait_ms},
+	    {"audio_updates_count", snap.audio_updates_count},
+	    {"audio_total_samples", snap.audio_total_samples},
+	    {"audio_effective_hz", snap.audio_effective_hz},
+	    {"simulation_speed_ratio", snap.simulation_speed_ratio},
+	    {"simulation_speed_percent", snap.simulation_speed_ratio * 100.0},
+	};
+
 	// Legacy backwards-compatible aliases for existing tests and scripts
 	j["configuration"]              = j["metadata"]["config"];
 	j["frametime_metrics_ms"]       = j["frametime_summary"];
@@ -1215,6 +1314,20 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Stuttering,HitchesGe500ms,{}\n", snap.hitches_ge_500ms);
 	out << fmt::format("Stuttering,HitchesGe1000ms,{}\n", snap.hitches_ge_1000ms);
 	out << fmt::format("Stuttering,HitchTimeTotalMs,{:.2f}\n", snap.hitch_time_total_ms);
+
+	out << fmt::format("Timing,TotalVblanks,{}\n", snap.total_vblanks);
+	out << fmt::format("Timing,VblankRateHz,{:.2f}\n", snap.vblank_rate_hz);
+	out << fmt::format("Timing,TotalFlipsSubmitted,{}\n", snap.total_flips_submitted);
+	out << fmt::format("Timing,TotalFlipsCompleted,{}\n", snap.total_flips_completed);
+	out << fmt::format("Timing,FlipRateHz,{:.2f}\n", snap.flip_rate_hz);
+	out << fmt::format("Timing,TotalFlipWaitMs,{:.2f}\n", snap.total_flip_wait_ms);
+	out << fmt::format("Timing,AvgFlipWaitMs,{:.2f}\n", snap.avg_flip_wait_ms);
+	out << fmt::format("Timing,AudioUpdatesCount,{}\n", snap.audio_updates_count);
+	out << fmt::format("Timing,AudioTotalSamples,{}\n", snap.audio_total_samples);
+	out << fmt::format("Timing,AudioEffectiveHz,{:.2f}\n", snap.audio_effective_hz);
+	out << fmt::format("Timing,SimulationSpeedRatio,{:.4f}\n", snap.simulation_speed_ratio);
+	out << fmt::format("Timing,SimulationSpeedPercent,{:.2f}%\n",
+	                   snap.simulation_speed_ratio * 100.0);
 
 	out << fmt::format("WriteTracking,TotalFaults,{}\n", snap.total_faults);
 	out << fmt::format("WriteTracking,FaultsPerFrame,{:.1f}\n",

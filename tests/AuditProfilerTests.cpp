@@ -566,6 +566,122 @@ TEST_F(AuditProfilerTest, PhaseMetricsDoNotLeakEventsOutsideActiveCapture) {
 	std::filesystem::remove("test_leak.csv");
 }
 
+TEST_F(AuditProfilerTest, RecordsTimingAndSimulationMetricsAccurately) {
+	SetEnabled(true);
+	InitCapture(0, 180, "test_timing.json", true);
+	EXPECT_EQ(GetCaptureState(), CaptureState::WaitingForHotkey);
+
+	// In warmup, timing metrics must not record
+	RecordVblank();
+	RecordFlipSubmitted();
+	RecordFlipCompleted();
+	RecordFlipWait(10000000);
+	RecordAudioUpdate(512, 48000);
+
+	auto snap = TakeSnapshot();
+	EXPECT_EQ(snap.total_vblanks, 0u);
+	EXPECT_EQ(snap.total_flips_submitted, 0u);
+	EXPECT_EQ(snap.total_flips_completed, 0u);
+	EXPECT_EQ(snap.total_flip_wait_ns, 0u);
+	EXPECT_EQ(snap.audio_updates_count, 0u);
+
+	// Start capture (simulates user pressing F9 in gameplay scene)
+	StartCapture("ManualHotkeyF9");
+	EXPECT_EQ(GetCaptureState(), CaptureState::Running);
+
+	// Record 60 VBlanks
+	for (int i = 0; i < 60; ++i) {
+		RecordVblank();
+	}
+
+	// Record 20 Flips (submitted & completed) at ~20 FPS pacing
+	for (int i = 0; i < 20; ++i) {
+		RecordFlipSubmitted();
+		RecordFlipWait(25'000'000); // 25 ms wait per flip
+		RecordFlipCompleted();
+		RecordFrame(50.0);
+	}
+
+	// Record audio updates: ~93 batches of 512 samples = ~47616 samples (~1 second of audio at 48kHz)
+	for (int i = 0; i < 93; ++i) {
+		RecordAudioUpdate(512, 48000);
+	}
+
+	snap = TakeSnapshot();
+	EXPECT_EQ(snap.total_vblanks, 60u);
+	EXPECT_EQ(snap.total_flips_submitted, 20u);
+	EXPECT_EQ(snap.total_flips_completed, 20u);
+	EXPECT_EQ(snap.total_flip_wait_ns, 20u * 25'000'000u);
+	EXPECT_DOUBLE_EQ(snap.total_flip_wait_ms, 500.0);
+	EXPECT_DOUBLE_EQ(snap.avg_flip_wait_ms, 25.0);
+	EXPECT_EQ(snap.audio_updates_count, 93u);
+	EXPECT_EQ(snap.audio_total_samples, 93u * 512u);
+
+	// Export to JSON and CSV
+	EXPECT_TRUE(ExportAll("test_timing.json", "test_timing.csv", &snap));
+
+	// Verify JSON contents
+	{
+		std::ifstream jf("test_timing.json");
+		ASSERT_TRUE(jf.is_open());
+		nlohmann::json j;
+		jf >> j;
+		ASSERT_TRUE(j.contains("timing_and_simulation"));
+		EXPECT_EQ(j["timing_and_simulation"]["total_vblanks"], 60);
+		EXPECT_EQ(j["timing_and_simulation"]["total_flips_submitted"], 20);
+		EXPECT_EQ(j["timing_and_simulation"]["total_flips_completed"], 20);
+		EXPECT_DOUBLE_EQ(j["timing_and_simulation"]["total_flip_wait_ms"], 500.0);
+		EXPECT_DOUBLE_EQ(j["timing_and_simulation"]["avg_flip_wait_ms"], 25.0);
+		EXPECT_EQ(j["timing_and_simulation"]["audio_updates_count"], 93);
+		EXPECT_EQ(j["timing_and_simulation"]["audio_total_samples"], 93 * 512);
+	}
+
+	// Verify CSV contents
+	{
+		std::ifstream cf("test_timing.csv");
+		ASSERT_TRUE(cf.is_open());
+		std::string line;
+		bool found_vblanks = false;
+		bool found_flips = false;
+		bool found_audio = false;
+		bool found_sim_ratio = false;
+		while (std::getline(cf, line)) {
+			if (line.find("Timing,TotalVblanks,60") != std::string::npos) {
+				found_vblanks = true;
+			}
+			if (line.find("Timing,TotalFlipsCompleted,20") != std::string::npos) {
+				found_flips = true;
+			}
+			if (line.find("Timing,AudioUpdatesCount,93") != std::string::npos) {
+				found_audio = true;
+			}
+			if (line.find("Timing,SimulationSpeedRatio,") != std::string::npos) {
+				found_sim_ratio = true;
+			}
+		}
+		EXPECT_TRUE(found_vblanks);
+		EXPECT_TRUE(found_flips);
+		EXPECT_TRUE(found_audio);
+		EXPECT_TRUE(found_sim_ratio);
+	}
+
+	// Stop capture and verify late events do not leak
+	StopCapture(CaptureState::Completed);
+
+	for (int i = 0; i < 20; ++i) {
+		RecordVblank();
+		RecordFlipCompleted();
+		RecordAudioUpdate(512, 48000);
+	}
+	const auto final_snap = TakeSnapshot();
+	EXPECT_EQ(final_snap.total_vblanks, 60u);
+	EXPECT_EQ(final_snap.total_flips_completed, 20u);
+	EXPECT_EQ(final_snap.audio_updates_count, 93u);
+
+	std::filesystem::remove("test_timing.json");
+	std::filesystem::remove("test_timing.csv");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
