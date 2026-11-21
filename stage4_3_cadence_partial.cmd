@@ -1,9 +1,9 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 set "GAME_DIR=C:\Users\Recko\Downloads\PPSA21567\PPSA21567-app"
 
-set "EMU_EXE=%~dp0kyty_emulator.exe"
-if not exist "%EMU_EXE%" set "EMU_EXE=%~dp0_Build\windows\kyty_emulator.exe"
+set "EMU_EXE=%~dp0_Build\windows\kyty_emulator.exe"
 if not exist "%EMU_EXE%" set "EMU_EXE=C:\Users\Recko\Documents\github\kyty\_Build\windows\kyty_emulator.exe"
 
 echo =====================================================================
