@@ -114,6 +114,9 @@ struct ConfigOptions {
 	bool     coalesce_read_faults_enabled   = true;
 	bool     gpu_timestamps_enabled         = true;
 	bool     diagnostic_skip_water_enabled  = false;
+	bool     fast_pending_ops_enabled       = true;
+	bool     priority_spin_wait_enabled     = true;
+	uint32_t priority_spin_duration_us      = 100;
 	uint32_t flush_draws                    = 0; // 0 is off
 	bool     tessellation_enabled           = false;
 	bool     occlusion_queries_enabled      = false;
@@ -248,6 +251,9 @@ bool               ProgramCacheMruEnabled();
 bool               CoalesceReadFaultsEnabled();
 bool               GpuTimestampsEnabled();
 bool               DiagnosticSkipWaterPassEnabled();
+bool               FastPendingOpsEnabled();
+bool               PrioritySpinWaitEnabled();
+uint32_t           PrioritySpinDurationUs();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();

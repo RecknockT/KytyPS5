@@ -111,6 +111,13 @@ std::atomic<uint64_t> g_baseline_redundant_pipeline_binds {0};
 std::atomic<uint64_t> g_baseline_redundant_vertex_binds {0};
 std::atomic<uint64_t> g_baseline_redundant_index_binds {0};
 
+std::atomic<uint64_t> g_priority_wait_spins {0};
+std::atomic<uint64_t> g_priority_wait_spin_hits {0};
+std::atomic<uint64_t> g_pending_ops_fast_skips {0};
+std::atomic<uint64_t> g_baseline_priority_wait_spins {0};
+std::atomic<uint64_t> g_baseline_priority_wait_spin_hits {0};
+std::atomic<uint64_t> g_baseline_pending_ops_fast_skips {0};
+
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
 RipSlot    g_rip_table[RIP_TABLE_CAPACITY];
@@ -511,6 +518,12 @@ void StartCapture(const char* trigger_reason) {
 	                                        std::memory_order_relaxed);
 	g_baseline_redundant_index_binds.store(Counters::Get(Counters::Counter::RedundantIndexBinds),
 	                                       std::memory_order_relaxed);
+	g_baseline_priority_wait_spins.store(g_priority_wait_spins.load(std::memory_order_relaxed),
+	                                     std::memory_order_relaxed);
+	g_baseline_priority_wait_spin_hits.store(
+	    g_priority_wait_spin_hits.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_pending_ops_fast_skips.store(
+	    g_pending_ops_fast_skips.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -1192,6 +1205,9 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.draw_state_dirty_check_enabled = Config::DrawStateDirtyCheckEnabled();
 	snapshot.ensure_pipeline_cache_enabled  = Config::EnsurePipelineCacheEnabled();
 	snapshot.descriptor_cache_enabled       = Config::DescriptorCacheEnabled();
+	snapshot.fast_pending_ops_enabled       = Config::FastPendingOpsEnabled();
+	snapshot.priority_spin_wait_enabled     = Config::PrioritySpinWaitEnabled();
+	snapshot.priority_spin_duration_us      = Config::PrioritySpinDurationUs();
 	snapshot.git_commit                     = KYTY_GIT_VERSION;
 	snapshot.git_revision                   = KYTY_GIT_REVISION;
 	snapshot.git_hash                       = KYTY_GIT_HASH;
@@ -1311,6 +1327,20 @@ ProfileSnapshot TakeSnapshot() {
 	const auto cur_csub      = Counters::Get(Counters::Counter::CadenceSubmits);
 	const auto base_csub     = g_baseline_cadence_submits.load(std::memory_order_relaxed);
 	snapshot.cadence_submits = (cur_csub >= base_csub) ? (cur_csub - base_csub) : cur_csub;
+
+	const auto cur_spins         = g_priority_wait_spins.load(std::memory_order_relaxed);
+	const auto base_spins        = g_baseline_priority_wait_spins.load(std::memory_order_relaxed);
+	snapshot.priority_wait_spins = (cur_spins >= base_spins) ? (cur_spins - base_spins) : cur_spins;
+
+	const auto cur_spin_hits  = g_priority_wait_spin_hits.load(std::memory_order_relaxed);
+	const auto base_spin_hits = g_baseline_priority_wait_spin_hits.load(std::memory_order_relaxed);
+	snapshot.priority_wait_spin_hits =
+	    (cur_spin_hits >= base_spin_hits) ? (cur_spin_hits - base_spin_hits) : cur_spin_hits;
+
+	const auto cur_skips  = g_pending_ops_fast_skips.load(std::memory_order_relaxed);
+	const auto base_skips = g_baseline_pending_ops_fast_skips.load(std::memory_order_relaxed);
+	snapshot.pending_ops_fast_skips =
+	    (cur_skips >= base_skips) ? (cur_skips - base_skips) : cur_skips;
 
 	// Frametimes calculation across the captured window
 	const auto total_recorded_frames = g_captured_frame_count.load(std::memory_order_relaxed);
@@ -1808,6 +1838,9 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"draw_state_dirty_check", snap.draw_state_dirty_check_enabled},
 	         {"ensure_pipeline_cache", snap.ensure_pipeline_cache_enabled},
 	         {"descriptor_cache", snap.descriptor_cache_enabled},
+	         {"fast_pending_ops", snap.fast_pending_ops_enabled},
+	         {"priority_spin_wait", snap.priority_spin_wait_enabled},
+	         {"priority_spin_duration_us", snap.priority_spin_duration_us},
 	     }},
 	};
 
@@ -1900,6 +1933,9 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	     static_cast<double>(snap.texture_partial_upload_bytes) / (1024.0 * 1024.0)},
 	    {"cadence_submits", snap.cadence_submits},
 	    {"cadence_held_back", snap.cadence_held_back},
+	    {"priority_wait_spins", snap.priority_wait_spins},
+	    {"priority_wait_spin_hits", snap.priority_wait_spin_hits},
+	    {"pending_ops_fast_skips", snap.pending_ops_fast_skips},
 	};
 
 	nlohmann::json waits_json = nlohmann::json::object();
@@ -2133,6 +2169,11 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   snap.ensure_pipeline_cache_enabled ? 1 : 0);
 	out << fmt::format("Metadata,DescriptorCacheEnabled,{}\n",
 	                   snap.descriptor_cache_enabled ? 1 : 0);
+	out << fmt::format("Metadata,FastPendingOpsEnabled,{}\n",
+	                   snap.fast_pending_ops_enabled ? 1 : 0);
+	out << fmt::format("Metadata,PrioritySpinWaitEnabled,{}\n",
+	                   snap.priority_spin_wait_enabled ? 1 : 0);
+	out << fmt::format("Metadata,PrioritySpinDurationUs,{}\n", snap.priority_spin_duration_us);
 
 	out << fmt::format("Frametime,TotalFrames,{}\n", snap.total_frames);
 	out << fmt::format("Frametime,EffectiveFps,{:.2f}\n", snap.effective_fps);
@@ -2257,6 +2298,9 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   static_cast<double>(snap.texture_partial_upload_bytes) / (1024.0 * 1024.0));
 	out << fmt::format("Optimization,CadenceSubmits,{}\n", snap.cadence_submits);
 	out << fmt::format("Optimization,CadenceHeldBack,{}\n", snap.cadence_held_back);
+	out << fmt::format("Optimization,PriorityWaitSpins,{}\n", snap.priority_wait_spins);
+	out << fmt::format("Optimization,PriorityWaitSpinHits,{}\n", snap.priority_wait_spin_hits);
+	out << fmt::format("Optimization,PendingOpsFastSkips,{}\n", snap.pending_ops_fast_skips);
 
 	out << fmt::format("PhaseLoading,FrameCount,{}\n", snap.phase_loading.frame_count);
 	out << fmt::format("PhaseLoading,TotalFrameMs,{:.2f}\n", snap.phase_loading.total_frame_ms);
@@ -2403,6 +2447,18 @@ bool ExportAll(const std::string& json_path, const std::string& csv_path,
 	ExportFramesCsv(frames_csv_path);
 
 	return json_ok && csv_ok;
+}
+
+void CountPriorityWaitSpin() noexcept {
+	g_priority_wait_spins.fetch_add(1, std::memory_order_relaxed);
+}
+
+void CountPriorityWaitSpinHit() noexcept {
+	g_priority_wait_spin_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void CountPendingOpsFastSkip() noexcept {
+	g_pending_ops_fast_skips.fetch_add(1, std::memory_order_relaxed);
 }
 
 } // namespace Common::AuditProfiler

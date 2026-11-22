@@ -266,6 +266,9 @@ struct ProfileSnapshot {
 	bool     coalesce_read_faults_enabled   = true;
 	bool     gpu_timestamps_enabled         = true;
 	bool     diagnostic_skip_water_enabled  = false;
+	bool     fast_pending_ops_enabled       = true;
+	bool     priority_spin_wait_enabled     = true;
+	uint32_t priority_spin_duration_us      = 100;
 
 	// Capture lifecycle metadata
 	std::string capture_id;
@@ -311,6 +314,9 @@ struct ProfileSnapshot {
 	uint64_t texture_partial_upload_bytes = 0;
 	uint64_t cadence_held_back            = 0;
 	uint64_t cadence_submits              = 0;
+	uint64_t priority_wait_spins          = 0;
+	uint64_t priority_wait_spin_hits      = 0;
+	uint64_t pending_ops_fast_skips       = 0;
 
 	// Frametime metrics (in milliseconds, calculated over all frames of the captured window)
 	double   p50_frame_ms  = 0.0;
@@ -448,6 +454,11 @@ void RecordReprotect(uint64_t vaddr, uint64_t size) noexcept;
 
 /// Records a timeline semaphore wait event.
 void RecordGpuWait(GpuWaitReason reason, uint64_t wait_ns) noexcept;
+
+/// Records priority operation spin-wait attempts, hits, and lock-free fast skips.
+void CountPriorityWaitSpin() noexcept;
+void CountPriorityWaitSpinHit() noexcept;
+void CountPendingOpsFastSkip() noexcept;
 
 /// Records a vkQueueSubmit event.
 void RecordSubmit(SubmitReason reason) noexcept;

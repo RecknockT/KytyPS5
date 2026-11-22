@@ -51,6 +51,8 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 | **Draw State Dirty Check** (Etapa 8) | `--draw-state-dirty-check` | `--no-draw-state-dirty-check` | **Desactivado** (regresión Sky Garden) |
 | **Ensure Pipeline Cache** (Etapa 8.1) | `--ensure-pipeline-cache` | `--no-ensure-pipeline-cache` | **Activado** |
 | **Descriptor Cache** (Etapa 8.1) | `--descriptor-cache` | `--no-descriptor-cache` | **Activado** |
+| **Fast Pending Operations** (Etapa 8.4) | `--fast-pending-ops` | `--no-fast-pending-ops` | **Activado** |
+| **Priority Spin Wait** (Etapa 8.4) | `--priority-spin-wait` | `--no-priority-spin-wait` | **Activado** (100 µs) |
 | **Extended Stream Buffer** (256 MiB) | `--extended-stream-buffer` | (omitir) | **Desactivado** (64 MiB estándar) |
 
 Para documentación detallada de cada etapa, consulte la carpeta [`docs/performance/`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/).

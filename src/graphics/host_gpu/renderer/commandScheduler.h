@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/submitCadence.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 
@@ -122,11 +123,12 @@ private:
 	/// since the known GPU tick can pass the last submitted tick between two reads.
 	[[nodiscard]] static uint64_t GpuLag(uint64_t current_tick, uint64_t known_gpu_tick) noexcept;
 
-	void BeginNext();
-	void PriorityOperationsThread(std::stop_token stop);
-	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
-	void SealReleasesLocked();
-	void RunOperation(Common::UniqueFunction<void>&& operation);
+	void               BeginNext();
+	void               PriorityOperationsThread(std::stop_token stop);
+	void               QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
+	void               SealReleasesLocked();
+	void               RunOperation(Common::UniqueFunction<void>&& operation);
+	[[nodiscard]] bool PriorityDoneLocked(uint64_t tick) const noexcept;
 
 	MasterSemaphore                           m_master;
 	RenderContext&                            m_context;
@@ -135,13 +137,16 @@ private:
 	CommandBuffer                             m_command;
 	DynamicState                              m_dynamic_state;
 	std::queue<PendingOperation>              m_pending_operations;
+	std::atomic<uint64_t>                     m_pending_front_tick {UINT64_MAX};
 	std::queue<PendingOperation>              m_priority_operations;
 	std::vector<Common::UniqueFunction<void>> m_unsealed_releases;
 	std::mutex                                m_operation_mutex;
 	std::condition_variable                   m_operation_available;
+	std::condition_variable                   m_priority_available;
 	std::jthread                              m_priority_thread;
 	uint64_t                                  m_priority_active_tick = 0; // 0 while none runs
-	OperationState                            m_operation_state      = OperationState::Open;
+	std::atomic<uint64_t>                     m_priority_progress {0};
+	OperationState                            m_operation_state = OperationState::Open;
 	SubmitCadence                             m_cadence;
 	bool                                      m_has_recorded_work = false;
 };

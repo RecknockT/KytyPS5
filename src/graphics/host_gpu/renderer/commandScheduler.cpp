@@ -2,10 +2,20 @@
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
+#include "common/emulatorConfig.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
+#include <chrono>
 #include <optional>
+
+#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <xmmintrin.h>
+#endif
+#endif
 
 namespace Libs::Graphics {
 
@@ -181,23 +191,40 @@ void CommandScheduler::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason 
 }
 
 void CommandScheduler::PopPendingOperations() {
+	if (Config::FastPendingOpsEnabled()) {
+		const auto front = m_pending_front_tick.load(std::memory_order_acquire);
+		if (front == UINT64_MAX || front >= CurrentTick()) {
+			Common::AuditProfiler::CountPendingOpsFastSkip();
+			return;
+		}
+		if (!m_master.IsFree(front)) {
+			Common::AuditProfiler::CountPendingOpsFastSkip();
+			return;
+		}
+	}
+
 	bool refreshed = false;
 	for (;;) {
 		PendingOperation operation;
 		{
 			std::lock_guard lock(m_operation_mutex);
 			if (m_pending_operations.empty()) {
+				m_pending_front_tick.store(UINT64_MAX, std::memory_order_release);
 				return;
 			}
 			const auto tick = m_pending_operations.front().tick;
 			if (!m_master.IsFree(tick)) {
 				// The timeline is polled once, and not for the open tick: it is not submitted yet.
 				if (refreshed || tick >= CurrentTick()) {
+					m_pending_front_tick.store(tick, std::memory_order_release);
 					return;
 				}
 			} else {
 				operation = std::move(m_pending_operations.front());
 				m_pending_operations.pop();
+				m_pending_front_tick.store(
+				    m_pending_operations.empty() ? UINT64_MAX : m_pending_operations.front().tick,
+				    std::memory_order_release);
 			}
 		}
 		if (!operation.callback) {
@@ -241,6 +268,9 @@ void CommandScheduler::SealReleasesLocked() {
 		m_pending_operations.push({std::move(release), last_recorded_tick});
 	}
 	m_unsealed_releases.clear();
+	if (!m_pending_operations.empty()) {
+		m_pending_front_tick.store(m_pending_operations.front().tick, std::memory_order_release);
+	}
 }
 
 void CommandScheduler::DeferPriorityOperation(Common::UniqueFunction<void>&& operation) {
@@ -254,6 +284,9 @@ void CommandScheduler::QueueOperation(Common::UniqueFunction<void>&& operation, 
 	if (m_operation_state == OperationState::Open) {
 		auto& queue = priority ? m_priority_operations : m_pending_operations;
 		queue.push({std::move(operation), CurrentTick()});
+		if (!priority && m_pending_front_tick.load(std::memory_order_relaxed) == UINT64_MAX) {
+			m_pending_front_tick.store(CurrentTick(), std::memory_order_release);
+		}
 		lock.unlock();
 		if (priority) {
 			m_operation_available.notify_one();
@@ -296,6 +329,8 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			std::lock_guard lock(m_operation_mutex);
 			m_priority_active_tick = 0;
 		}
+		m_priority_progress.fetch_add(1, std::memory_order_release);
+		m_priority_available.notify_all();
 		m_operation_available.notify_all();
 	}
 }
@@ -303,20 +338,64 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 void CommandScheduler::DrainPriorityOperations() {
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(
+	m_priority_available.wait(
 	    lock, [this] { return m_priority_operations.empty() && m_priority_active_tick == 0; });
+}
+
+bool CommandScheduler::PriorityDoneLocked(uint64_t tick) const noexcept {
+	const bool active_before_or_at = m_priority_active_tick != 0 && m_priority_active_tick <= tick;
+	const bool queued_before_or_at =
+	    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
+	return !active_before_or_at && !queued_before_or_at;
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
-	m_operation_available.wait(lock, [this, tick] {
-		const bool active_before_or_at =
-		    m_priority_active_tick != 0 && m_priority_active_tick <= tick;
-		const bool queued_before_or_at =
-		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
-		return !active_before_or_at && !queued_before_or_at;
-	});
+	if (PriorityDoneLocked(tick)) {
+		return;
+	}
+
+	if (Config::PrioritySpinWaitEnabled()) {
+		const auto spin_duration_us = Config::PrioritySpinDurationUs();
+		if (spin_duration_us > 0) {
+			Common::AuditProfiler::CountPriorityWaitSpin();
+			auto       seen  = m_priority_progress.load(std::memory_order_acquire);
+			const auto start = std::chrono::steady_clock::now();
+			lock.unlock();
+
+			for (;;) {
+#if defined(_M_X64) || defined(__x86_64__)
+				_mm_pause();
+#else
+				std::this_thread::yield();
+#endif
+				const auto progress = m_priority_progress.load(std::memory_order_acquire);
+				if (progress != seen) {
+					seen = progress;
+					lock.lock();
+					if (PriorityDoneLocked(tick)) {
+						Common::AuditProfiler::CountPriorityWaitSpinHit();
+						return;
+					}
+					lock.unlock();
+				}
+				const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+				                            std::chrono::steady_clock::now() - start)
+				                            .count();
+				if (elapsed_us >= static_cast<int64_t>(spin_duration_us)) {
+					break;
+				}
+			}
+			lock.lock();
+			if (PriorityDoneLocked(tick)) {
+				Common::AuditProfiler::CountPriorityWaitSpinHit();
+				return;
+			}
+		}
+	}
+
+	m_priority_available.wait(lock, [this, tick] { return PriorityDoneLocked(tick); });
 }
 
 void CommandScheduler::RunOperation(Common::UniqueFunction<void>&& operation) {

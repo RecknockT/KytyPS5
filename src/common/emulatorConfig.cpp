@@ -382,6 +382,18 @@ bool DiagnosticSkipWaterPassEnabled() {
 	return g_config != nullptr ? g_config->diagnostic_skip_water_enabled : false;
 }
 
+bool FastPendingOpsEnabled() {
+	return g_config != nullptr ? g_config->fast_pending_ops_enabled : true;
+}
+
+bool PrioritySpinWaitEnabled() {
+	return g_config != nullptr ? g_config->priority_spin_wait_enabled : true;
+}
+
+uint32_t PrioritySpinDurationUs() {
+	return g_config != nullptr ? g_config->priority_spin_duration_us : 100;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;

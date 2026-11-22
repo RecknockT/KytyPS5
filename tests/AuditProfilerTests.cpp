@@ -1036,6 +1036,29 @@ TEST_F(AuditProfilerTest, Stage8_2DrawStateDirtyCheckRegressionProtection) {
 	EXPECT_FALSE(snap.draw_state_dirty_check_enabled);
 }
 
+TEST_F(AuditProfilerTest, Stage8_4SynchronizationFlags) {
+	// Verify Stage 8.4 low-latency synchronization and spin wait defaults
+	EXPECT_TRUE(Config::FastPendingOpsEnabled());
+	EXPECT_TRUE(Config::PrioritySpinWaitEnabled());
+	EXPECT_EQ(Config::PrioritySpinDurationUs(), 100u);
+
+	StartCapture("UnitTestStage8_4Sync");
+	CountPriorityWaitSpin();
+	CountPriorityWaitSpin();
+	CountPriorityWaitSpinHit();
+	CountPendingOpsFastSkip();
+
+	const auto snap = TakeSnapshot();
+	EXPECT_TRUE(snap.fast_pending_ops_enabled);
+	EXPECT_TRUE(snap.priority_spin_wait_enabled);
+	EXPECT_EQ(snap.priority_spin_duration_us, 100u);
+	EXPECT_EQ(snap.priority_wait_spins, 2u);
+	EXPECT_EQ(snap.priority_wait_spin_hits, 1u);
+	EXPECT_EQ(snap.pending_ops_fast_skips, 1u);
+
+	StopCapture(CaptureState::Completed);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {

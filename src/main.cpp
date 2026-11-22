@@ -130,6 +130,16 @@ static void PrintUsage() {
 	::printf("  --descriptor-cache                   Fast-path descriptor binding caching across "
 	         "draws (default: on).\n");
 	::printf("  --no-descriptor-cache                Disable descriptor binding caching.\n");
+	::printf("  --fast-pending-ops                   Lock-free fast check for pending operations "
+	         "(default: on).\n");
+	::printf(
+	    "  --no-fast-pending-ops                Disable lock-free check for pending operations.\n");
+	::printf("  --priority-spin-wait                 Low-latency spin wait for priority GPU "
+	         "operations (default: on).\n");
+	::printf("  --no-priority-spin-wait              Disable spin wait and sleep directly on "
+	         "condition variable.\n");
+	::printf("  --priority-spin-duration-us <u>      Maximum duration in microseconds to spin "
+	         "(default: 100).\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -345,6 +355,10 @@ static constexpr Flag FLAGS[] = {
     {"--no-ensure-pipeline-cache", &ConfigOptions::ensure_pipeline_cache_enabled, false},
     {"--descriptor-cache", &ConfigOptions::descriptor_cache_enabled, true},
     {"--no-descriptor-cache", &ConfigOptions::descriptor_cache_enabled, false},
+    {"--fast-pending-ops", &ConfigOptions::fast_pending_ops_enabled, true},
+    {"--no-fast-pending-ops", &ConfigOptions::fast_pending_ops_enabled, false},
+    {"--priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, true},
+    {"--no-priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif
@@ -584,6 +598,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			if (!ParseUint64(value, options.config.gpu_submit_cadence_interval_us) ||
 			    options.config.gpu_submit_cadence_interval_us == 0) {
 				::printf("invalid cadence interval us: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--priority-spin-duration-us") {
+			if (!ParseUint32(value, options.config.priority_spin_duration_us)) {
+				::printf("invalid priority spin duration us: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--keymap") {
