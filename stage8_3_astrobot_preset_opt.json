@@ -1,0 +1,1391 @@
+{
+  "configuration": {
+    "batch_hot_readbacks": true,
+    "descriptor_cache": true,
+    "draw_state_dirty_check": false,
+    "ensure_pipeline_cache": true,
+    "extended_stream_buffer": false,
+    "gpu_submit_cadence": true,
+    "gpu_submit_cadence_interval_us": 1000,
+    "partial_buffer_refresh": true,
+    "pipeline_cache_mru": true,
+    "pipeline_key_cache": true,
+    "redundant_bind_elision": true
+  },
+  "cpu_gpu_separation": {
+    "gpu_execution_avg_per_frame_ms": 0.0,
+    "gpu_execution_time_ms": 0.0,
+    "gpu_queries_recorded": 0,
+    "gpu_thread_cpu_time_ms": 26500.0,
+    "gpu_thread_cpu_utilization_pct": 88.19554220391161,
+    "gpu_thread_wait_time_ms": 14329.9493,
+    "gpu_thread_wall_clock_ms": 30046.8701,
+    "gpu_timestamps_supported": false,
+    "pm4_dispatch_exclusive_ms": 5536.104499999998,
+    "pm4_dispatch_exclusive_ms_per_frame": 10.855106862745094,
+    "pm4_dispatch_inclusive_ms": 28353.0994
+  },
+  "frametime_metrics_ms": {
+    "avg_frame_ms": 58.953894588994046,
+    "effective_fps": 16.97397324103042,
+    "frametime_fps": 16.962407775968842,
+    "max_frame_ms": 68.38300323486328,
+    "min_frame_ms": 48.830101013183594,
+    "p50_frame_ms": 65.35990142822266,
+    "p90_frame_ms": 66.80169677734375,
+    "p95_frame_ms": 67.02230072021484,
+    "p99_frame_ms": 67.835693359375,
+    "total_frames": 510
+  },
+  "frametime_summary": {
+    "avg_frame_ms": 58.953894588994046,
+    "effective_fps": 16.97397324103042,
+    "frametime_fps": 16.962407775968842,
+    "max_frame_ms": 68.38300323486328,
+    "min_frame_ms": 48.830101013183594,
+    "p50_frame_ms": 65.35990142822266,
+    "p90_frame_ms": 66.80169677734375,
+    "p95_frame_ms": 67.02230072021484,
+    "p99_frame_ms": 67.835693359375,
+    "total_frames": 510
+  },
+  "gpu_timeline_waits": {
+    "BufferGarbageCollection": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "BufferReadback": {
+      "avg_latency_us": 1036.9883175935643,
+      "count": 2859,
+      "count_per_frame": 5.605882352941176,
+      "max_ms": 4.7633,
+      "thread_accumulated_ms": 2964.7496,
+      "thread_accumulated_ms_per_frame": 5.813234509803922
+    },
+    "BufferSuspendFlush": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "CommandSchedulerDrain": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "DescriptorHeap": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "FaultManager": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "OcclusionQueries": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "Other": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "PriorityOperation": {
+      "avg_latency_us": 951.6998576452855,
+      "count": 11942,
+      "count_per_frame": 23.415686274509802,
+      "max_ms": 3.9469,
+      "thread_accumulated_ms": 11365.1997,
+      "thread_accumulated_ms_per_frame": 22.284705294117646
+    },
+    "RayTracing": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "StreamBufferWait": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "Swapchain": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "TextureWriteBack": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    }
+  },
+  "gpu_waits_breakdown": {
+    "BufferGarbageCollection": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "BufferReadback": {
+      "avg_latency_us": 1036.9883175935643,
+      "count": 2859,
+      "count_per_frame": 5.605882352941176,
+      "max_ms": 4.7633,
+      "thread_accumulated_ms": 2964.7496,
+      "thread_accumulated_ms_per_frame": 5.813234509803922
+    },
+    "BufferSuspendFlush": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "CommandSchedulerDrain": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "DescriptorHeap": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "FaultManager": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "OcclusionQueries": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "Other": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "PriorityOperation": {
+      "avg_latency_us": 951.6998576452855,
+      "count": 11942,
+      "count_per_frame": 23.415686274509802,
+      "max_ms": 3.9469,
+      "thread_accumulated_ms": 11365.1997,
+      "thread_accumulated_ms_per_frame": 22.284705294117646
+    },
+    "RayTracing": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "StreamBufferWait": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "Swapchain": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    },
+    "TextureWriteBack": {
+      "avg_latency_us": 0.0,
+      "count": 0,
+      "count_per_frame": 0.0,
+      "max_ms": 0.0,
+      "thread_accumulated_ms": 0.0,
+      "thread_accumulated_ms_per_frame": 0.0
+    }
+  },
+  "graphics_workload": {
+    "dispatches_per_frame": 234.98823529411766,
+    "dispatches_per_second": 3988.684017839313,
+    "draws_per_frame": 5291.166666666667,
+    "draws_per_second": 89812.12141383212,
+    "gpu_thread_busy_ms": 30033.9962,
+    "gpu_thread_busy_ms_per_frame": 58.89018862745098,
+    "instances_per_frame": 21153.196078431374,
+    "pipeline_cache_hit_pct": 78.11509748952658,
+    "pipeline_cache_hits": 2107932,
+    "pipeline_cache_lookups": 2698495,
+    "pipelines_created": 0,
+    "redundant_index_binds": 203610,
+    "redundant_pipeline_binds": 2090978,
+    "redundant_vertex_binds": 1535539,
+    "shaders_compiled": 0,
+    "total_dispatches": 119844,
+    "total_draw_instances": 10788130,
+    "total_draws": 2698495,
+    "total_indirect_draws": 1530
+  },
+  "memory_transfers": {
+    "cpu_to_gpu_upload_mb": 26985.29956817627,
+    "cpu_to_gpu_upload_mb_per_frame": 52.91235209446327,
+    "cpu_to_gpu_upload_mb_per_second": 898.1328485713996,
+    "gpu_to_cpu_readback_mb": 4421.1805419921875,
+    "gpu_to_cpu_readback_mb_per_frame": 8.668981454886643,
+    "gpu_to_cpu_readback_mb_per_second": 147.14705924223483,
+    "internal_gpu_copy_mb": 0.0311279296875
+  },
+  "metadata": {
+    "binary_path": "C:\\Users\\Recko\\Documents\\github\\kyty\\_Build\\windows\\kyty_emulator.exe",
+    "build_timestamp": "Nov 21 2026 20:48:28",
+    "capture_id": "cap_1a2009cbb7f",
+    "capture_phase": "Gameplay",
+    "capture_state": "Completed",
+    "compiler": "Clang 23.1.6",
+    "config": {
+      "batch_hot_readbacks": true,
+      "descriptor_cache": true,
+      "draw_state_dirty_check": false,
+      "ensure_pipeline_cache": true,
+      "extended_stream_buffer": false,
+      "gpu_submit_cadence": true,
+      "gpu_submit_cadence_interval_us": 1000,
+      "partial_buffer_refresh": true,
+      "pipeline_cache_mru": true,
+      "pipeline_key_cache": true,
+      "redundant_bind_elision": true
+    },
+    "delay_seconds": 0,
+    "git_commit": "KytyPS5-2026-11-20-8958064-101-g79b3396b2-dirty",
+    "git_hash": "79b3396-dirty",
+    "git_revision": "79b3396b22d353627c582927aeb307e27a5d75f9",
+    "real_duration_ms": 30046,
+    "real_duration_seconds": 30.046,
+    "target_duration_seconds": 30,
+    "trigger_reason": "ManualHotkeyF9"
+  },
+  "optimization_metrics": {
+    "cadence_held_back": 614,
+    "cadence_submits": 22417,
+    "texture_partial_fallbacks": 0,
+    "texture_partial_refreshes": 510,
+    "texture_partial_upload_mb": 31.875
+  },
+  "optimizations": {
+    "cadence_held_back": 614,
+    "cadence_submits": 22417,
+    "texture_partial_fallbacks": 0,
+    "texture_partial_refreshes": 510,
+    "texture_partial_upload_mb": 31.875
+  },
+  "phase_segmentation": {
+    "gameplay": {
+      "faults": 651196,
+      "frame_count": 510,
+      "gpu_wait_ms": 14329.9493,
+      "reprotects": 3617033,
+      "submits": 30350,
+      "total_frame_ms": 30066.485986
+    },
+    "loading": {
+      "faults": 0,
+      "frame_count": 0,
+      "gpu_wait_ms": 0.0,
+      "reprotects": 0,
+      "submits": 0,
+      "total_frame_ms": 0.0
+    }
+  },
+  "pipeline_stage_timings": {
+    "BarriersTransitions": {
+      "avg_us": 0.23288825372221306,
+      "count": 5664305,
+      "max_ms": 0.138,
+      "ms_per_frame": 2.586568823529412,
+      "pct_thread_time": 1.9734053464840267,
+      "total_ms": 1319.1501
+    },
+    "BufferPrep": {
+      "avg_us": 0.3104222610768395,
+      "count": 2698378,
+      "max_ms": 0.138,
+      "ms_per_frame": 1.6424247058823531,
+      "pct_thread_time": 1.253076920397991,
+      "total_ms": 837.6366
+    },
+    "CommandEnd": {
+      "avg_us": 1.4425356660406576,
+      "count": 30351,
+      "max_ms": 0.0622,
+      "ms_per_frame": 0.08584784313725491,
+      "pct_thread_time": 0.06549703649486306,
+      "total_ms": 43.7824
+    },
+    "CommandRecording": {
+      "avg_us": 0.41801643431720836,
+      "count": 5396756,
+      "max_ms": 0.3016,
+      "ms_per_frame": 4.423397450980392,
+      "pct_thread_time": 3.3748014357791014,
+      "total_ms": 2255.9327
+    },
+    "DescriptorPrep": {
+      "avg_us": 2.790126105386273,
+      "count": 2698378,
+      "max_ms": 1.0228,
+      "ms_per_frame": 14.762382156862746,
+      "pct_thread_time": 11.262860516288935,
+      "total_ms": 7528.8149
+    },
+    "PipelineKeyBuild": {
+      "avg_us": 0.041553030872519096,
+      "count": 1197246,
+      "max_ms": 0.0627,
+      "ms_per_frame": 0.09754745098039216,
+      "pct_thread_time": 0.0744231738778651,
+      "total_ms": 49.7492
+    },
+    "PipelineLookup": {
+      "avg_us": 0.06868207493538711,
+      "count": 2698378,
+      "max_ms": 0.0848,
+      "ms_per_frame": 0.3633925490196078,
+      "pct_thread_time": 0.2772479095024546,
+      "total_ms": 185.3302
+    },
+    "Pm4Decode": {
+      "avg_us": 0.016616441512960326,
+      "count": 13777625,
+      "max_ms": 0.1607,
+      "ms_per_frame": 0.44889235294117646,
+      "pct_thread_time": 0.3424794118105705,
+      "total_ms": 228.9351
+    },
+    "Pm4Dispatch": {
+      "avg_us": 2.0579089169643594,
+      "count": 13777626,
+      "max_ms": 4.9645,
+      "ms_per_frame": 55.594312549019605,
+      "pct_thread_time": 42.4153081179716,
+      "total_ms": 28353.0994
+    },
+    "Present": {
+      "avg_us": 450.4766666666667,
+      "count": 510,
+      "max_ms": 1.2442,
+      "ms_per_frame": 0.45047666666666664,
+      "pct_thread_time": 0.3436881533479885,
+      "total_ms": 229.7431
+    },
+    "RenderStatePrep": {
+      "avg_us": 4.029609464938695,
+      "count": 2698887,
+      "max_ms": 4.946,
+      "ms_per_frame": 21.32443254901961,
+      "pct_thread_time": 16.269332878431637,
+      "total_ms": 10875.4606
+    },
+    "Submit": {
+      "avg_us": 20.05929489291598,
+      "count": 30350,
+      "max_ms": 0.8528,
+      "ms_per_frame": 1.193724705882353,
+      "pct_thread_time": 0.910744262974575,
+      "total_ms": 608.7996
+    },
+    "SyncWaits": {
+      "avg_us": 968.1744003783529,
+      "count": 14801,
+      "max_ms": 4.7633,
+      "ms_per_frame": 28.09793980392157,
+      "pct_thread_time": 21.437134836638403,
+      "total_ms": 14329.9493
+    }
+  },
+  "stream_buffer_audit": {
+    "high_water_mark_mb": 511.92578887939453,
+    "last_wait_tick": 109878,
+    "mb_per_frame": 45.47857817855536,
+    "total_allocated_mb": 23194.074871063232,
+    "total_allocations": 6146056,
+    "total_wraparounds": 235,
+    "wait_avg_ms": 4.37611971756771e-05,
+    "wait_events": 37956,
+    "wait_max_ms": 0.009,
+    "wait_total_ms": 1.661
+  },
+  "stuttering_analysis": {
+    "detailed_hitches": [],
+    "hitch_frame_pct": 90.3921568627451,
+    "hitch_time_pct_of_session": 91.9588880150436,
+    "hitch_time_total_ms": 27629.967493,
+    "hitches_ge_1000ms": 0,
+    "hitches_ge_100ms": 0,
+    "hitches_ge_250ms": 0,
+    "hitches_ge_500ms": 0,
+    "hitches_ge_50ms": 461,
+    "slowest_frames": []
+  },
+  "timing_and_simulation": {
+    "audio_effective_hz": 48003.19510084537,
+    "audio_total_samples": 1442304,
+    "audio_updates_count": 2817,
+    "avg_flip_wait_ms": 0.0,
+    "estimated_simulation_speed_percent_model_60hz": 28.234484900929687,
+    "estimated_simulation_speed_ratio_model_60hz": 0.28234484900929685,
+    "flip_rate_hz": 16.94069094055781,
+    "simulation_speed_model_note": "Theoretical model estimate assuming 1/60s fixed simulation timestep per completed flip. Not a directly measured internal guest tick counter.",
+    "simulation_speed_percent": 28.234484900929687,
+    "simulation_speed_ratio": 0.28234484900929685,
+    "total_flip_wait_ms": 0.0,
+    "total_flips_completed": 509,
+    "total_flips_submitted": 510,
+    "total_vblanks": 1802,
+    "vblank_rate_hz": 59.974705451640816
+  },
+  "top_faulting_rips": [
+    {
+      "faults": 225133,
+      "rip": "0x0000000920003e55"
+    },
+    {
+      "faults": 109090,
+      "rip": "0x0000000920003db6"
+    },
+    {
+      "faults": 39882,
+      "rip": "0x0000000920003ef0"
+    },
+    {
+      "faults": 20919,
+      "rip": "0x0000000920003fe2"
+    },
+    {
+      "faults": 17213,
+      "rip": "0x00000009004b5e48"
+    },
+    {
+      "faults": 15691,
+      "rip": "0x000000014002e9aa"
+    },
+    {
+      "faults": 14223,
+      "rip": "0x0000000907170928"
+    },
+    {
+      "faults": 13741,
+      "rip": "0x0000000900253a13"
+    },
+    {
+      "faults": 12113,
+      "rip": "0x00000009072d5e90"
+    },
+    {
+      "faults": 11385,
+      "rip": "0x00000009071734a0"
+    },
+    {
+      "faults": 7555,
+      "rip": "0x00000009072b4030"
+    },
+    {
+      "faults": 6917,
+      "rip": "0x0000000900489197"
+    },
+    {
+      "faults": 6824,
+      "rip": "0x000000090709d87c"
+    },
+    {
+      "faults": 6176,
+      "rip": "0x0000000907175458"
+    },
+    {
+      "faults": 5367,
+      "rip": "0x0000000920003d35"
+    },
+    {
+      "faults": 4803,
+      "rip": "0x0000000920003d50"
+    },
+    {
+      "faults": 4507,
+      "rip": "0x000000090709e604"
+    },
+    {
+      "faults": 4360,
+      "rip": "0x000000090709e5a4"
+    },
+    {
+      "faults": 4312,
+      "rip": "0x00000009072d5eb8"
+    },
+    {
+      "faults": 4274,
+      "rip": "0x0000000907170955"
+    },
+    {
+      "faults": 3577,
+      "rip": "0x00000009200103f4"
+    },
+    {
+      "faults": 3397,
+      "rip": "0x00000009200103f9"
+    },
+    {
+      "faults": 3372,
+      "rip": "0x00000009200103f0"
+    },
+    {
+      "faults": 3297,
+      "rip": "0x00000009071af378"
+    },
+    {
+      "faults": 3267,
+      "rip": "0x00000009200103fe"
+    },
+    {
+      "faults": 3090,
+      "rip": "0x000000090709e0fd"
+    },
+    {
+      "faults": 2926,
+      "rip": "0x00000009004874b9"
+    },
+    {
+      "faults": 2879,
+      "rip": "0x00000009200103c6"
+    },
+    {
+      "faults": 2816,
+      "rip": "0x00000009004b5e6b"
+    },
+    {
+      "faults": 2540,
+      "rip": "0x00000009071734c5"
+    },
+    {
+      "faults": 2500,
+      "rip": "0x00000009071734f1"
+    },
+    {
+      "faults": 2228,
+      "rip": "0x00000009072d5f0e"
+    },
+    {
+      "faults": 2227,
+      "rip": "0x0000000920003d7b"
+    },
+    {
+      "faults": 2188,
+      "rip": "0x0000000920003ff5"
+    },
+    {
+      "faults": 2180,
+      "rip": "0x0000000920004009"
+    },
+    {
+      "faults": 2173,
+      "rip": "0x0000000920003feb"
+    },
+    {
+      "faults": 2151,
+      "rip": "0x0000000920004039"
+    },
+    {
+      "faults": 2140,
+      "rip": "0x0000000920004029"
+    },
+    {
+      "faults": 2134,
+      "rip": "0x0000000920004019"
+    },
+    {
+      "faults": 2130,
+      "rip": "0x0000000920003fff"
+    },
+    {
+      "faults": 2008,
+      "rip": "0x00000009200043a9"
+    },
+    {
+      "faults": 1950,
+      "rip": "0x000000090717547c"
+    },
+    {
+      "faults": 1898,
+      "rip": "0x00000009072b4077"
+    },
+    {
+      "faults": 1752,
+      "rip": "0x0000000920004031"
+    },
+    {
+      "faults": 1746,
+      "rip": "0x0000000920003fe6"
+    },
+    {
+      "faults": 1688,
+      "rip": "0x0000000920004021"
+    },
+    {
+      "faults": 1676,
+      "rip": "0x0000000920004041"
+    },
+    {
+      "faults": 1652,
+      "rip": "0x0000000920004004"
+    },
+    {
+      "faults": 1634,
+      "rip": "0x0000000920004011"
+    },
+    {
+      "faults": 1620,
+      "rip": "0x0000000920003ffa"
+    }
+  ],
+  "top_hot_pages": [
+    {
+      "faults": 1020,
+      "page_vaddr": "0x0000000579807000",
+      "reprotects": 2549
+    },
+    {
+      "faults": 1020,
+      "page_vaddr": "0x0000000579803000",
+      "reprotects": 2548
+    },
+    {
+      "faults": 826,
+      "page_vaddr": "0x000000050cc30000",
+      "reprotects": 170
+    },
+    {
+      "faults": 819,
+      "page_vaddr": "0x000000050b430000",
+      "reprotects": 169
+    },
+    {
+      "faults": 815,
+      "page_vaddr": "0x000000050e430000",
+      "reprotects": 170
+    },
+    {
+      "faults": 575,
+      "page_vaddr": "0x000000055c008000",
+      "reprotects": 1018
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055ab10000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000040103a000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x0000000401039000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055ab00000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055ab20000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x0000000401038000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x0000000401037000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000040103c000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055ab41000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000040103b000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x00000005798a5000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055ab31000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x0000000401b3c000",
+      "reprotects": 509
+    },
+    {
+      "faults": 510,
+      "page_vaddr": "0x000000055aaf0000",
+      "reprotects": 509
+    },
+    {
+      "faults": 483,
+      "page_vaddr": "0x000000050ed4a000",
+      "reprotects": 170
+    },
+    {
+      "faults": 478,
+      "page_vaddr": "0x000000050bd4a000",
+      "reprotects": 167
+    },
+    {
+      "faults": 473,
+      "page_vaddr": "0x000000050ed6c000",
+      "reprotects": 170
+    },
+    {
+      "faults": 467,
+      "page_vaddr": "0x000000050bd5b000",
+      "reprotects": 167
+    },
+    {
+      "faults": 465,
+      "page_vaddr": "0x000000050bd6c000",
+      "reprotects": 167
+    },
+    {
+      "faults": 463,
+      "page_vaddr": "0x000000050ed5b000",
+      "reprotects": 170
+    },
+    {
+      "faults": 463,
+      "page_vaddr": "0x000000050ed7d000",
+      "reprotects": 170
+    },
+    {
+      "faults": 462,
+      "page_vaddr": "0x000000050bd7d000",
+      "reprotects": 167
+    },
+    {
+      "faults": 420,
+      "page_vaddr": "0x000000050d54a000",
+      "reprotects": 166
+    },
+    {
+      "faults": 417,
+      "page_vaddr": "0x000000050d55b000",
+      "reprotects": 166
+    },
+    {
+      "faults": 416,
+      "page_vaddr": "0x000000050d56c000",
+      "reprotects": 166
+    },
+    {
+      "faults": 403,
+      "page_vaddr": "0x000000050d57d000",
+      "reprotects": 166
+    },
+    {
+      "faults": 388,
+      "page_vaddr": "0x000000050d555000",
+      "reprotects": 167
+    },
+    {
+      "faults": 384,
+      "page_vaddr": "0x000000050d577000",
+      "reprotects": 167
+    },
+    {
+      "faults": 377,
+      "page_vaddr": "0x000000050d566000",
+      "reprotects": 167
+    },
+    {
+      "faults": 374,
+      "page_vaddr": "0x000000050d544000",
+      "reprotects": 167
+    },
+    {
+      "faults": 370,
+      "page_vaddr": "0x000000050ed44000",
+      "reprotects": 167
+    },
+    {
+      "faults": 369,
+      "page_vaddr": "0x000000050ed55000",
+      "reprotects": 167
+    },
+    {
+      "faults": 365,
+      "page_vaddr": "0x000000050ed66000",
+      "reprotects": 167
+    },
+    {
+      "faults": 359,
+      "page_vaddr": "0x000000050ed77000",
+      "reprotects": 167
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x0000000400324000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x0000000400323000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000004003c4000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000004003c2000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000005073ff000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x0000000400325000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000004003c5000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000004005a6000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x00000004003c3000",
+      "reprotects": 340
+    },
+    {
+      "faults": 340,
+      "page_vaddr": "0x0000000400322000",
+      "reprotects": 340
+    }
+  ],
+  "top_rips": [
+    {
+      "faults": 225133,
+      "rip": "0x0000000920003e55"
+    },
+    {
+      "faults": 109090,
+      "rip": "0x0000000920003db6"
+    },
+    {
+      "faults": 39882,
+      "rip": "0x0000000920003ef0"
+    },
+    {
+      "faults": 20919,
+      "rip": "0x0000000920003fe2"
+    },
+    {
+      "faults": 17213,
+      "rip": "0x00000009004b5e48"
+    },
+    {
+      "faults": 15691,
+      "rip": "0x000000014002e9aa"
+    },
+    {
+      "faults": 14223,
+      "rip": "0x0000000907170928"
+    },
+    {
+      "faults": 13741,
+      "rip": "0x0000000900253a13"
+    },
+    {
+      "faults": 12113,
+      "rip": "0x00000009072d5e90"
+    },
+    {
+      "faults": 11385,
+      "rip": "0x00000009071734a0"
+    },
+    {
+      "faults": 7555,
+      "rip": "0x00000009072b4030"
+    },
+    {
+      "faults": 6917,
+      "rip": "0x0000000900489197"
+    },
+    {
+      "faults": 6824,
+      "rip": "0x000000090709d87c"
+    },
+    {
+      "faults": 6176,
+      "rip": "0x0000000907175458"
+    },
+    {
+      "faults": 5367,
+      "rip": "0x0000000920003d35"
+    },
+    {
+      "faults": 4803,
+      "rip": "0x0000000920003d50"
+    },
+    {
+      "faults": 4507,
+      "rip": "0x000000090709e604"
+    },
+    {
+      "faults": 4360,
+      "rip": "0x000000090709e5a4"
+    },
+    {
+      "faults": 4312,
+      "rip": "0x00000009072d5eb8"
+    },
+    {
+      "faults": 4274,
+      "rip": "0x0000000907170955"
+    },
+    {
+      "faults": 3577,
+      "rip": "0x00000009200103f4"
+    },
+    {
+      "faults": 3397,
+      "rip": "0x00000009200103f9"
+    },
+    {
+      "faults": 3372,
+      "rip": "0x00000009200103f0"
+    },
+    {
+      "faults": 3297,
+      "rip": "0x00000009071af378"
+    },
+    {
+      "faults": 3267,
+      "rip": "0x00000009200103fe"
+    },
+    {
+      "faults": 3090,
+      "rip": "0x000000090709e0fd"
+    },
+    {
+      "faults": 2926,
+      "rip": "0x00000009004874b9"
+    },
+    {
+      "faults": 2879,
+      "rip": "0x00000009200103c6"
+    },
+    {
+      "faults": 2816,
+      "rip": "0x00000009004b5e6b"
+    },
+    {
+      "faults": 2540,
+      "rip": "0x00000009071734c5"
+    },
+    {
+      "faults": 2500,
+      "rip": "0x00000009071734f1"
+    },
+    {
+      "faults": 2228,
+      "rip": "0x00000009072d5f0e"
+    },
+    {
+      "faults": 2227,
+      "rip": "0x0000000920003d7b"
+    },
+    {
+      "faults": 2188,
+      "rip": "0x0000000920003ff5"
+    },
+    {
+      "faults": 2180,
+      "rip": "0x0000000920004009"
+    },
+    {
+      "faults": 2173,
+      "rip": "0x0000000920003feb"
+    },
+    {
+      "faults": 2151,
+      "rip": "0x0000000920004039"
+    },
+    {
+      "faults": 2140,
+      "rip": "0x0000000920004029"
+    },
+    {
+      "faults": 2134,
+      "rip": "0x0000000920004019"
+    },
+    {
+      "faults": 2130,
+      "rip": "0x0000000920003fff"
+    },
+    {
+      "faults": 2008,
+      "rip": "0x00000009200043a9"
+    },
+    {
+      "faults": 1950,
+      "rip": "0x000000090717547c"
+    },
+    {
+      "faults": 1898,
+      "rip": "0x00000009072b4077"
+    },
+    {
+      "faults": 1752,
+      "rip": "0x0000000920004031"
+    },
+    {
+      "faults": 1746,
+      "rip": "0x0000000920003fe6"
+    },
+    {
+      "faults": 1688,
+      "rip": "0x0000000920004021"
+    },
+    {
+      "faults": 1676,
+      "rip": "0x0000000920004041"
+    },
+    {
+      "faults": 1652,
+      "rip": "0x0000000920004004"
+    },
+    {
+      "faults": 1634,
+      "rip": "0x0000000920004011"
+    },
+    {
+      "faults": 1620,
+      "rip": "0x0000000920003ffa"
+    }
+  ],
+  "top_threads": [
+    {
+      "faults": 113449,
+      "name": "TID 12696",
+      "tid": 12696
+    },
+    {
+      "faults": 95833,
+      "name": "TID 1712",
+      "tid": 1712
+    },
+    {
+      "faults": 33353,
+      "name": "TID 10852",
+      "tid": 10852
+    },
+    {
+      "faults": 32506,
+      "name": "TID 12348",
+      "tid": 12348
+    },
+    {
+      "faults": 32300,
+      "name": "TID 5124",
+      "tid": 5124
+    },
+    {
+      "faults": 32233,
+      "name": "TID 22984",
+      "tid": 22984
+    },
+    {
+      "faults": 32208,
+      "name": "TID 21400",
+      "tid": 21400
+    },
+    {
+      "faults": 32154,
+      "name": "TID 20400",
+      "tid": 20400
+    },
+    {
+      "faults": 31906,
+      "name": "TID 5508",
+      "tid": 5508
+    },
+    {
+      "faults": 31848,
+      "name": "TID 28036",
+      "tid": 28036
+    },
+    {
+      "faults": 31846,
+      "name": "TID 23212",
+      "tid": 23212
+    },
+    {
+      "faults": 31669,
+      "name": "TID 28204",
+      "tid": 28204
+    },
+    {
+      "faults": 31249,
+      "name": "TID 23868",
+      "tid": 23868
+    },
+    {
+      "faults": 23368,
+      "name": "TID 22400",
+      "tid": 22400
+    },
+    {
+      "faults": 20012,
+      "name": "TID 21432",
+      "tid": 21432
+    },
+    {
+      "faults": 18913,
+      "name": "TID 17368",
+      "tid": 17368
+    },
+    {
+      "faults": 3803,
+      "name": "TID 15116",
+      "tid": 15116
+    },
+    {
+      "faults": 3206,
+      "name": "TID 732",
+      "tid": 732
+    },
+    {
+      "faults": 3051,
+      "name": "TID 8640",
+      "tid": 8640
+    },
+    {
+      "faults": 2982,
+      "name": "TID 9272",
+      "tid": 9272
+    },
+    {
+      "faults": 2917,
+      "name": "TID 28052",
+      "tid": 28052
+    },
+    {
+      "faults": 2077,
+      "name": "TID 19320",
+      "tid": 19320
+    },
+    {
+      "faults": 2040,
+      "name": "TID 20348",
+      "tid": 20348
+    },
+    {
+      "faults": 1949,
+      "name": "TID 23616",
+      "tid": 23616
+    },
+    {
+      "faults": 1919,
+      "name": "TID 27152",
+      "tid": 27152
+    },
+    {
+      "faults": 1898,
+      "name": "TID 19708",
+      "tid": 19708
+    },
+    {
+      "faults": 504,
+      "name": "TID 14188",
+      "tid": 14188
+    },
+    {
+      "faults": 3,
+      "name": "TID 2704",
+      "tid": 2704
+    }
+  ],
+  "vk_queue_submits_breakdown": {
+    "Cadence": {
+      "count": 22416,
+      "per_frame": 43.95294117647059,
+      "per_second": 746.0560473939959
+    },
+    "Drain": {
+      "count": 0,
+      "per_frame": 0.0,
+      "per_second": 0.0
+    },
+    "ExplicitFlush": {
+      "count": 4565,
+      "per_frame": 8.950980392156863,
+      "per_second": 151.93370165745856
+    },
+    "Other": {
+      "count": 0,
+      "per_frame": 0.0,
+      "per_second": 0.0
+    },
+    "Presentation": {
+      "count": 510,
+      "per_frame": 1.0,
+      "per_second": 16.97397324103042
+    },
+    "Synchronization": {
+      "count": 2859,
+      "per_frame": 5.605882352941176,
+      "per_second": 95.15409705118817
+    }
+  },
+  "vulkan_submits": {
+    "by_reason": {
+      "Cadence": {
+        "count": 22416,
+        "per_frame": 43.95294117647059,
+        "per_second": 746.0560473939959
+      },
+      "Drain": {
+        "count": 0,
+        "per_frame": 0.0,
+        "per_second": 0.0
+      },
+      "ExplicitFlush": {
+        "count": 4565,
+        "per_frame": 8.950980392156863,
+        "per_second": 151.93370165745856
+      },
+      "Other": {
+        "count": 0,
+        "per_frame": 0.0,
+        "per_second": 0.0
+      },
+      "Presentation": {
+        "count": 510,
+        "per_frame": 1.0,
+        "per_second": 16.97397324103042
+      },
+      "Synchronization": {
+        "count": 2859,
+        "per_frame": 5.605882352941176,
+        "per_second": 95.15409705118817
+      }
+    },
+    "submits_per_frame": 59.509803921568626,
+    "submits_per_second": 1010.1178193436731,
+    "total_submits": 30350
+  },
+  "write_tracking": {
+    "avg_handler_us": 9.602505236518653,
+    "faults_per_frame": 1276.8549019607842,
+    "faults_per_second": 21673.300938560875,
+    "max_handler_us": 4932.8,
+    "reprotects_per_frame": 7092.221568627451,
+    "thread_accumulated_handler_ms": 6253.113,
+    "thread_accumulated_handler_ms_per_frame": 12.261005882352942,
+    "total_faults": 651196,
+    "total_reprotects": 3617033
+  },
+  "write_tracking_metrics": {
+    "avg_handler_us": 9.602505236518653,
+    "faults_per_frame": 1276.8549019607842,
+    "faults_per_second": 21673.300938560875,
+    "max_handler_us": 4932.8,
+    "reprotects_per_frame": 7092.221568627451,
+    "thread_accumulated_handler_ms": 6253.113,
+    "thread_accumulated_handler_ms_per_frame": 12.261005882352942,
+    "total_faults": 651196,
+    "total_reprotects": 3617033
+  }
+}

@@ -60,10 +60,11 @@ Para documentación detallada de cada etapa, consulte la carpeta [`docs/performa
 ## 4. Ejecución de Benchmarks en Astro Bot
 
 Para pruebas reproducibles A/B en el juego de referencia (Astro Bot, Title ID `PPSA21567`), utilice los scripts interactivos en la raíz del repositorio:
+- `stage8_3_astrobot_configuration_benchmark.cmd`: Benchmarks de presets, launcher, shader cache y calidad original vs parches (Etapa 8.3).
 - `stage8_1_camera_and_landing.cmd`: Benchmarks de vista amplia y transición de aterrizaje continua con fases F10 (Etapa 8.1).
 - `stage8_camera_ab.cmd`: Benchmarks de cámara de Etapa 8.
 
-Consulte los detalles del protocolo en [`docs/performance/ETAPA8_1_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_1_GUIA_COLABORADOR.md) y [`docs/performance/ETAPA8_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_GUIA_COLABORADOR.md).
+Consulte los detalles del protocolo en [`docs/performance/ETAPA8_3_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_3_GUIA_COLABORADOR.md) y [`docs/performance/ETAPA8_1_GUIA_COLABORADOR.md`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/ETAPA8_1_GUIA_COLABORADOR.md).
 
 ---
 
