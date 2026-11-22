@@ -23,6 +23,10 @@ class Sequencer;
 struct Intake;
 } // namespace CpSeq
 
+namespace DrawPrep {
+class Engine;
+} // namespace DrawPrep
+
 bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t func);
 
 enum class Pm4ProcessResult { Complete, Blocked };
@@ -62,9 +66,8 @@ private:
 
 class CommandProcessor: public CpSeq::ISubmissionSequencer {
 public:
-	CommandProcessor(RenderContext& renderer, int interrupt_event_id)
-	    : m_renderer(renderer), m_interrupt_event_id(interrupt_event_id) {}
-	~CommandProcessor() = default;
+	CommandProcessor(RenderContext& renderer, int interrupt_event_id);
+	~CommandProcessor() override;
 
 	KYTY_CLASS_NO_COPY(CommandProcessor);
 
@@ -140,6 +143,9 @@ public:
 	Pm4ProcessResult   ResolveSubmission(Pm4Execution& execution, uint64_t submission,
 	                                     std::span<const uint32_t> commands, bool& handoff);
 
+	[[nodiscard]] DrawPrep::Engine* GetDrawPrep() noexcept { return m_draw_prep.get(); }
+	void                            InitDrawPrep(uint32_t num_workers);
+
 	[[nodiscard]] bool IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
 private:
@@ -175,9 +181,10 @@ private:
 	uint64_t       m_synthetic_occlusion_counter = 0;
 	bool           m_predicate_skip              = false;
 
-	FrontMode                        m_front_mode = FrontMode::Direct;
-	CpSeq::Sequencer*                m_sequencer  = nullptr;
-	std::unique_ptr<CpSeq::OpStream> m_ops;
+	FrontMode                         m_front_mode = FrontMode::Direct;
+	CpSeq::Sequencer*                 m_sequencer  = nullptr;
+	std::unique_ptr<CpSeq::OpStream>  m_ops;
+	std::unique_ptr<DrawPrep::Engine> m_draw_prep;
 };
 
 } // namespace Libs::Graphics

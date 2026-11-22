@@ -12,6 +12,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/renderer/debug.h"
+#include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -43,13 +44,18 @@ static thread_local GuestGpu*     g_gpu_state         = nullptr;
 
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
-	if (Config::CpSequencerEnabled() || CpSeq::ConfiguredMode() == CpSeq::Mode::Thread) {
+	m_gfx_cp                    = std::make_unique<CommandProcessor>(renderer, 0);
+	const bool enable_sequencer = Config::CpSequencerEnabled() || Config::DrawPrepEnabled() ||
+	                              CpSeq::ConfiguredMode() == CpSeq::Mode::Thread;
+	if (enable_sequencer) {
 		m_sequencer = std::make_unique<CpSeq::Sequencer>(*m_gfx_cp);
 		m_gfx_cp->AttachSequencer(m_sequencer.get());
 		m_sequencer->Start();
 	} else if (CpSeq::ConfiguredMode() == CpSeq::Mode::Inline) {
 		m_gfx_cp->SetFrontMode(CommandProcessor::FrontMode::Inline);
+	}
+	if (Config::DrawPrepEnabled()) {
+		m_gfx_cp->InitDrawPrep(Config::DrawPrepWorkers());
 	}
 	m_thread = std::jthread(ThreadRun, this);
 }
@@ -210,7 +216,15 @@ CommandProcessor& GuestGpu::GetProcessor(uint32_t queue_id) {
 	return *processor;
 }
 
+CommandProcessor::CommandProcessor(RenderContext& renderer, int interrupt_event_id)
+    : m_renderer(renderer), m_interrupt_event_id(interrupt_event_id) {}
+
+CommandProcessor::~CommandProcessor() = default;
+
 void CommandProcessor::Reset() {
+	if (m_draw_prep) {
+		m_draw_prep->Drain();
+	}
 	m_sh_ctx.Reset();
 	m_ucfg.Reset();
 	m_ctx.Reset();
@@ -267,6 +281,9 @@ void CommandProcessor::BufferInit() {
 }
 
 void CommandProcessor::BufferFlush() {
+	if (m_draw_prep) {
+		m_draw_prep->Drain();
+	}
 	m_renderer.GetBufferCache().PublishReadHot();
 	if (GetScheduler().HasRecordedWork()) {
 		GetScheduler().Flush();
@@ -673,9 +690,16 @@ void CommandProcessor::AttachSequencer(CpSeq::Sequencer* sequencer) {
 }
 
 void CommandProcessor::DetachSequencer() {
+	if (m_draw_prep) {
+		m_draw_prep->Drain();
+	}
 	m_sequencer = nullptr;
 	m_ops.reset();
 	m_front_mode = FrontMode::Direct;
+}
+
+void CommandProcessor::InitDrawPrep(uint32_t num_workers) {
+	m_draw_prep = std::make_unique<DrawPrep::Engine>(m_renderer, num_workers);
 }
 
 void CommandProcessor::SetFrontMode(FrontMode mode) noexcept {
@@ -836,10 +860,50 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		if (kind == CpSeq::OpKind::DrawIndex) {
 			const auto&   op = view.As<CpSeq::DrawIndexOp>();
 			DrawIndexArgs args {};
-			args.index_count    = op.index_count;
-			args.base_vertex    = op.base_vertex;
-			args.first_instance = op.first_instance;
+			args.index_count         = op.index_count;
+			args.instance_count      = op.instance_count;
+			args.index_type_and_size = op.index_type_and_size;
+			args.base_vertex         = op.base_vertex;
+			args.first_instance      = op.first_instance;
+			args.index_addr          = reinterpret_cast<const void*>(op.index_addr);
+			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
+				DrawPrep::PreparedDraw prepared;
+				if (m_draw_prep->CommitPublished(op.window, prepared)) {
+					const uint64_t current_target_sig =
+					    static_cast<uint64_t>(m_ctx.GetRenderTargetMask()) |
+					    (static_cast<uint64_t>(m_ctx.GetShaderRegisters().m_cbShaderMask) << 32u);
+					if (prepared.target_signature != current_target_sig) {
+						Common::AuditProfiler::RecordDrawPrepFallback();
+					}
+				}
+			}
 			DrawIndex(args);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DrawAuto) {
+			const auto&  op = view.As<CpSeq::DrawAutoOp>();
+			DrawAutoArgs args {};
+			args.vertex_count   = op.vertex_count;
+			args.instance_count = op.instance_count;
+			args.first_vertex   = op.first_vertex;
+			args.first_instance = op.first_instance;
+			args.offset_source  = static_cast<DrawOffsetSource>(op.offset_source);
+			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
+				DrawPrep::PreparedDraw prepared;
+				if (m_draw_prep->CommitPublished(op.window, prepared)) {
+					const uint64_t current_target_sig =
+					    static_cast<uint64_t>(m_ctx.GetRenderTargetMask()) |
+					    (static_cast<uint64_t>(m_ctx.GetShaderRegisters().m_cbShaderMask) << 32u);
+					if (prepared.target_signature != current_target_sig) {
+						Common::AuditProfiler::RecordDrawPrepFallback();
+					}
+				}
+			}
+			DrawIndexAuto(args);
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -1090,6 +1154,29 @@ void CommandProcessor::CountDraw() {
 }
 
 void CommandProcessor::DrawIndex(DrawIndexArgs args) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		args.index_type_and_size = m_index_type_and_size;
+		if (args.instance_count == 0) {
+			args.instance_count = NumInstances();
+		}
+		CpSeq::DrawIndexOp op {};
+		op.index_count         = args.index_count;
+		op.instance_count      = args.instance_count;
+		op.index_type_and_size = args.index_type_and_size;
+		op.base_vertex         = args.base_vertex;
+		op.first_instance      = args.first_instance;
+		op.index_addr          = reinterpret_cast<uint64_t>(args.index_addr);
+		if (m_draw_prep && m_draw_prep->IsActive()) {
+			op.window = m_draw_prep->Publish(&args, nullptr, m_ctx, m_ucfg, m_sh_ctx, [&] {
+				return m_sequencer != nullptr && !m_sequencer->Stopping();
+			});
+			if (op.window != UINT64_MAX) {
+				op.flags |= CpSeq::DrawFlagPublished;
+			}
+		}
+		m_ops->Emit(CpSeq::OpKind::DrawIndex, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
 	CountDraw();
 	args.index_type_and_size = m_index_type_and_size;
 	if (args.instance_count == 0) {
@@ -1154,6 +1241,25 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
                                          const volatile uint32_t* count_addr,
                                          uint32_t stride_in_bytes, IndirectDrawRegisters registers,
                                          uint32_t draw_initiator, bool indexed) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		if (m_draw_prep && m_draw_prep->IsActive()) {
+			m_draw_prep->Drain();
+		}
+		CpSeq::DrawIndirectOp op {};
+		op.args_base           = m_draw_indirect_args_base_addr;
+		op.index_base_addr     = m_index_base_addr;
+		op.count_addr          = reinterpret_cast<uint64_t>(count_addr);
+		op.data_offset         = data_offset;
+		op.draw_initiator      = draw_initiator;
+		op.index_buffer_size   = m_index_buffer_size;
+		op.index_type_and_size = m_index_type_and_size;
+		op.max_count_or_count  = max_count_or_count;
+		op.stride              = stride_in_bytes;
+		op.num_instances       = m_num_instances;
+		op.flags               = indexed ? CpSeq::IndirectFlagIndexed : 0;
+		m_ops->Emit(CpSeq::OpKind::DrawIndirectMulti, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
 	CountDraw();
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
@@ -1220,6 +1326,19 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		if (m_draw_prep && m_draw_prep->IsActive()) {
+			m_draw_prep->Drain();
+		}
+		m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
+		CpSeq::DispatchDirectOp op {};
+		op.x    = thread_group_x;
+		op.y    = thread_group_y;
+		op.z    = thread_group_z;
+		op.mode = mode;
+		m_ops->Emit(CpSeq::OpKind::DispatchDirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 	m_renderer.GetRenderExecutor().DispatchDirect(CurrentBuffer(), thread_group_x, thread_group_y,
 	                                              thread_group_z, mode, IsAsyncComputeQueue());
@@ -1231,6 +1350,17 @@ void CommandProcessor::ProcessPssr(const Pssr::Request& request) {
 }
 
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		if (m_draw_prep && m_draw_prep->IsActive()) {
+			m_draw_prep->Drain();
+		}
+		m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
+		CpSeq::DispatchIndirectOp op {};
+		op.args_addr = args_addr;
+		op.mode      = mode;
+		m_ops->Emit(CpSeq::OpKind::DispatchIndirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
 	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
 		const auto* args = reinterpret_cast<const vk::DispatchIndirectCommand*>(args_addr);
@@ -1243,6 +1373,27 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 }
 
 void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		if (args.instance_count == 0) {
+			args.instance_count = NumInstances();
+		}
+		CpSeq::DrawAutoOp op {};
+		op.vertex_count   = args.vertex_count;
+		op.instance_count = args.instance_count;
+		op.first_vertex   = args.first_vertex;
+		op.first_instance = args.first_instance;
+		op.offset_source  = static_cast<uint32_t>(args.offset_source);
+		if (m_draw_prep && m_draw_prep->IsActive()) {
+			op.window = m_draw_prep->Publish(nullptr, &args, m_ctx, m_ucfg, m_sh_ctx, [&] {
+				return m_sequencer != nullptr && !m_sequencer->Stopping();
+			});
+			if (op.window != UINT64_MAX) {
+				op.flags |= CpSeq::DrawFlagPublished;
+			}
+		}
+		m_ops->Emit(CpSeq::OpKind::DrawAuto, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
 	CountDraw();
 	if (args.instance_count == 0) {
 		args.instance_count = NumInstances();

@@ -31,7 +31,7 @@ ninja -C _Build/windows
 
 ### Ejecución de Tests Unitarios:
 ```cmd
-ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_buffer_ring|pipeline_cache|cadence)"
+ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_buffer_ring|pipeline_cache|cadence|cp_sequencer|draw_prep)"
 ```
 
 > [!IMPORTANT]
@@ -54,6 +54,7 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 | **Fast Pending Operations** (Etapa 8.4) | `--fast-pending-ops` | `--no-fast-pending-ops` | **Activado** |
 | **Priority Spin Wait** (Etapa 8.4) | `--priority-spin-wait` | `--no-priority-spin-wait` | **Activado** (100 µs) |
 | **CP Sequencer** (Etapa 8.4B) | `--cp-sequencer` | `--no-cp-sequencer` | **Desactivado** (experimental) |
+| **Draw Prep** (Etapa 8.4C) | `--draw-prep` | `--no-draw-prep` | **Desactivado** (experimental, 4 workers) |
 | **Extended Stream Buffer** (256 MiB) | `--extended-stream-buffer` | (omitir) | **Desactivado** (64 MiB estándar) |
 
 Para documentación detallada de cada etapa, consulte la carpeta [`docs/performance/`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/).

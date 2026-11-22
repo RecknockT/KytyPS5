@@ -127,6 +127,15 @@ std::atomic<uint64_t> g_baseline_cp_sequencer_lockstep_waits {0};
 std::atomic<uint64_t> g_baseline_cp_sequencer_snapshots_taken {0};
 std::atomic<uint64_t> g_baseline_cp_sequencer_waits_spin {0};
 
+std::atomic<uint64_t> g_draw_prep_published {0};
+std::atomic<uint64_t> g_draw_prep_prepared {0};
+std::atomic<uint64_t> g_draw_prep_committed {0};
+std::atomic<uint64_t> g_draw_prep_fallback {0};
+std::atomic<uint64_t> g_baseline_draw_prep_published {0};
+std::atomic<uint64_t> g_baseline_draw_prep_prepared {0};
+std::atomic<uint64_t> g_baseline_draw_prep_committed {0};
+std::atomic<uint64_t> g_baseline_draw_prep_fallback {0};
+
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
 RipSlot    g_rip_table[RIP_TABLE_CAPACITY];
@@ -541,6 +550,14 @@ void StartCapture(const char* trigger_reason) {
 	    g_cp_sequencer_snapshots_taken.load(std::memory_order_relaxed), std::memory_order_relaxed);
 	g_baseline_cp_sequencer_waits_spin.store(
 	    g_cp_sequencer_waits_spin.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_draw_prep_published.store(g_draw_prep_published.load(std::memory_order_relaxed),
+	                                     std::memory_order_relaxed);
+	g_baseline_draw_prep_prepared.store(g_draw_prep_prepared.load(std::memory_order_relaxed),
+	                                    std::memory_order_relaxed);
+	g_baseline_draw_prep_committed.store(g_draw_prep_committed.load(std::memory_order_relaxed),
+	                                     std::memory_order_relaxed);
+	g_baseline_draw_prep_fallback.store(g_draw_prep_fallback.load(std::memory_order_relaxed),
+	                                    std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -1105,6 +1122,8 @@ const char* GetPipelineStageName(PipelineStage stage) noexcept {
 		case PipelineStage::Present: return "Present";
 		case PipelineStage::DrawPrep: return "DrawPrep";
 		case PipelineStage::SequencerWait: return "SequencerWait";
+		case PipelineStage::DrawPrepWorker: return "DrawPrepWorker";
+		case PipelineStage::DrawPrepCommitWait: return "DrawPrepCommitWait";
 		default: return "Unknown";
 	}
 }
@@ -1384,6 +1403,28 @@ ProfileSnapshot TakeSnapshot() {
 	const auto base_cp_spins = g_baseline_cp_sequencer_waits_spin.load(std::memory_order_relaxed);
 	snapshot.cp_sequencer_waits_spin =
 	    (cur_cp_spins >= base_cp_spins) ? (cur_cp_spins - base_cp_spins) : cur_cp_spins;
+
+	snapshot.draw_prep_enabled = Config::DrawPrepEnabled();
+
+	const auto cur_dp_pub  = g_draw_prep_published.load(std::memory_order_relaxed);
+	const auto base_dp_pub = g_baseline_draw_prep_published.load(std::memory_order_relaxed);
+	snapshot.draw_prep_published =
+	    (cur_dp_pub >= base_dp_pub) ? (cur_dp_pub - base_dp_pub) : cur_dp_pub;
+
+	const auto cur_dp_prep  = g_draw_prep_prepared.load(std::memory_order_relaxed);
+	const auto base_dp_prep = g_baseline_draw_prep_prepared.load(std::memory_order_relaxed);
+	snapshot.draw_prep_prepared =
+	    (cur_dp_prep >= base_dp_prep) ? (cur_dp_prep - base_dp_prep) : cur_dp_prep;
+
+	const auto cur_dp_comm  = g_draw_prep_committed.load(std::memory_order_relaxed);
+	const auto base_dp_comm = g_baseline_draw_prep_committed.load(std::memory_order_relaxed);
+	snapshot.draw_prep_committed =
+	    (cur_dp_comm >= base_dp_comm) ? (cur_dp_comm - base_dp_comm) : cur_dp_comm;
+
+	const auto cur_dp_fall  = g_draw_prep_fallback.load(std::memory_order_relaxed);
+	const auto base_dp_fall = g_baseline_draw_prep_fallback.load(std::memory_order_relaxed);
+	snapshot.draw_prep_fallback =
+	    (cur_dp_fall >= base_dp_fall) ? (cur_dp_fall - base_dp_fall) : cur_dp_fall;
 
 	// Frametimes calculation across the captured window
 	const auto total_recorded_frames = g_captured_frame_count.load(std::memory_order_relaxed);
@@ -2530,6 +2571,22 @@ void RecordCpSequencerSnapshot() noexcept {
 
 void RecordCpSequencerWaitSpin() noexcept {
 	g_cp_sequencer_waits_spin.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordDrawPrepPublished() noexcept {
+	g_draw_prep_published.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordDrawPrepPrepared() noexcept {
+	g_draw_prep_prepared.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordDrawPrepCommitted() noexcept {
+	g_draw_prep_committed.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordDrawPrepFallback() noexcept {
+	g_draw_prep_fallback.fetch_add(1, std::memory_order_relaxed);
 }
 
 } // namespace Common::AuditProfiler

@@ -146,6 +146,8 @@ enum class PipelineStage : uint32_t {
 	Present,             ///< Swapchain presentation (vkQueuePresentKHR)
 	DrawPrep,            ///< Draw-prep parallel / inline snapshot and state preparation
 	SequencerWait,       ///< CP sequencer wait on resolver progress / answer
+	DrawPrepWorker,      ///< Background worker thread preparing draw state
+	DrawPrepCommitWait,  ///< GPU thread waiting for draw prep worker completion
 	Count
 };
 
@@ -324,6 +326,11 @@ struct ProfileSnapshot {
 	uint64_t cp_sequencer_lockstep_waits  = 0;
 	uint64_t cp_sequencer_snapshots_taken = 0;
 	uint64_t cp_sequencer_waits_spin      = 0;
+	bool     draw_prep_enabled            = false;
+	uint64_t draw_prep_published          = 0;
+	uint64_t draw_prep_prepared           = 0;
+	uint64_t draw_prep_committed          = 0;
+	uint64_t draw_prep_fallback           = 0;
 
 	// Frametime metrics (in milliseconds, calculated over all frames of the captured window)
 	double   p50_frame_ms  = 0.0;
@@ -561,6 +568,12 @@ void RecordCpSequencerOpEmitted() noexcept;
 void RecordCpSequencerLockstepWait() noexcept;
 void RecordCpSequencerSnapshot() noexcept;
 void RecordCpSequencerWaitSpin() noexcept;
+
+/// Stage 8.4C additions: DrawPrep telemetry
+void RecordDrawPrepPublished() noexcept;
+void RecordDrawPrepPrepared() noexcept;
+void RecordDrawPrepCommitted() noexcept;
+void RecordDrawPrepFallback() noexcept;
 
 /// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
 class ScopedStageTimer {

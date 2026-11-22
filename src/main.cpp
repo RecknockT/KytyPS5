@@ -146,6 +146,12 @@ static void PrintUsage() {
 	::printf(
 	    "  --cp-sequencer-spin-us <u>           Maximum duration in microseconds for sequencer to "
 	    "spin (default: 200).\n");
+	::printf("  --draw-prep                          Parallel draw preparation with worker threads "
+	         "(default: off, experimental).\n");
+	::printf("  --no-draw-prep                       Disable parallel draw preparation.\n");
+	::printf(
+	    "  --draw-prep-workers <num>            Worker threads for draw preparation (default: 4, "
+	    "1-32).\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -367,6 +373,8 @@ static constexpr Flag FLAGS[] = {
     {"--no-priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, false},
     {"--cp-sequencer", &ConfigOptions::cp_sequencer_enabled, true},
     {"--no-cp-sequencer", &ConfigOptions::cp_sequencer_enabled, false},
+    {"--draw-prep", &ConfigOptions::draw_prep_enabled, true},
+    {"--no-draw-prep", &ConfigOptions::draw_prep_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif
@@ -616,6 +624,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--cp-sequencer-spin-us") {
 			if (!ParseUint32(value, options.config.cp_sequencer_spin_us)) {
 				::printf("invalid cp sequencer spin duration us: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--draw-prep-workers") {
+			if (!ParseUint32(value, options.config.draw_prep_workers) ||
+			    options.config.draw_prep_workers == 0 || options.config.draw_prep_workers > 32) {
+				::printf("invalid workers for --draw-prep-workers: %s (must be 1-32)\n",
+				         value.c_str());
 				return false;
 			}
 		} else if (arg == "--keymap") {

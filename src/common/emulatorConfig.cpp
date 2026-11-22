@@ -402,6 +402,14 @@ uint32_t CpSequencerSpinUs() {
 	return g_config != nullptr ? g_config->cp_sequencer_spin_us : 200;
 }
 
+bool DrawPrepEnabled() {
+	return g_config != nullptr ? g_config->draw_prep_enabled : false;
+}
+
+uint32_t DrawPrepWorkers() {
+	return g_config != nullptr ? g_config->draw_prep_workers : 4;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;
