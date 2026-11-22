@@ -230,6 +230,9 @@ void CommandProcessor::Reset() {
 	if (m_draw_prep) {
 		m_draw_prep->Drain();
 	}
+	if (m_sequencer != nullptr) {
+		m_sequencer->ResetSnapshots();
+	}
 	m_sh_ctx.Reset();
 	m_ucfg.Reset();
 	m_ctx.Reset();
@@ -712,6 +715,9 @@ void CommandProcessor::DetachSequencer() {
 	if (m_draw_prep) {
 		m_draw_prep->Drain();
 	}
+	if (m_sequencer != nullptr) {
+		m_sequencer->ResetSnapshots();
+	}
 	m_sequencer = nullptr;
 	m_ops.reset();
 	m_front_mode = FrontMode::Direct;
@@ -853,17 +859,11 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			continue;
 		}
 		if (kind == CpSeq::OpKind::StreamEnd) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
 			return Pm4ProcessResult::Complete;
 		}
 		if (kind == CpSeq::OpKind::Handoff) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			handoff = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -892,11 +892,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.first_instance      = op.first_instance;
 			args.index_addr          = reinterpret_cast<const void*>(op.index_addr);
 			DrawPrep::PreparedDraw prepared;
-			bool                   has_snapshot   = false;
 			bool                   prepared_valid = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
 				prepared_valid = m_draw_prep->CommitPublished(op.window, prepared);
-				has_snapshot   = true;
 				if (prepared_valid) {
 					const uint64_t current_target_sig =
 					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
@@ -909,13 +907,25 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 					}
 				}
 			}
-			if (has_snapshot) {
-				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
-				                                                    prepared.snapshot.user_config,
-				                                                    prepared.snapshot.shaders);
+			const bool has_seq_snapshot = (op.flags & CpSeq::DrawFlagSnapshot) != 0;
+			if (has_seq_snapshot) {
+				auto&      reg_state = sequencer.Snapshots().Entry(op.snapshot);
+				const auto prev_regs = GetScheduler().BindRegisters(
+				    reg_state.context, reg_state.user_config, reg_state.shaders);
 				if (prepared_valid) {
 					m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
 				}
+				DrawIndex(args);
+				if (prepared_valid) {
+					m_renderer.GetRenderExecutor().ClearPreparedDraw();
+				}
+				GetScheduler().RestoreRegisters(prev_regs);
+				sequencer.Snapshots().Release();
+			} else if (prepared_valid) {
+				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
+				                                                    prepared.snapshot.user_config,
+				                                                    prepared.snapshot.shaders);
+				m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
 				DrawIndex(args);
 				m_renderer.GetRenderExecutor().ClearPreparedDraw();
 				GetScheduler().RestoreRegisters(prev_regs);
@@ -937,11 +947,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.first_instance = op.first_instance;
 			args.offset_source  = static_cast<DrawOffsetSource>(op.offset_source);
 			DrawPrep::PreparedDraw prepared;
-			bool                   has_snapshot   = false;
 			bool                   prepared_valid = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
 				prepared_valid = m_draw_prep->CommitPublished(op.window, prepared);
-				has_snapshot   = true;
 				if (prepared_valid) {
 					const uint64_t current_target_sig =
 					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
@@ -954,13 +962,25 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 					}
 				}
 			}
-			if (has_snapshot) {
-				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
-				                                                    prepared.snapshot.user_config,
-				                                                    prepared.snapshot.shaders);
+			const bool has_seq_snapshot = (op.flags & CpSeq::DrawFlagSnapshot) != 0;
+			if (has_seq_snapshot) {
+				auto&      reg_state = sequencer.Snapshots().Entry(op.snapshot);
+				const auto prev_regs = GetScheduler().BindRegisters(
+				    reg_state.context, reg_state.user_config, reg_state.shaders);
 				if (prepared_valid) {
 					m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
 				}
+				DrawIndexAuto(args);
+				if (prepared_valid) {
+					m_renderer.GetRenderExecutor().ClearPreparedDraw();
+				}
+				GetScheduler().RestoreRegisters(prev_regs);
+				sequencer.Snapshots().Release();
+			} else if (prepared_valid) {
+				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
+				                                                    prepared.snapshot.user_config,
+				                                                    prepared.snapshot.shaders);
+				m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
 				DrawIndexAuto(args);
 				m_renderer.GetRenderExecutor().ClearPreparedDraw();
 				GetScheduler().RestoreRegisters(prev_regs);
@@ -974,14 +994,23 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DrawIndirectMulti) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op        = view.As<CpSeq::DrawIndirectOp>();
 			const auto* count_ptr = reinterpret_cast<const volatile uint32_t*>(op.count_addr);
-			IndirectDrawRegisters regs {};
-			DrawIndirectMulti(op.data_offset, op.max_count_or_count, count_ptr, op.stride, regs, 0,
-			                  (op.flags & CpSeq::IndirectFlagIndexed) != 0);
+			IndirectDrawRegisters regs {op.vertex_offset, op.instance_offset, op.index_offset,
+			                            op.draw_index};
+			const bool            has_seq_snapshot = (op.flags & CpSeq::IndirectFlagSnapshot) != 0;
+			if (has_seq_snapshot) {
+				auto&      reg_state = sequencer.Snapshots().Entry(op.snapshot);
+				const auto prev_regs = GetScheduler().BindRegisters(
+				    reg_state.context, reg_state.user_config, reg_state.shaders);
+				DrawIndirectMulti(op.data_offset, op.max_count_or_count, count_ptr, op.stride, regs,
+				                  0, (op.flags & CpSeq::IndirectFlagIndexed) != 0);
+				GetScheduler().RestoreRegisters(prev_regs);
+				sequencer.Snapshots().Release();
+			} else {
+				DrawIndirectMulti(op.data_offset, op.max_count_or_count, count_ptr, op.stride, regs,
+				                  0, (op.flags & CpSeq::IndirectFlagIndexed) != 0);
+			}
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -989,11 +1018,18 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DispatchDirect) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
+			const auto& op               = view.As<CpSeq::DispatchDirectOp>();
+			const bool  has_seq_snapshot = (op.flags & CpSeq::DispatchFlagSnapshot) != 0;
+			if (has_seq_snapshot) {
+				auto&      reg_state = sequencer.Snapshots().Entry(op.snapshot);
+				const auto prev_regs = GetScheduler().BindRegisters(
+				    reg_state.context, reg_state.user_config, reg_state.shaders);
+				DispatchDirect(op.x, op.y, op.z, op.mode);
+				GetScheduler().RestoreRegisters(prev_regs);
+				sequencer.Snapshots().Release();
+			} else {
+				DispatchDirect(op.x, op.y, op.z, op.mode);
 			}
-			const auto& op = view.As<CpSeq::DispatchDirectOp>();
-			DispatchDirect(op.x, op.y, op.z, op.mode);
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -1001,11 +1037,18 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DispatchIndirect) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
+			const auto& op               = view.As<CpSeq::DispatchIndirectOp>();
+			const bool  has_seq_snapshot = (op.flags & CpSeq::DispatchFlagSnapshot) != 0;
+			if (has_seq_snapshot) {
+				auto&      reg_state = sequencer.Snapshots().Entry(op.snapshot);
+				const auto prev_regs = GetScheduler().BindRegisters(
+				    reg_state.context, reg_state.user_config, reg_state.shaders);
+				DispatchIndirect(op.args_addr, op.mode);
+				GetScheduler().RestoreRegisters(prev_regs);
+				sequencer.Snapshots().Release();
+			} else {
+				DispatchIndirect(op.args_addr, op.mode);
 			}
-			const auto& op = view.As<CpSeq::DispatchIndirectOp>();
-			DispatchIndirect(op.args_addr, op.mode);
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -1013,9 +1056,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::Flip) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op = view.As<CpSeq::FlipOp>();
 			ExecFlip(op.handle, op.index, op.flip_mode, op.flip_arg);
 			execution.m_made_progress = true;
@@ -1025,9 +1065,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::WaitFlipDone) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op = view.As<CpSeq::WaitFlipDoneOp>();
 			ExecWaitFlipDone(reinterpret_cast<const uint64_t*>(op.label_addr));
 			execution.m_made_progress = true;
@@ -1037,9 +1074,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::ReleaseMem) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op = view.As<CpSeq::ReleaseMemOp>();
 			ExecReleaseMem(op.data_sel, op.interrupt_selector, reinterpret_cast<void*>(op.address),
 			               op.data, op.interrupt_context_id, op.gl2_writeback != 0);
@@ -1050,9 +1084,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::WriteBackImages) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			ExecWriteBackImages();
 			execution.m_made_progress = true;
 			m_ops->Pop();
@@ -1061,9 +1092,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::EventWrite) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op = view.As<CpSeq::EventWriteOp>();
 			ExecTriggerEvent(op.event_type, op.event_index, op.address);
 			execution.m_made_progress = true;
@@ -1073,9 +1101,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DmaData) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto& op = view.As<CpSeq::DmaDataOp>();
 			DmaData(static_cast<uint8_t>(op.dst_sel), op.dst, static_cast<uint8_t>(op.src_sel),
 			        op.src, op.num_bytes);
@@ -1086,9 +1111,6 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::Pssr) {
-			if (m_draw_prep && m_draw_prep->IsActive()) {
-				m_draw_prep->Drain();
-			}
 			const auto&   op = view.As<CpSeq::PssrOp>();
 			Pssr::Request request {};
 			std::memcpy(&request, op.request, std::min(sizeof(request), sizeof(op.request)));
@@ -1325,6 +1347,14 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		op.base_vertex         = args.base_vertex;
 		op.first_instance      = args.first_instance;
 		op.index_addr          = reinterpret_cast<uint64_t>(args.index_addr);
+		if (m_sequencer != nullptr) {
+			const uint32_t snap_idx = m_sequencer->AcquireSnapshot(
+			    m_ctx, m_ucfg, m_sh_ctx, [&] { return m_sequencer->Stopping(); });
+			if (snap_idx != UINT32_MAX) {
+				op.snapshot = snap_idx;
+				op.flags |= CpSeq::DrawFlagSnapshot;
+			}
+		}
 		if (m_draw_prep && m_draw_prep->IsActive()) {
 			op.window = m_draw_prep->Publish(&args, nullptr, m_ctx, m_ucfg, m_sh_ctx, [&] {
 				return m_sequencer != nullptr && !m_sequencer->Stopping();
@@ -1337,7 +1367,9 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		return;
 	}
 	CountDraw();
-	args.index_type_and_size = m_index_type_and_size;
+	if (m_front_mode != FrontMode::Thread) {
+		args.index_type_and_size = m_index_type_and_size;
+	}
 	if (args.instance_count == 0) {
 		args.instance_count = NumInstances();
 	}
@@ -1356,7 +1388,9 @@ const void* CommandProcessor::IndexAddress(uint32_t first_index) const {
 }
 
 void CommandProcessor::DrawIndexOffset(uint32_t index_offset, uint32_t index_count) {
-	DrawIndex({.index_count = index_count, .index_addr = IndexAddress(index_offset)});
+	DrawIndex({.index_count         = index_count,
+	           .index_addr          = IndexAddress(index_offset),
+	           .index_type_and_size = m_index_type_and_size});
 }
 
 static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters registers,
@@ -1412,7 +1446,19 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		op.max_count_or_count  = max_count_or_count;
 		op.stride              = stride_in_bytes;
 		op.num_instances       = m_num_instances;
+		op.vertex_offset       = registers.vertex_offset;
+		op.instance_offset     = registers.instance_offset;
+		op.index_offset        = registers.index_offset;
+		op.draw_index          = registers.draw_index;
 		op.flags               = indexed ? CpSeq::IndirectFlagIndexed : 0;
+		if (m_sequencer != nullptr) {
+			const uint32_t snap_idx = m_sequencer->AcquireSnapshot(
+			    m_ctx, m_ucfg, m_sh_ctx, [&] { return m_sequencer->Stopping(); });
+			if (snap_idx != UINT32_MAX) {
+				op.snapshot = snap_idx;
+				op.flags |= CpSeq::IndirectFlagSnapshot;
+			}
+		}
 		m_ops->Emit(CpSeq::OpKind::DrawIndirectMulti, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
@@ -1490,6 +1536,14 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 		op.y    = thread_group_y;
 		op.z    = thread_group_z;
 		op.mode = mode;
+		if (m_sequencer != nullptr) {
+			const uint32_t snap_idx = m_sequencer->AcquireSnapshot(
+			    m_ctx, m_ucfg, m_sh_ctx, [&] { return m_sequencer->Stopping(); });
+			if (snap_idx != UINT32_MAX) {
+				op.snapshot = snap_idx;
+				op.flags |= CpSeq::DispatchFlagSnapshot;
+			}
+		}
 		m_ops->Emit(CpSeq::OpKind::DispatchDirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
@@ -1517,6 +1571,14 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 		CpSeq::DispatchIndirectOp op {};
 		op.args_addr = args_addr;
 		op.mode      = mode;
+		if (m_sequencer != nullptr) {
+			const uint32_t snap_idx = m_sequencer->AcquireSnapshot(
+			    m_ctx, m_ucfg, m_sh_ctx, [&] { return m_sequencer->Stopping(); });
+			if (snap_idx != UINT32_MAX) {
+				op.snapshot = snap_idx;
+				op.flags |= CpSeq::DispatchFlagSnapshot;
+			}
+		}
 		m_ops->Emit(CpSeq::OpKind::DispatchIndirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
@@ -1543,6 +1605,14 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 		op.first_vertex   = args.first_vertex;
 		op.first_instance = args.first_instance;
 		op.offset_source  = static_cast<uint32_t>(args.offset_source);
+		if (m_sequencer != nullptr) {
+			const uint32_t snap_idx = m_sequencer->AcquireSnapshot(
+			    m_ctx, m_ucfg, m_sh_ctx, [&] { return m_sequencer->Stopping(); });
+			if (snap_idx != UINT32_MAX) {
+				op.snapshot = snap_idx;
+				op.flags |= CpSeq::DrawFlagSnapshot;
+			}
+		}
 		if (m_draw_prep && m_draw_prep->IsActive()) {
 			op.window = m_draw_prep->Publish(nullptr, &args, m_ctx, m_ucfg, m_sh_ctx, [&] {
 				return m_sequencer != nullptr && !m_sequencer->Stopping();

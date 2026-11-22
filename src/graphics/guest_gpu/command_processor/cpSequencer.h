@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <span>
 #include <thread>
@@ -38,10 +39,33 @@ public:
 		return m_acquired - m_released.load(std::memory_order_seq_cst) < m_entries.size();
 	}
 	[[nodiscard]] uint32_t Acquire() noexcept {
-		return static_cast<uint32_t>(m_acquired++ % m_entries.size());
+		return static_cast<uint32_t>((m_acquired++) % m_entries.size());
+	}
+	[[nodiscard]] uint32_t AcquireBlocking(const std::function<bool()>& should_stop = nullptr) {
+		uint32_t spins = 0;
+		while (!HasFree()) {
+			if (should_stop && should_stop()) {
+				return UINT32_MAX;
+			}
+#if defined(_M_X64) || defined(__x86_64__)
+			if (++spins > 64) {
+				std::this_thread::yield();
+				spins = 0;
+			} else {
+				_mm_pause();
+			}
+#else
+			std::this_thread::yield();
+#endif
+		}
+		return static_cast<uint32_t>((m_acquired++) % m_entries.size());
 	}
 	[[nodiscard]] RegisterState& Entry(uint32_t index) noexcept { return m_entries[index]; }
 	void Release() noexcept { m_released.fetch_add(1, std::memory_order_seq_cst); }
+	void Reset() noexcept {
+		m_acquired = 0;
+		m_released.store(0, std::memory_order_seq_cst);
+	}
 
 private:
 	std::vector<RegisterState> m_entries;
@@ -77,6 +101,19 @@ public:
 	void                        NoteExecuted(uint64_t next_op);
 	void                        NoteHandoffDone(uint64_t submission);
 	[[nodiscard]] SnapshotRing& Snapshots() noexcept { return m_snapshots; }
+	[[nodiscard]] uint32_t AcquireSnapshot(const HW::Context& ctx, const HW::UserConfig& ucfg,
+	                                       const HW::Shader&            sh,
+	                                       const std::function<bool()>& should_stop = nullptr) {
+		const uint32_t idx = m_snapshots.AcquireBlocking(should_stop);
+		if (idx != UINT32_MAX) {
+			auto& entry       = m_snapshots.Entry(idx);
+			entry.context     = ctx;
+			entry.user_config = ucfg;
+			entry.shaders     = sh;
+		}
+		return idx;
+	}
+	void ResetSnapshots() noexcept { m_snapshots.Reset(); }
 
 	// ---- Sequencer thread (the processor's front) ----
 	template <typename Ready>

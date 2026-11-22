@@ -1554,6 +1554,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		m_last_graphics_key      = key;
 		m_last_graphics_pipeline = &pipeline;
 	}
+	if (Config::PipelineKeyCacheEnabled()) {
+		UpdateKeyInputCache(command, state, targets, stages, vs_input_info);
+	}
 
 	return pipeline;
 }

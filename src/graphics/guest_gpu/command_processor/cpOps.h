@@ -146,6 +146,10 @@ struct DrawIndirectOp {
 	uint32_t flags               = 0;
 	uint32_t num_instances       = 0;
 	uint32_t snapshot            = 0;
+	uint32_t vertex_offset       = 0x280u;
+	uint32_t instance_offset     = 0x280u;
+	uint32_t index_offset        = 0x280u;
+	uint32_t draw_index          = 0x280u;
 	uint32_t draw_index_sgpr     = 0;
 	uint64_t window              = 0;
 };

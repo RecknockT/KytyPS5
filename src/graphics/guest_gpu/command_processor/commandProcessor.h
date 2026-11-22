@@ -6,6 +6,7 @@
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 #include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/hardwareContext.h"
+#include "graphics/guest_gpu/pm4.h"
 #include "graphics/guest_gpu/pssr.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -39,10 +40,10 @@ enum class ContextStateOperation : uint32_t {
 };
 
 struct IndirectDrawRegisters {
-	uint32_t vertex_offset;
-	uint32_t instance_offset;
-	uint32_t index_offset;
-	uint32_t draw_index;
+	uint32_t vertex_offset   = Pm4::SH_NOP;
+	uint32_t instance_offset = Pm4::SH_NOP;
+	uint32_t index_offset    = Pm4::SH_NOP;
+	uint32_t draw_index      = Pm4::SH_NOP;
 };
 
 class Pm4Execution {
