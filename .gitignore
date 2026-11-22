@@ -11,5 +11,8 @@ kyty_emulator.exe
 *.exe
 audit_profile.json
 audit_profile.csv
+_TestLogs/
+stage8_*.csv
+stage8_*.json
 _Trophies/
 
