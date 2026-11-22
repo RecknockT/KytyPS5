@@ -83,6 +83,7 @@ const char* OpKindName(OpKind kind) noexcept {
 		case OpKind::Handoff: return "Handoff";
 		case OpKind::LockstepRead: return "LockstepRead";
 		case OpKind::SkipSlots: return "SkipSlots";
+		case OpKind::WriteBackImages: return "WriteBackImages";
 		case OpKind::Count: break;
 	}
 	return "?";
@@ -117,6 +118,7 @@ uint32_t PayloadSize(OpKind kind) noexcept {
 		case OpKind::Handoff: return sizeof(HandoffOp);
 		case OpKind::LockstepRead: return sizeof(LockstepReadOp);
 		case OpKind::SkipSlots: return sizeof(SkipSlotsOp);
+		case OpKind::WriteBackImages: return sizeof(WriteBackImagesOp);
 		case OpKind::Count: break;
 	}
 	return 0;

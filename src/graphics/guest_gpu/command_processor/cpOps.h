@@ -46,6 +46,7 @@ enum class OpKind : uint16_t {
 	Handoff,
 	LockstepRead,
 	SkipSlots,
+	WriteBackImages,
 	Count,
 };
 
@@ -187,7 +188,12 @@ struct EndOfPipeOp {
 };
 
 struct ReleaseMemOp {
-	uint32_t body[8] {};
+	uint64_t address              = 0;
+	uint64_t data                 = 0;
+	uint32_t data_sel             = 0;
+	uint32_t interrupt_selector   = 0;
+	uint32_t interrupt_context_id = 0;
+	uint32_t gl2_writeback        = 0;
 };
 
 struct EventWriteOp {
@@ -260,6 +266,7 @@ struct WaitFlipDoneOp {
 	uint32_t video_out_handle     = 0;
 	uint32_t display_buffer_index = 0;
 	uint64_t flip_watermark       = UINT64_MAX;
+	uint64_t label_addr           = 0;
 };
 
 struct DumpConstRamOp {
@@ -321,6 +328,10 @@ struct SkipSlotsOp {
 	uint32_t reserved = 0;
 };
 
+struct WriteBackImagesOp {
+	uint64_t reserved = 0;
+};
+
 template <typename T>
 inline constexpr bool IsPayload =
     std::is_trivially_copyable_v<T> && alignof(T) <= 8 && (sizeof(T) % 8) == 0 &&
@@ -334,7 +345,8 @@ static_assert(IsPayload<DrawIndexOp> && IsPayload<DrawAutoOp> && IsPayload<DrawI
               IsPayload<WaitRegMemOp> && IsPayload<WaitFlipDoneOp> && IsPayload<DumpConstRamOp> &&
               IsPayload<PredicationOp> && IsPayload<CondExecOp> && IsPayload<BranchOp> &&
               IsPayload<ReadCheckOp> && IsPayload<StreamBeginOp> && IsPayload<StreamEndOp> &&
-              IsPayload<HandoffOp> && IsPayload<LockstepReadOp> && IsPayload<SkipSlotsOp>);
+              IsPayload<HandoffOp> && IsPayload<LockstepReadOp> && IsPayload<SkipSlotsOp> &&
+              IsPayload<WriteBackImagesOp>);
 
 [[nodiscard]] uint32_t PayloadSize(OpKind kind) noexcept;
 

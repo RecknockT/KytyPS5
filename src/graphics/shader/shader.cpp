@@ -89,6 +89,14 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	(*g_shader_map)[addr] = {mapped, hash};
 }
 
+bool ShaderHasMappedData(uint64_t addr) noexcept {
+	if (g_shader_map == nullptr) {
+		return false;
+	}
+	std::scoped_lock lock(g_shader_map_mutex);
+	return g_shader_map->contains(addr);
+}
+
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
 

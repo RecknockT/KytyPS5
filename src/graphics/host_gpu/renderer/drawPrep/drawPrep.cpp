@@ -40,6 +40,41 @@ uint64_t GetNowNs() noexcept {
 	                                 .count());
 }
 
+static bool ComputeDrawTopology(const HW::UserConfig&  ucfg,
+                                vk::PrimitiveTopology& topology) noexcept {
+	topology = vk::PrimitiveTopology::eTriangleList;
+	switch (ucfg.GetPrimType()) {
+		case Prospero::PrimitiveType::kNone:
+		case Prospero::PrimitiveType::kTriList:
+			topology = vk::PrimitiveTopology::eTriangleList;
+			break;
+		case Prospero::PrimitiveType::kPointList:
+			topology = vk::PrimitiveTopology::ePointList;
+			break;
+		case Prospero::PrimitiveType::kTriFan:
+		case Prospero::PrimitiveType::kPolygon:
+			topology = vk::PrimitiveTopology::eTriangleFan;
+			break;
+		case Prospero::PrimitiveType::kTriStrip:
+			topology = vk::PrimitiveTopology::eTriangleStrip;
+			break;
+		case Prospero::PrimitiveType::kPatch:
+			if (!Config::TessellationEnabled()) {
+				return false;
+			}
+			[[fallthrough]];
+		case Prospero::PrimitiveType::kRectList:
+		case Prospero::PrimitiveType::kRectListLegacy:
+			topology = vk::PrimitiveTopology::ePatchList;
+			break;
+		case Prospero::PrimitiveType::kQuadListLegacy:
+			topology = vk::PrimitiveTopology::eTriangleFan;
+			break;
+		default: topology = vk::PrimitiveTopology::ePointList; break;
+	}
+	return true;
+}
+
 } // namespace
 
 Engine::Engine(RenderContext& renderer, uint32_t num_workers)
@@ -211,11 +246,22 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 	    static_cast<uint64_t>(ctx.GetRenderTargetMask()) |
 	    (static_cast<uint64_t>(ctx.GetShaderRegisters().m_cbShaderMask) << 32u);
 
-	// Check eligibility: valid vertex shader code address (ES, LS, or GS)
-	const bool vs_active =
-	    (sh_ctx.GetVs().es_regs.data_addr != 0 || sh_ctx.GetVs().ls_regs.data_addr != 0 ||
-	     sh_ctx.GetVs().gs_regs.data_addr != 0);
 	slot.prepared.snapshot = slot.snapshot;
+
+	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
+	if (!ComputeDrawTopology(ucfg, topology)) {
+		slot.prepared.valid = false;
+		slot.state.store(SlotState::Ready, std::memory_order_release);
+		m_ready_cv.notify_all();
+		return;
+	}
+	slot.prepared.render_state.topology = topology;
+
+	// Check eligibility: valid vertex shader code address (ES, LS, or GS)
+	const auto vs_addr   = sh_ctx.GetVs().es_regs.data_addr;
+	const bool vs_active = (vs_addr != 0 || sh_ctx.GetVs().ls_regs.data_addr != 0 ||
+	                        sh_ctx.GetVs().gs_regs.data_addr != 0);
+
 	if (vs_active) {
 		slot.prepared.valid        = true;
 		slot.prepared.pixel_active = (sh_ctx.GetPs().ps_regs.data_addr != 0);
@@ -225,12 +271,21 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 		state.ps_active                  = slot.prepared.pixel_active;
 		state.mrt_mask                   = ctx.GetRenderTargetMask();
 		state.vertex_info[0].buffers_num = static_cast<uint32_t>(ucfg.GetPrimType()) == 0 ? 0 : 1;
+
+		const bool tess_active = ucfg.GetPrimType() == Prospero::PrimitiveType::kPatch;
+		if (!tess_active && vs_addr != 0 && ShaderHasMappedData(vs_addr)) {
+			// Real CPU parallel decoding: extract shader params, ELF parsing, vertex layout
+			slot.prepared.vertex_params =
+			    PrepareProgram(sh_ctx.GetVs(), ctx, ucfg, state.vertex_info[0]);
+			slot.prepared.has_programs = true;
+		}
 	} else {
 		slot.prepared.valid = false;
 	}
 
 	const auto t_end           = GetNowNs();
 	slot.prepared.prep_time_ns = (t_end >= t_start) ? (t_end - t_start) : 0;
+	m_stat_useful_ns.fetch_add(slot.prepared.prep_time_ns, std::memory_order_relaxed);
 
 	if (Common::AuditProfiler::IsEnabled()) {
 		Common::AuditProfiler::RecordPipelineStage(
@@ -324,10 +379,11 @@ void Engine::Drain() {
 
 Engine::Stats Engine::GetStats() const noexcept {
 	return {
-	    .published = m_stat_published.load(std::memory_order_relaxed),
-	    .prepared  = m_stat_prepared.load(std::memory_order_relaxed),
-	    .committed = m_stat_committed.load(std::memory_order_relaxed),
-	    .fallback  = m_stat_fallback.load(std::memory_order_relaxed),
+	    .published      = m_stat_published.load(std::memory_order_relaxed),
+	    .prepared       = m_stat_prepared.load(std::memory_order_relaxed),
+	    .committed      = m_stat_committed.load(std::memory_order_relaxed),
+	    .fallback       = m_stat_fallback.load(std::memory_order_relaxed),
+	    .useful_time_ns = m_stat_useful_ns.load(std::memory_order_relaxed),
 	};
 }
 

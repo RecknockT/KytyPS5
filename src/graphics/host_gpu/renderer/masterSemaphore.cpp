@@ -56,7 +56,12 @@ void MasterSemaphore::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason r
 	const auto                         start = std::chrono::steady_clock::now();
 	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
 	const auto end    = std::chrono::steady_clock::now();
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	if (result != vk::Result::eSuccess) {
+		LOGF("masterSemaphore waitSemaphores failed: %s (%d) for tick %" PRIu64 "\n",
+		     vk::to_string(result).c_str(), static_cast<int>(result), tick);
+		EXIT("masterSemaphore waitSemaphores failed: %s (%d)\n", vk::to_string(result).c_str(),
+		     static_cast<int>(result));
+	}
 	if (Common::AuditProfiler::IsEnabled()) {
 		const auto wait_ns = static_cast<uint64_t>(
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());

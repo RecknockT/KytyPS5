@@ -5,6 +5,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/shader/shaderCompiler.h"
 
 #include <array>
 #include <atomic>
@@ -37,6 +38,8 @@ struct PreparedDraw {
 	uint64_t                 prep_time_ns = 0;
 	bool                     pixel_active = false;
 	RegisterSnapshot         snapshot;
+	bool                     has_programs = false;
+	ShaderParams             vertex_params {};
 };
 
 struct Slot {
@@ -76,10 +79,11 @@ public:
 
 	// Telemetry totals
 	struct Stats {
-		uint64_t published = 0;
-		uint64_t prepared  = 0;
-		uint64_t committed = 0;
-		uint64_t fallback  = 0;
+		uint64_t published      = 0;
+		uint64_t prepared       = 0;
+		uint64_t committed      = 0;
+		uint64_t fallback       = 0;
+		uint64_t useful_time_ns = 0;
 	};
 	[[nodiscard]] Stats GetStats() const noexcept;
 
@@ -107,6 +111,7 @@ private:
 	std::atomic<uint64_t> m_stat_prepared {0};
 	std::atomic<uint64_t> m_stat_committed {0};
 	std::atomic<uint64_t> m_stat_fallback {0};
+	std::atomic<uint64_t> m_stat_useful_ns {0};
 };
 
 } // namespace Libs::Graphics::DrawPrep

@@ -298,6 +298,9 @@ void CommandProcessor::BufferFlush() {
 }
 
 void CommandProcessor::FlushForCadence() {
+	if (m_front_mode == FrontMode::Thread && !GuestGpu::IsGpuThread()) {
+		return;
+	}
 	if (!GetScheduler().TakeCadenceSubmit()) {
 		return;
 	}
@@ -441,6 +444,17 @@ void CommandProcessor::DmaData(uint8_t dst_sel, uint64_t dst_address_or_offset, 
 	if (num_bytes == 0 || static_cast<uint32_t>(dst_address_or_offset) == 0x3022cu) {
 		return;
 	}
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::DmaDataOp op {};
+		op.dst       = dst_address_or_offset;
+		op.src       = src_address_or_offset_or_immediate;
+		op.num_bytes = num_bytes;
+		op.dst_sel   = dst_sel;
+		op.src_sel   = src_sel;
+		m_ops->Emit(CpSeq::OpKind::DmaData, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	auto decode_gds = [](uint8_t selector, bool& is_gds) {
 		switch (selector) {
 			case 0:
@@ -839,11 +853,17 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			continue;
 		}
 		if (kind == CpSeq::OpKind::StreamEnd) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
 			return Pm4ProcessResult::Complete;
 		}
 		if (kind == CpSeq::OpKind::Handoff) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
 			handoff = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -940,6 +960,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DrawIndirectMulti) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
 			const auto& op        = view.As<CpSeq::DrawIndirectOp>();
 			const auto* count_ptr = reinterpret_cast<const volatile uint32_t*>(op.count_addr);
 			IndirectDrawRegisters regs {};
@@ -952,6 +975,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DispatchDirect) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
 			const auto& op = view.As<CpSeq::DispatchDirectOp>();
 			DispatchDirect(op.x, op.y, op.z, op.mode);
 			execution.m_made_progress = true;
@@ -961,8 +987,98 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 		}
 
 		if (kind == CpSeq::OpKind::DispatchIndirect) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
 			const auto& op = view.As<CpSeq::DispatchIndirectOp>();
 			DispatchIndirect(op.args_addr, op.mode);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::Flip) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto& op = view.As<CpSeq::FlipOp>();
+			ExecFlip(op.handle, op.index, op.flip_mode, op.flip_arg);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::WaitFlipDone) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto& op = view.As<CpSeq::WaitFlipDoneOp>();
+			ExecWaitFlipDone(reinterpret_cast<const uint64_t*>(op.label_addr));
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::ReleaseMem) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto& op = view.As<CpSeq::ReleaseMemOp>();
+			ExecReleaseMem(op.data_sel, op.interrupt_selector, reinterpret_cast<void*>(op.address),
+			               op.data, op.interrupt_context_id, op.gl2_writeback != 0);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::WriteBackImages) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			ExecWriteBackImages();
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::EventWrite) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto& op = view.As<CpSeq::EventWriteOp>();
+			ExecTriggerEvent(op.event_type, op.event_index, op.address);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DmaData) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto& op = view.As<CpSeq::DmaDataOp>();
+			DmaData(static_cast<uint8_t>(op.dst_sel), op.dst, static_cast<uint8_t>(op.src_sel),
+			        op.src, op.num_bytes);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::Pssr) {
+			if (m_draw_prep && m_draw_prep->IsActive()) {
+				m_draw_prep->Drain();
+			}
+			const auto&   op = view.As<CpSeq::PssrOp>();
+			Pssr::Request request {};
+			std::memcpy(&request, op.request, std::min(sizeof(request), sizeof(op.request)));
+			ProcessPssr(request);
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -1271,9 +1387,6 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
                                          uint32_t stride_in_bytes, IndirectDrawRegisters registers,
                                          uint32_t draw_initiator, bool indexed) {
 	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
-		if (m_draw_prep && m_draw_prep->IsActive()) {
-			m_draw_prep->Drain();
-		}
 		CpSeq::DrawIndirectOp op {};
 		op.args_base           = m_draw_indirect_args_base_addr;
 		op.index_base_addr     = m_index_base_addr;
@@ -1289,6 +1402,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		m_ops->Emit(CpSeq::OpKind::DrawIndirectMulti, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	CountDraw();
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
@@ -1356,9 +1470,6 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
 	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
-		if (m_draw_prep && m_draw_prep->IsActive()) {
-			m_draw_prep->Drain();
-		}
 		m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 		CpSeq::DispatchDirectOp op {};
 		op.x    = thread_group_x;
@@ -1368,21 +1479,26 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 		m_ops->Emit(CpSeq::OpKind::DispatchDirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 	m_renderer.GetRenderExecutor().DispatchDirect(CurrentBuffer(), thread_group_x, thread_group_y,
 	                                              thread_group_z, mode, IsAsyncComputeQueue());
 }
 
 void CommandProcessor::ProcessPssr(const Pssr::Request& request) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::PssrOp op {};
+		std::memcpy(op.request, &request, std::min(sizeof(op.request), sizeof(request)));
+		m_ops->Emit(CpSeq::OpKind::Pssr, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	EXIT_NOT_IMPLEMENTED(IsAsyncComputeQueue());
 	m_renderer.GetRenderExecutor().ProcessPssr(CurrentBuffer(), request);
 }
 
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
-		if (m_draw_prep && m_draw_prep->IsActive()) {
-			m_draw_prep->Drain();
-		}
 		m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 		CpSeq::DispatchIndirectOp op {};
 		op.args_addr = args_addr;
@@ -1390,6 +1506,7 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 		m_ops->Emit(CpSeq::OpKind::DispatchIndirect, &op, sizeof(op), nullptr, 0, 0, 0, false);
 		return;
 	}
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
 		const auto* args = reinterpret_cast<const vk::DispatchIndirectCommand*>(args_addr);
@@ -1431,6 +1548,17 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 }
 
 void CommandProcessor::WaitFlipDone(const uint64_t* label) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::WaitFlipDoneOp op {};
+		op.label_addr = reinterpret_cast<uint64_t>(label);
+		m_ops->Emit(CpSeq::OpKind::WaitFlipDone, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	ExecWaitFlipDone(label);
+}
+
+void CommandProcessor::ExecWaitFlipDone(const uint64_t* label) {
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	BufferFlush();
 
 	m_renderer.GetVideoOut().WaitFlipDone(label);
@@ -1439,6 +1567,25 @@ void CommandProcessor::WaitFlipDone(const uint64_t* label) {
 void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector, void* address,
                                   uint64_t data, uint32_t interrupt_context_id,
                                   bool gl2_writeback) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::ReleaseMemOp op {};
+		op.address              = reinterpret_cast<uint64_t>(address);
+		op.data                 = data;
+		op.data_sel             = data_sel;
+		op.interrupt_selector   = interrupt_selector;
+		op.interrupt_context_id = interrupt_context_id;
+		op.gl2_writeback        = gl2_writeback ? 1u : 0u;
+		m_ops->Emit(CpSeq::OpKind::ReleaseMem, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	ExecReleaseMem(data_sel, interrupt_selector, address, data, interrupt_context_id,
+	               gl2_writeback);
+}
+
+void CommandProcessor::ExecReleaseMem(uint32_t data_sel, uint32_t interrupt_selector, void* address,
+                                      uint64_t data, uint32_t interrupt_context_id,
+                                      bool gl2_writeback) {
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	if (graphics_debug_dump_enabled()) {
 		LOGF("CommandProcessor::ReleaseMem()\n"
 		     "\t data_sel           = %" PRIu32 "\n"
@@ -1512,6 +1659,16 @@ void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector
 }
 
 void CommandProcessor::WriteBackImages() {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::WriteBackImagesOp op {};
+		m_ops->Emit(CpSeq::OpKind::WriteBackImages, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	ExecWriteBackImages();
+}
+
+void CommandProcessor::ExecWriteBackImages() {
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	// GPU-written images are copied back without holding any signal: a held signal exposes the host
 	// GPU's speed. Guest accesses to them wait for the copies.
 	if (m_renderer.GetTextureCache().WriteBackImages()) {
@@ -1521,6 +1678,20 @@ void CommandProcessor::WriteBackImages() {
 
 void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
                                     uint64_t event_address) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::EventWriteOp op {};
+		op.address     = event_address;
+		op.event_type  = event_type;
+		op.event_index = event_index;
+		m_ops->Emit(CpSeq::OpKind::EventWrite, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	ExecTriggerEvent(event_type, event_index, event_address);
+}
+
+void CommandProcessor::ExecTriggerEvent(uint32_t event_type, uint32_t event_index,
+                                        uint64_t event_address) {
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	if (graphics_debug_dump_enabled()) {
 		LOGF("CommandProcessor::TriggerEvent()\n"
 		     "\t event_type  = 0x%08" PRIx32 "\n"
@@ -1598,6 +1769,20 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 }
 
 void CommandProcessor::Flip(int handle, int index, int flip_mode, int64_t flip_arg) {
+	if (m_front_mode == FrontMode::Thread && m_ops != nullptr && !GuestGpu::IsGpuThread()) {
+		CpSeq::FlipOp op {};
+		op.handle    = handle;
+		op.index     = index;
+		op.flip_mode = flip_mode;
+		op.flip_arg  = flip_arg;
+		m_ops->Emit(CpSeq::OpKind::Flip, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		return;
+	}
+	ExecFlip(handle, index, flip_mode, flip_arg);
+}
+
+void CommandProcessor::ExecFlip(int handle, int index, int flip_mode, int64_t flip_arg) {
+	EXIT_IF(!GuestGpu::IsGpuThread());
 	if (graphics_debug_dump_enabled()) {
 		LOGF("CommandProcessor::Flip()\n");
 	}

@@ -109,6 +109,14 @@ public:
 	void ProcessPssr(const Pssr::Request& request);
 	void TriggerEvent(uint32_t event_type, uint32_t event_index, uint64_t event_address = 0);
 
+	// Execution methods for decoupled PM4 operations, executed strictly on Thread_Gpu
+	void ExecFlip(int handle, int index, int flip_mode, int64_t flip_arg);
+	void ExecWaitFlipDone(const uint64_t* label);
+	void ExecReleaseMem(uint32_t data_sel, uint32_t interrupt_selector, void* address,
+	                    uint64_t data, uint32_t interrupt_context_id, bool gl2_writeback);
+	void ExecWriteBackImages();
+	void ExecTriggerEvent(uint32_t event_type, uint32_t event_index, uint64_t event_address = 0);
+
 	void WaitForRewind(bool valid);
 	/// Call after reading a value from guest memory that a game thread may have written, such as
 	/// a flag that COND_EXEC or BRANCH tests. The game thread wrote the data the value guards

@@ -32,6 +32,30 @@ RenderContext &GetDummyRenderer() {
   return *reinterpret_cast<RenderContext *>(dummy_buf);
 }
 
+} // namespace
+
+namespace Libs::Graphics {
+
+std::atomic<bool> g_mock_mapped_data{false};
+
+bool ShaderHasMappedData(uint64_t addr) noexcept {
+  return g_mock_mapped_data.load(std::memory_order_relaxed) && (addr != 0);
+}
+
+ShaderParams PrepareProgram(const HW::VertexShaderInfo & /*regs*/,
+                            const HW::Context & /*context*/,
+                            const HW::UserConfig & /*user_config*/,
+                            ShaderVertexInputInfo &input_info) {
+  input_info.stage.module = reinterpret_cast<ShaderModule *>(0x1234);
+  ShaderParams params{};
+  params.hash = 0xbeefcafe;
+  return params;
+}
+
+} // namespace Libs::Graphics
+
+namespace {
+
 void TestModeToggle() {
   std::printf("Running TestModeToggle...\n");
   Engine engine(GetDummyRenderer(), 2);
@@ -394,6 +418,143 @@ void TestTargetSignatureMismatchFallback() {
   engine.SetMode(Mode::Off);
 }
 
+void TestParallelTopologyAndProgramOffload() {
+  std::printf("Running TestParallelTopologyAndProgramOffload...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  g_mock_mapped_data.store(true);
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  ucfg.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
+  sh.SetEsShaderBase(0x4000'0000ull);
+  sh.SetPsShaderBase(0x5000'0000ull);
+
+  DrawIndexArgs args{};
+  args.index_count = 60;
+  args.instance_count = 1;
+
+  for (uint32_t i = 0; i < 20; ++i) {
+    const auto pos = engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+    Check(pos == i, "Publish position check");
+  }
+
+  uint32_t with_programs = 0;
+  for (uint32_t i = 0; i < 20; ++i) {
+    PreparedDraw prep;
+    if (engine.CommitPublished(i, prep)) {
+      Check(prep.valid, "Prep valid");
+      Check(prep.render_state.topology == vk::PrimitiveTopology::eTriangleList,
+            "Topology must be eTriangleList");
+      if (prep.has_programs) {
+        ++with_programs;
+        Check(prep.vertex_params.hash == 0xbeefcafe,
+              "Program params hash check");
+      }
+    }
+  }
+
+  Check(with_programs == 20,
+        "All 20 draws should have parallel-decoded programs");
+
+  const auto stats = engine.GetStats();
+  Check(stats.committed == 20, "20 draws committed");
+  Check(stats.useful_time_ns > 0, "Useful offloaded worker time must be > 0");
+
+  g_mock_mapped_data.store(false);
+  engine.SetMode(Mode::Off);
+}
+
+void TestOpsDecouplingSerialization() {
+  std::printf("Running TestOpsDecouplingSerialization...\n");
+  using namespace Libs::Graphics::CpSeq;
+
+  OpStream stream(256 * 1024);
+
+  // 1. FlipOp
+  FlipOp flip{};
+  flip.handle = 42;
+  flip.index = 3;
+  flip.flip_mode = 1;
+  flip.flip_arg = 0x9988776655ull;
+  stream.Emit(OpKind::Flip, &flip, sizeof(flip), nullptr, 0, 1, 0, false);
+
+  // 2. WaitFlipDoneOp
+  WaitFlipDoneOp wait_flip{};
+  wait_flip.label_addr = 0xdeadbeefcafeull;
+  stream.Emit(OpKind::WaitFlipDone, &wait_flip, sizeof(wait_flip), nullptr, 0,
+              2, 0, false);
+
+  // 3. ReleaseMemOp
+  ReleaseMemOp rel{};
+  rel.address = 0x8000'1000ull;
+  rel.data = 0x1234'5678ull;
+  rel.data_sel = 2;
+  rel.interrupt_selector = 1;
+  rel.interrupt_context_id = 5;
+  rel.gl2_writeback = 1;
+  stream.Emit(OpKind::ReleaseMem, &rel, sizeof(rel), nullptr, 0, 3, 0, false);
+
+  // 4. WriteBackImagesOp
+  WriteBackImagesOp wb{};
+  wb.reserved = 0x777ull;
+  stream.Emit(OpKind::WriteBackImages, &wb, sizeof(wb), nullptr, 0, 4, 0,
+              false);
+
+  // 5. EventWriteOp
+  EventWriteOp ev{};
+  ev.address = 0xa000'0000ull;
+  ev.event_type = 0x39;
+  ev.event_index = 1;
+  stream.Emit(OpKind::EventWrite, &ev, sizeof(ev), nullptr, 0, 5, 0, false);
+
+  // Verify view 1 (Flip)
+  OpView view;
+  Check(stream.Peek(view), "Peek flip");
+  Check(view.Kind() == OpKind::Flip, "Kind is Flip");
+  const auto &rec_flip = view.As<FlipOp>();
+  Check(rec_flip.handle == 42 && rec_flip.index == 3 &&
+            rec_flip.flip_mode == 1 && rec_flip.flip_arg == 0x9988776655ull,
+        "FlipOp fields match");
+  stream.Pop();
+
+  // Verify view 2 (WaitFlipDone)
+  Check(stream.Peek(view), "Peek wait flip");
+  Check(view.Kind() == OpKind::WaitFlipDone, "Kind is WaitFlipDone");
+  const auto &rec_wait = view.As<WaitFlipDoneOp>();
+  Check(rec_wait.label_addr == 0xdeadbeefcafeull,
+        "WaitFlipDoneOp label_addr matches");
+  stream.Pop();
+
+  // Verify view 3 (ReleaseMem)
+  Check(stream.Peek(view), "Peek release mem");
+  Check(view.Kind() == OpKind::ReleaseMem, "Kind is ReleaseMem");
+  const auto &rec_rel = view.As<ReleaseMemOp>();
+  Check(rec_rel.address == 0x8000'1000ull && rec_rel.data == 0x1234'5678ull &&
+            rec_rel.data_sel == 2 && rec_rel.interrupt_selector == 1 &&
+            rec_rel.interrupt_context_id == 5 && rec_rel.gl2_writeback == 1,
+        "ReleaseMemOp fields match");
+  stream.Pop();
+
+  // Verify view 4 (WriteBackImages)
+  Check(stream.Peek(view), "Peek write back images");
+  Check(view.Kind() == OpKind::WriteBackImages, "Kind is WriteBackImages");
+  stream.Pop();
+
+  // Verify view 5 (EventWrite)
+  Check(stream.Peek(view), "Peek event write");
+  Check(view.Kind() == OpKind::EventWrite, "Kind is EventWrite");
+  const auto &rec_ev = view.As<EventWriteOp>();
+  Check(rec_ev.address == 0xa000'0000ull && rec_ev.event_type == 0x39 &&
+            rec_ev.event_index == 1,
+        "EventWriteOp fields match");
+  stream.Pop();
+
+  Check(!stream.Peek(view), "Stream empty after pops");
+}
+
 } // namespace
 
 int main() {
@@ -408,6 +569,8 @@ int main() {
   TestSlotExhaustionUnderBurst();
   TestConcurrentDrainDuringInFlightWork();
   TestTargetSignatureMismatchFallback();
+  TestParallelTopologyAndProgramOffload();
+  TestOpsDecouplingSerialization();
 
   if (g_failures == 0) {
     std::printf("=== All DrawPrep Tests PASSED ===\n");
