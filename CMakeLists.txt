@@ -470,6 +470,15 @@ add_executable(audit_profiler_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AuditPro
 target_link_libraries(audit_profiler_tests common kyty_test_gtest nlohmann_json)
 target_include_directories(audit_profiler_tests PRIVATE ${inc_headers})
 
+add_executable(cp_sequencer_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/CpSequencerTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/commandStream.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/command_processor/cpOps.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/command_processor/cpSequencer.cpp"
+)
+target_link_libraries(cp_sequencer_tests common xxhash Vulkan::Headers)
+target_include_directories(cp_sequencer_tests PRIVATE ${inc_headers})
+
 add_executable(ime_dialog_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ImeDialogTests.cpp"
 	"${KYTY_SOURCE_DIR}/libs/imeCommon.cpp"
@@ -773,6 +782,7 @@ if(BUILD_TESTING)
 	add_test(NAME emulator_audit_faults_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --audit-faults)
 	add_test(NAME audit_profiler COMMAND $<TARGET_FILE:audit_profiler_tests>)
+	add_test(NAME cp_sequencer COMMAND $<TARGET_FILE:cp_sequencer_tests>)
 	add_test(NAME ime_dialog COMMAND $<TARGET_FILE:ime_dialog_tests>)
 	add_test(NAME shader_cfg COMMAND $<TARGET_FILE:shader_cfg_tests>)
 	add_test(NAME scalar_provenance COMMAND $<TARGET_FILE:scalar_provenance_tests>)
@@ -945,6 +955,7 @@ if(BUILD_TESTING)
 		lru_cache_tests
 		common_tests
 		audit_profiler_tests
+		cp_sequencer_tests
 		shader_vertex_metadata_tests
 		resource_materialization_tests
 		resource_tracking_tests

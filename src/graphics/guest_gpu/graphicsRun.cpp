@@ -32,6 +32,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 namespace Libs::Graphics {
 
 static thread_local Pm4Execution* g_current_execution = nullptr;
@@ -40,6 +44,13 @@ static thread_local GuestGpu*     g_gpu_state         = nullptr;
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
+	if (Config::CpSequencerEnabled() || CpSeq::ConfiguredMode() == CpSeq::Mode::Thread) {
+		m_sequencer = std::make_unique<CpSeq::Sequencer>(*m_gfx_cp);
+		m_gfx_cp->AttachSequencer(m_sequencer.get());
+		m_sequencer->Start();
+	} else if (CpSeq::ConfiguredMode() == CpSeq::Mode::Inline) {
+		m_gfx_cp->SetFrontMode(CommandProcessor::FrontMode::Inline);
+	}
 	m_thread = std::jthread(ThreadRun, this);
 }
 
@@ -52,6 +63,9 @@ void GuestGpu::Shutdown() {
 	if (m_shutdown_complete) {
 		return;
 	}
+	if (m_sequencer) {
+		m_sequencer->Stop();
+	}
 	{
 		Common::LockGuard lock(m_queue_mutex);
 		m_accepting = false;
@@ -60,6 +74,10 @@ void GuestGpu::Shutdown() {
 	}
 	if (m_thread.joinable()) {
 		m_thread.join();
+	}
+	if (m_sequencer) {
+		m_gfx_cp->DetachSequencer();
+		m_sequencer.reset();
 	}
 	m_shutdown_complete = true;
 }
@@ -443,6 +461,13 @@ void GuestGpu::Enqueue(Submission submission) {
 	EXIT_IF(!m_accepting);
 	submission.sequence = m_next_submission_sequence++;
 	m_in_flight.insert(submission.sequence);
+	if (m_sequencer != nullptr && submission.queue_id == 0 &&
+	    submission.type == SubmissionType::Commands) {
+		CpSeq::Intake intake;
+		intake.sequence = submission.sequence;
+		intake.commands = submission.commands;
+		m_sequencer->Admit(intake);
+	}
 	m_queues[submission.queue_id].push_back(std::move(submission));
 	m_submission_count++;
 	m_work_available.Signal();
@@ -579,8 +604,15 @@ bool GuestGpu::Process(Submission& submission) {
 
 	switch (submission.type) {
 		case SubmissionType::Commands:
-			complete =
-			    cp.Process(submission.execution, submission.commands) == Pm4ProcessResult::Complete;
+			if (cp.Sequenced() && submission.queue_id == 0) {
+				bool handoff = false;
+				complete     = cp.ResolveSubmission(submission.execution, submission.sequence,
+				                                    submission.commands,
+				                                    handoff) == Pm4ProcessResult::Complete;
+			} else {
+				complete = cp.Process(submission.execution, submission.commands) ==
+				           Pm4ProcessResult::Complete;
+			}
 			if (submission.execution.MadeProgress()) {
 				cp.BufferFlush();
 			}
@@ -630,6 +662,223 @@ void CommandProcessor::ProcessIndirectBuffer(std::span<const uint32_t> commands,
 void CommandProcessor::SuspendPm4() {
 	EXIT_IF(g_current_execution == nullptr);
 	g_current_execution->m_suspended = true;
+}
+
+void CommandProcessor::AttachSequencer(CpSeq::Sequencer* sequencer) {
+	m_sequencer = sequencer;
+	if (!m_ops) {
+		m_ops = std::make_unique<CpSeq::OpStream>(16u << 20u);
+	}
+	m_front_mode = FrontMode::Thread;
+}
+
+void CommandProcessor::DetachSequencer() {
+	m_sequencer = nullptr;
+	m_ops.reset();
+	m_front_mode = FrontMode::Direct;
+}
+
+void CommandProcessor::SetFrontMode(FrontMode mode) noexcept {
+	m_front_mode = mode;
+	if (m_front_mode != FrontMode::Direct && !m_ops) {
+		m_ops = std::make_unique<CpSeq::OpStream>(16u << 20u);
+	}
+}
+
+bool CommandProcessor::SequenceSubmission(const CpSeq::Intake& intake) {
+	if (m_sequencer == nullptr || m_front_mode != FrontMode::Thread) {
+		return false;
+	}
+	auto& sequencer = *m_sequencer;
+	if (intake.graphics && intake.frame_fence != 0) {
+		if (!sequencer.Wait([&] { return sequencer.Started() >= intake.sequence; })) {
+			return false;
+		}
+	}
+	if (intake.reset_processor) {
+		Reset();
+	}
+	CpSeq::StreamBeginOp begin;
+	begin.submission = intake.sequence;
+	m_ops->Emit(CpSeq::OpKind::StreamBegin, &begin, sizeof(begin), nullptr, 0, 0, 0, false);
+
+	if (!intake.graphics) {
+		CpSeq::StreamEndOp end;
+		end.submission = intake.sequence;
+		m_ops->Emit(CpSeq::OpKind::StreamEnd, &end, sizeof(end), nullptr, 0, 0, 0, false);
+		return true;
+	}
+
+	const bool handoff = !intake.constant_commands.empty();
+	if (handoff) {
+		CpSeq::HandoffOp op;
+		op.submission = intake.sequence;
+		m_ops->Emit(CpSeq::OpKind::Handoff, &op, sizeof(op), nullptr, 0, 0, 0, false);
+		if (!sequencer.Wait([&] { return sequencer.HandoffsDone() >= intake.sequence; })) {
+			return false;
+		}
+		return true;
+	}
+
+	Pm4Execution execution;
+	execution.m_buffer_stack.push_back({intake.commands});
+
+	struct ExecutionScope {
+		explicit ExecutionScope(Pm4Execution& execution) { g_current_execution = &execution; }
+		~ExecutionScope() { g_current_execution = nullptr; }
+	} execution_scope(execution);
+
+	while (!execution.m_buffer_stack.empty()) {
+		if (sequencer.Stopping()) {
+			return false;
+		}
+		ProcessPm4(execution);
+		if (execution.m_suspended) {
+			if (sequencer.Stopping()) {
+				return false;
+			}
+			std::this_thread::sleep_for(std::chrono::microseconds(50));
+			execution.m_suspended = false;
+		}
+	}
+
+	CpSeq::StreamEndOp end;
+	end.submission = intake.sequence;
+	m_ops->Emit(CpSeq::OpKind::StreamEnd, &end, sizeof(end), nullptr, 0, 0, 0, false);
+	return true;
+}
+
+Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, uint64_t submission,
+                                                     std::span<const uint32_t> commands,
+                                                     bool&                     handoff) {
+	KYTY_PROFILER_BLOCK("CommandProcessor::ResolveSubmission");
+	handoff                   = false;
+	execution.m_suspended     = false;
+	execution.m_made_progress = false;
+
+	if (m_sequencer == nullptr || !m_ops) {
+		return Process(execution, commands);
+	}
+
+	auto& sequencer = *m_sequencer;
+	sequencer.NoteStarted(submission);
+
+	struct ExecutionScope {
+		explicit ExecutionScope(Pm4Execution& execution) { g_current_execution = &execution; }
+		~ExecutionScope() { g_current_execution = nullptr; }
+	} execution_scope(execution);
+
+	const auto spin_us = Config::CpSequencerSpinUs();
+	for (;;) {
+		if (g_gpu_state != nullptr) {
+			g_gpu_state->ProcessCommands();
+		}
+		CpSeq::OpView view;
+		if (!m_ops->Peek(view)) {
+			bool       produced = false;
+			const auto start    = std::chrono::steady_clock::now();
+			while (static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+			                                 std::chrono::steady_clock::now() - start)
+			                                 .count()) < spin_us) {
+				if (m_ops->Peek(view)) {
+					produced = true;
+					break;
+				}
+#if defined(_M_X64) || defined(__x86_64__)
+				_mm_pause();
+#else
+				std::this_thread::yield();
+#endif
+			}
+			if (!produced) {
+				if (sequencer.Stopping()) {
+					return Pm4ProcessResult::Complete;
+				}
+				std::this_thread::yield();
+				if (!m_ops->Peek(view)) {
+					continue;
+				}
+			}
+		}
+
+		const auto kind = view.Kind();
+		const auto seq  = view.header != nullptr ? view.header->sequence : 0ull;
+
+		if (kind == CpSeq::OpKind::StreamBegin) {
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+		if (kind == CpSeq::OpKind::StreamEnd) {
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			return Pm4ProcessResult::Complete;
+		}
+		if (kind == CpSeq::OpKind::Handoff) {
+			handoff = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			const auto res = Process(execution, commands);
+			sequencer.NoteHandoffDone(submission);
+			return res;
+		}
+
+		if (kind == CpSeq::OpKind::WaitRegMem) {
+			const auto&    op   = view.As<CpSeq::WaitRegMemOp>();
+			const auto*    addr = reinterpret_cast<const volatile uint32_t*>(op.addr);
+			const uint32_t val  = addr != nullptr ? *addr : 0u;
+			sequencer.Answer(seq, val);
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DrawIndex) {
+			const auto&   op = view.As<CpSeq::DrawIndexOp>();
+			DrawIndexArgs args {};
+			args.index_count    = op.index_count;
+			args.base_vertex    = op.base_vertex;
+			args.first_instance = op.first_instance;
+			DrawIndex(args);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DrawIndirectMulti) {
+			const auto& op        = view.As<CpSeq::DrawIndirectOp>();
+			const auto* count_ptr = reinterpret_cast<const volatile uint32_t*>(op.count_addr);
+			IndirectDrawRegisters regs {};
+			DrawIndirectMulti(op.data_offset, op.max_count_or_count, count_ptr, op.stride, regs, 0,
+			                  (op.flags & CpSeq::IndirectFlagIndexed) != 0);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DispatchDirect) {
+			const auto& op = view.As<CpSeq::DispatchDirectOp>();
+			DispatchDirect(op.x, op.y, op.z, op.mode);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		if (kind == CpSeq::OpKind::DispatchIndirect) {
+			const auto& op = view.As<CpSeq::DispatchIndirectOp>();
+			DispatchIndirect(op.args_addr, op.mode);
+			execution.m_made_progress = true;
+			m_ops->Pop();
+			sequencer.NoteExecuted(seq + 1u);
+			continue;
+		}
+
+		m_ops->Pop();
+		sequencer.NoteExecuted(seq + 1u);
+	}
 }
 
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {

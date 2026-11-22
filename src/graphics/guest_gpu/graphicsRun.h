@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "common/uniqueFunction.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/command_processor/cpSequencer.h"
 
 #include <array>
 #include <atomic>
@@ -86,21 +87,22 @@ private:
 	std::atomic_uint32_t                           m_pending_commands {0};
 	// WaitForWork: the admission sequence numbers of submissions not yet completed, the next one to
 	// give, and the markers waited for; m_work_progress is signalled once the smallest is reached.
-	std::set<uint64_t>                             m_in_flight;
-	uint64_t                                       m_next_submission_sequence = 1;
-	std::multiset<uint64_t>                        m_work_waits;
-	Common::CondVar                                m_work_progress;
-	uint32_t                                       m_next_queue        = 0;
-	uint32_t                                       m_submission_count  = 0;
-	bool                                           m_processing        = false;
-	bool                                           m_accepting         = true;
-	bool                                           m_stopping          = false;
-	bool                                           m_shutdown_complete = false;
+	std::set<uint64_t>      m_in_flight;
+	uint64_t                m_next_submission_sequence = 1;
+	std::multiset<uint64_t> m_work_waits;
+	Common::CondVar         m_work_progress;
+	uint32_t                m_next_queue        = 0;
+	uint32_t                m_submission_count  = 0;
+	bool                    m_processing        = false;
+	bool                    m_accepting         = true;
+	bool                    m_stopping          = false;
+	bool                    m_shutdown_complete = false;
 	// Completion callbacks can outlive GuestGpu during renderer shutdown.
 	std::shared_ptr<std::binary_semaphore> m_suspend_point_ready =
 	    std::make_shared<std::binary_semaphore>(1);
 
 	std::unique_ptr<CommandProcessor>                                m_gfx_cp;
+	std::unique_ptr<CpSeq::Sequencer>                                m_sequencer;
 	std::array<std::unique_ptr<CommandProcessor>, ComputeQueueCount> m_compute_cp;
 
 	std::atomic_int m_done_num = 0;

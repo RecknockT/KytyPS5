@@ -118,6 +118,15 @@ std::atomic<uint64_t> g_baseline_priority_wait_spins {0};
 std::atomic<uint64_t> g_baseline_priority_wait_spin_hits {0};
 std::atomic<uint64_t> g_baseline_pending_ops_fast_skips {0};
 
+std::atomic<uint64_t> g_cp_sequencer_ops_emitted {0};
+std::atomic<uint64_t> g_cp_sequencer_lockstep_waits {0};
+std::atomic<uint64_t> g_cp_sequencer_snapshots_taken {0};
+std::atomic<uint64_t> g_cp_sequencer_waits_spin {0};
+std::atomic<uint64_t> g_baseline_cp_sequencer_ops_emitted {0};
+std::atomic<uint64_t> g_baseline_cp_sequencer_lockstep_waits {0};
+std::atomic<uint64_t> g_baseline_cp_sequencer_snapshots_taken {0};
+std::atomic<uint64_t> g_baseline_cp_sequencer_waits_spin {0};
+
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
 RipSlot    g_rip_table[RIP_TABLE_CAPACITY];
@@ -524,6 +533,14 @@ void StartCapture(const char* trigger_reason) {
 	    g_priority_wait_spin_hits.load(std::memory_order_relaxed), std::memory_order_relaxed);
 	g_baseline_pending_ops_fast_skips.store(
 	    g_pending_ops_fast_skips.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_cp_sequencer_ops_emitted.store(
+	    g_cp_sequencer_ops_emitted.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_cp_sequencer_lockstep_waits.store(
+	    g_cp_sequencer_lockstep_waits.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_cp_sequencer_snapshots_taken.store(
+	    g_cp_sequencer_snapshots_taken.load(std::memory_order_relaxed), std::memory_order_relaxed);
+	g_baseline_cp_sequencer_waits_spin.store(
+	    g_cp_sequencer_waits_spin.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -1086,6 +1103,8 @@ const char* GetPipelineStageName(PipelineStage stage) noexcept {
 		case PipelineStage::Submit: return "Submit";
 		case PipelineStage::SyncWaits: return "SyncWaits";
 		case PipelineStage::Present: return "Present";
+		case PipelineStage::DrawPrep: return "DrawPrep";
+		case PipelineStage::SequencerWait: return "SequencerWait";
 		default: return "Unknown";
 	}
 }
@@ -1341,6 +1360,30 @@ ProfileSnapshot TakeSnapshot() {
 	const auto base_skips = g_baseline_pending_ops_fast_skips.load(std::memory_order_relaxed);
 	snapshot.pending_ops_fast_skips =
 	    (cur_skips >= base_skips) ? (cur_skips - base_skips) : cur_skips;
+
+	snapshot.cp_sequencer_enabled = Config::CpSequencerEnabled();
+
+	const auto cur_cp_ops  = g_cp_sequencer_ops_emitted.load(std::memory_order_relaxed);
+	const auto base_cp_ops = g_baseline_cp_sequencer_ops_emitted.load(std::memory_order_relaxed);
+	snapshot.cp_sequencer_ops_emitted =
+	    (cur_cp_ops >= base_cp_ops) ? (cur_cp_ops - base_cp_ops) : cur_cp_ops;
+
+	const auto cur_cp_waits = g_cp_sequencer_lockstep_waits.load(std::memory_order_relaxed);
+	const auto base_cp_waits =
+	    g_baseline_cp_sequencer_lockstep_waits.load(std::memory_order_relaxed);
+	snapshot.cp_sequencer_lockstep_waits =
+	    (cur_cp_waits >= base_cp_waits) ? (cur_cp_waits - base_cp_waits) : cur_cp_waits;
+
+	const auto cur_cp_snaps = g_cp_sequencer_snapshots_taken.load(std::memory_order_relaxed);
+	const auto base_cp_snaps =
+	    g_baseline_cp_sequencer_snapshots_taken.load(std::memory_order_relaxed);
+	snapshot.cp_sequencer_snapshots_taken =
+	    (cur_cp_snaps >= base_cp_snaps) ? (cur_cp_snaps - base_cp_snaps) : cur_cp_snaps;
+
+	const auto cur_cp_spins  = g_cp_sequencer_waits_spin.load(std::memory_order_relaxed);
+	const auto base_cp_spins = g_baseline_cp_sequencer_waits_spin.load(std::memory_order_relaxed);
+	snapshot.cp_sequencer_waits_spin =
+	    (cur_cp_spins >= base_cp_spins) ? (cur_cp_spins - base_cp_spins) : cur_cp_spins;
 
 	// Frametimes calculation across the captured window
 	const auto total_recorded_frames = g_captured_frame_count.load(std::memory_order_relaxed);
@@ -1936,6 +1979,11 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"priority_wait_spins", snap.priority_wait_spins},
 	    {"priority_wait_spin_hits", snap.priority_wait_spin_hits},
 	    {"pending_ops_fast_skips", snap.pending_ops_fast_skips},
+	    {"cp_sequencer_enabled", snap.cp_sequencer_enabled},
+	    {"cp_sequencer_ops_emitted", snap.cp_sequencer_ops_emitted},
+	    {"cp_sequencer_lockstep_waits", snap.cp_sequencer_lockstep_waits},
+	    {"cp_sequencer_snapshots_taken", snap.cp_sequencer_snapshots_taken},
+	    {"cp_sequencer_waits_spin", snap.cp_sequencer_waits_spin},
 	};
 
 	nlohmann::json waits_json = nlohmann::json::object();
@@ -2301,6 +2349,13 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Optimization,PriorityWaitSpins,{}\n", snap.priority_wait_spins);
 	out << fmt::format("Optimization,PriorityWaitSpinHits,{}\n", snap.priority_wait_spin_hits);
 	out << fmt::format("Optimization,PendingOpsFastSkips,{}\n", snap.pending_ops_fast_skips);
+	out << fmt::format("Optimization,CpSequencerEnabled,{}\n", snap.cp_sequencer_enabled ? 1 : 0);
+	out << fmt::format("Optimization,CpSequencerOpsEmitted,{}\n", snap.cp_sequencer_ops_emitted);
+	out << fmt::format("Optimization,CpSequencerLockstepWaits,{}\n",
+	                   snap.cp_sequencer_lockstep_waits);
+	out << fmt::format("Optimization,CpSequencerSnapshotsTaken,{}\n",
+	                   snap.cp_sequencer_snapshots_taken);
+	out << fmt::format("Optimization,CpSequencerWaitsSpin,{}\n", snap.cp_sequencer_waits_spin);
 
 	out << fmt::format("PhaseLoading,FrameCount,{}\n", snap.phase_loading.frame_count);
 	out << fmt::format("PhaseLoading,TotalFrameMs,{:.2f}\n", snap.phase_loading.total_frame_ms);
@@ -2459,6 +2514,22 @@ void CountPriorityWaitSpinHit() noexcept {
 
 void CountPendingOpsFastSkip() noexcept {
 	g_pending_ops_fast_skips.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordCpSequencerOpEmitted() noexcept {
+	g_cp_sequencer_ops_emitted.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordCpSequencerLockstepWait() noexcept {
+	g_cp_sequencer_lockstep_waits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordCpSequencerSnapshot() noexcept {
+	g_cp_sequencer_snapshots_taken.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordCpSequencerWaitSpin() noexcept {
+	g_cp_sequencer_waits_spin.fetch_add(1, std::memory_order_relaxed);
 }
 
 } // namespace Common::AuditProfiler

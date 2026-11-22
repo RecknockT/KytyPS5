@@ -53,6 +53,7 @@ ctest --test-dir _Build/windows --output-on-failure -R "^(audit_profiler|stream_
 | **Descriptor Cache** (Etapa 8.1) | `--descriptor-cache` | `--no-descriptor-cache` | **Activado** |
 | **Fast Pending Operations** (Etapa 8.4) | `--fast-pending-ops` | `--no-fast-pending-ops` | **Activado** |
 | **Priority Spin Wait** (Etapa 8.4) | `--priority-spin-wait` | `--no-priority-spin-wait` | **Activado** (100 µs) |
+| **CP Sequencer** (Etapa 8.4B) | `--cp-sequencer` | `--no-cp-sequencer` | **Desactivado** (experimental) |
 | **Extended Stream Buffer** (256 MiB) | `--extended-stream-buffer` | (omitir) | **Desactivado** (64 MiB estándar) |
 
 Para documentación detallada de cada etapa, consulte la carpeta [`docs/performance/`](file:///C:/Users/Recko/Documents/github/kyty/docs/performance/).

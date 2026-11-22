@@ -140,6 +140,12 @@ static void PrintUsage() {
 	         "condition variable.\n");
 	::printf("  --priority-spin-duration-us <u>      Maximum duration in microseconds to spin "
 	         "(default: 100).\n");
+	::printf("  --cp-sequencer                       Decoupled PM4 packet sequencer and op stream "
+	         "(default: off, experimental).\n");
+	::printf("  --no-cp-sequencer                    Disable decoupled PM4 packet sequencer.\n");
+	::printf(
+	    "  --cp-sequencer-spin-us <u>           Maximum duration in microseconds for sequencer to "
+	    "spin (default: 200).\n");
 	::printf(
 	    "  --batch-hot-readbacks                When a fault readback waits for the GPU, also "
 	    "read\n"
@@ -359,6 +365,8 @@ static constexpr Flag FLAGS[] = {
     {"--no-fast-pending-ops", &ConfigOptions::fast_pending_ops_enabled, false},
     {"--priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, true},
     {"--no-priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, false},
+    {"--cp-sequencer", &ConfigOptions::cp_sequencer_enabled, true},
+    {"--no-cp-sequencer", &ConfigOptions::cp_sequencer_enabled, false},
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     {"--redzone", &ConfigOptions::red_zone_protection_enabled},
 #endif
@@ -603,6 +611,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--priority-spin-duration-us") {
 			if (!ParseUint32(value, options.config.priority_spin_duration_us)) {
 				::printf("invalid priority spin duration us: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--cp-sequencer-spin-us") {
+			if (!ParseUint32(value, options.config.cp_sequencer_spin_us)) {
+				::printf("invalid cp sequencer spin duration us: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--keymap") {

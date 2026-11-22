@@ -117,6 +117,8 @@ struct ConfigOptions {
 	bool     fast_pending_ops_enabled       = true;
 	bool     priority_spin_wait_enabled     = true;
 	uint32_t priority_spin_duration_us      = 100;
+	bool     cp_sequencer_enabled           = false;
+	uint32_t cp_sequencer_spin_us           = 200;
 	uint32_t flush_draws                    = 0; // 0 is off
 	bool     tessellation_enabled           = false;
 	bool     occlusion_queries_enabled      = false;
@@ -254,6 +256,8 @@ bool               DiagnosticSkipWaterPassEnabled();
 bool               FastPendingOpsEnabled();
 bool               PrioritySpinWaitEnabled();
 uint32_t           PrioritySpinDurationUs();
+bool               CpSequencerEnabled();
+uint32_t           CpSequencerSpinUs();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();

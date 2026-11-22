@@ -144,6 +144,8 @@ enum class PipelineStage : uint32_t {
 	Submit,              ///< vkQueueSubmit in CommandScheduler::Submit
 	SyncWaits,           ///< Timeline semaphore / MasterSemaphore wait
 	Present,             ///< Swapchain presentation (vkQueuePresentKHR)
+	DrawPrep,            ///< Draw-prep parallel / inline snapshot and state preparation
+	SequencerWait,       ///< CP sequencer wait on resolver progress / answer
 	Count
 };
 
@@ -317,6 +319,11 @@ struct ProfileSnapshot {
 	uint64_t priority_wait_spins          = 0;
 	uint64_t priority_wait_spin_hits      = 0;
 	uint64_t pending_ops_fast_skips       = 0;
+	bool     cp_sequencer_enabled         = false;
+	uint64_t cp_sequencer_ops_emitted     = 0;
+	uint64_t cp_sequencer_lockstep_waits  = 0;
+	uint64_t cp_sequencer_snapshots_taken = 0;
+	uint64_t cp_sequencer_waits_spin      = 0;
 
 	// Frametime metrics (in milliseconds, calculated over all frames of the captured window)
 	double   p50_frame_ms  = 0.0;
@@ -548,6 +555,12 @@ void RecordSignificantWait(GpuWaitReason reason, uint32_t caller_id, const char*
                            uint64_t wait_ns, uint64_t tick_req, uint64_t tick_done,
                            uint64_t address = 0, uint64_t size = 0) noexcept;
 void RecordWaterDraw() noexcept;
+
+/// Stage 8.4B additions: CP Sequencer and PM4 Parallelization telemetry
+void RecordCpSequencerOpEmitted() noexcept;
+void RecordCpSequencerLockstepWait() noexcept;
+void RecordCpSequencerSnapshot() noexcept;
+void RecordCpSequencerWaitSpin() noexcept;
 
 /// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
 class ScopedStageTimer {

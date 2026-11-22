@@ -3,17 +3,25 @@
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "graphics/guest_gpu/command_processor/cpOps.h"
+#include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pssr.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
 
 namespace Libs::Graphics {
+
+namespace CpSeq {
+class Sequencer;
+struct Intake;
+} // namespace CpSeq
 
 bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t func);
 
@@ -52,7 +60,7 @@ private:
 	bool                      m_made_progress = false;
 };
 
-class CommandProcessor {
+class CommandProcessor: public CpSeq::ISubmissionSequencer {
 public:
 	CommandProcessor(RenderContext& renderer, int interrupt_event_id)
 	    : m_renderer(renderer), m_interrupt_event_id(interrupt_event_id) {}
@@ -119,6 +127,19 @@ public:
 	Pm4ProcessResult Process(Pm4Execution& execution, std::span<const uint32_t> commands);
 	void             ProcessIndirectBuffer(std::span<const uint32_t> commands, bool chain);
 
+	enum class FrontMode : uint8_t { Direct, Inline, Thread };
+
+	void                           AttachSequencer(CpSeq::Sequencer* sequencer);
+	void                           DetachSequencer();
+	[[nodiscard]] bool             Sequenced() const noexcept { return m_sequencer != nullptr; }
+	[[nodiscard]] FrontMode        GetFrontMode() const noexcept { return m_front_mode; }
+	void                           SetFrontMode(FrontMode mode) noexcept;
+	[[nodiscard]] CpSeq::OpStream* GetOpStream() noexcept { return m_ops.get(); }
+
+	[[nodiscard]] bool SequenceSubmission(const CpSeq::Intake& intake) override;
+	Pm4ProcessResult   ResolveSubmission(Pm4Execution& execution, uint64_t submission,
+	                                     std::span<const uint32_t> commands, bool& handoff);
+
 	[[nodiscard]] bool IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
 private:
@@ -153,6 +174,10 @@ private:
 	uint32_t       m_draws                       = 0; // Since the buffer start or CountDraw's flush
 	uint64_t       m_synthetic_occlusion_counter = 0;
 	bool           m_predicate_skip              = false;
+
+	FrontMode                        m_front_mode = FrontMode::Direct;
+	CpSeq::Sequencer*                m_sequencer  = nullptr;
+	std::unique_ptr<CpSeq::OpStream> m_ops;
 };
 
 } // namespace Libs::Graphics

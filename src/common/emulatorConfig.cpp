@@ -394,6 +394,14 @@ uint32_t PrioritySpinDurationUs() {
 	return g_config != nullptr ? g_config->priority_spin_duration_us : 100;
 }
 
+bool CpSequencerEnabled() {
+	return g_config != nullptr ? g_config->cp_sequencer_enabled : false;
+}
+
+uint32_t CpSequencerSpinUs() {
+	return g_config != nullptr ? g_config->cp_sequencer_spin_us : 200;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;

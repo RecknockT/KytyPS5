@@ -792,6 +792,8 @@ TEST_F(AuditProfilerTest, RecordsPipelineStagesAccurately) {
 	RecordPipelineStage(PipelineStage::Submit, 7000);
 	RecordPipelineStage(PipelineStage::SyncWaits, 12000);
 	RecordPipelineStage(PipelineStage::Present, 8000);
+	RecordPipelineStage(PipelineStage::DrawPrep, 4500);
+	RecordPipelineStage(PipelineStage::SequencerWait, 2500);
 
 	RecordFrame(16.6);
 
@@ -803,10 +805,16 @@ TEST_F(AuditProfilerTest, RecordsPipelineStagesAccurately) {
 	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Dispatch)].total_ns, 5000u);
 	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SyncWaits)].count, 1u);
 	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SyncWaits)].total_ns, 12000u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::DrawPrep)].count, 1u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::DrawPrep)].total_ns, 4500u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SequencerWait)].count, 1u);
+	EXPECT_EQ(snap.pipeline_stages[static_cast<size_t>(PipelineStage::SequencerWait)].total_ns, 2500u);
 
 	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Pm4Decode), "Pm4Decode");
 	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Submit), "Submit");
 	EXPECT_STREQ(GetPipelineStageName(PipelineStage::Present), "Present");
+	EXPECT_STREQ(GetPipelineStageName(PipelineStage::DrawPrep), "DrawPrep");
+	EXPECT_STREQ(GetPipelineStageName(PipelineStage::SequencerWait), "SequencerWait");
 
 	StopCapture(CaptureState::Completed);
 }
