@@ -74,8 +74,13 @@ public:
 	                               const std::function<bool()>& wait_for_space);
 
 	// Resolver execution
-	[[nodiscard]] bool CommitPublished(uint64_t position, PreparedDraw& out_prepared);
-	void               Drain();
+	[[nodiscard]] bool     CommitPublished(uint64_t position, PreparedDraw& out_prepared);
+	void                   Drain();
+	[[nodiscard]] uint32_t GetQueueDepth() const noexcept {
+		const auto head = m_head.load(std::memory_order_acquire);
+		const auto tail = m_tail.load(std::memory_order_relaxed);
+		return (tail >= head) ? static_cast<uint32_t>(tail - head) : 0u;
+	}
 
 	// Telemetry totals
 	struct Stats {

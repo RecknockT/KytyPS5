@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/meshSlices.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -900,7 +901,8 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	    Common::AuditProfiler::PipelineStage::RenderStatePrep);
 
 	m_context.GetImageHeap().BeginDraw();
-	m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state);
+	const auto* prepared = TakePreparedDraw();
+	m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state, prepared);
 	// Vertex programs the host cannot run are not compiled.
 	if (state.vertex_info[0].stage.module == nullptr) {
 		return false;
@@ -1545,7 +1547,9 @@ bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args)
 
 	DrawRenderState state {.indirect_offsets = args.indirect.offsets,
 	                       .indirect_draw    = args.indirect.address != 0};
-	if (!GetDrawTopology(ucfg, state.topology)) {
+	if (m_prepared_draw != nullptr && m_prepared_draw->valid) {
+		state.topology = m_prepared_draw->render_state.topology;
+	} else if (!GetDrawTopology(ucfg, state.topology)) {
 		return true;
 	}
 
@@ -1634,7 +1638,9 @@ bool RenderExecutor::DrawAuto(CommandBuffer& buffer, const DrawAutoArgs& args) {
 
 	DrawRenderState state {.indirect_offsets = args.indirect.offsets,
 	                       .indirect_draw    = args.indirect.address != 0};
-	if (!GetDrawTopology(ucfg, state.topology)) {
+	if (m_prepared_draw != nullptr && m_prepared_draw->valid) {
+		state.topology = m_prepared_draw->render_state.topology;
+	} else if (!GetDrawTopology(ucfg, state.topology)) {
 		ResetBindings();
 		return true;
 	}

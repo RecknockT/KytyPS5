@@ -131,10 +131,14 @@ std::atomic<uint64_t> g_draw_prep_published {0};
 std::atomic<uint64_t> g_draw_prep_prepared {0};
 std::atomic<uint64_t> g_draw_prep_committed {0};
 std::atomic<uint64_t> g_draw_prep_fallback {0};
+std::atomic<uint64_t> g_draw_prep_avoided {0};
+std::atomic<uint64_t> g_draw_prep_avoided_time_ns {0};
 std::atomic<uint64_t> g_baseline_draw_prep_published {0};
 std::atomic<uint64_t> g_baseline_draw_prep_prepared {0};
 std::atomic<uint64_t> g_baseline_draw_prep_committed {0};
 std::atomic<uint64_t> g_baseline_draw_prep_fallback {0};
+std::atomic<uint64_t> g_baseline_draw_prep_avoided {0};
+std::atomic<uint64_t> g_baseline_draw_prep_avoided_time_ns {0};
 
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
@@ -475,6 +479,29 @@ void Reset() {
 	// Stage 8 additions: Reset Trace event cursor
 	g_trace_event_cursor.store(0, std::memory_order_relaxed);
 
+	// Stage 8.4B/C/E additions: Reset CP Sequencer and DrawPrep telemetry
+	g_cp_sequencer_ops_emitted.store(0, std::memory_order_relaxed);
+	g_cp_sequencer_lockstep_waits.store(0, std::memory_order_relaxed);
+	g_cp_sequencer_snapshots_taken.store(0, std::memory_order_relaxed);
+	g_cp_sequencer_waits_spin.store(0, std::memory_order_relaxed);
+	g_baseline_cp_sequencer_ops_emitted.store(0, std::memory_order_relaxed);
+	g_baseline_cp_sequencer_lockstep_waits.store(0, std::memory_order_relaxed);
+	g_baseline_cp_sequencer_snapshots_taken.store(0, std::memory_order_relaxed);
+	g_baseline_cp_sequencer_waits_spin.store(0, std::memory_order_relaxed);
+
+	g_draw_prep_published.store(0, std::memory_order_relaxed);
+	g_draw_prep_prepared.store(0, std::memory_order_relaxed);
+	g_draw_prep_committed.store(0, std::memory_order_relaxed);
+	g_draw_prep_fallback.store(0, std::memory_order_relaxed);
+	g_draw_prep_avoided.store(0, std::memory_order_relaxed);
+	g_draw_prep_avoided_time_ns.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_published.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_prepared.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_committed.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_fallback.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_avoided.store(0, std::memory_order_relaxed);
+	g_baseline_draw_prep_avoided_time_ns.store(0, std::memory_order_relaxed);
+
 	{
 		std::lock_guard<std::mutex> lock(g_frame_timeseries_mutex);
 		g_frame_timeseries.clear();
@@ -558,6 +585,10 @@ void StartCapture(const char* trigger_reason) {
 	                                     std::memory_order_relaxed);
 	g_baseline_draw_prep_fallback.store(g_draw_prep_fallback.load(std::memory_order_relaxed),
 	                                    std::memory_order_relaxed);
+	g_baseline_draw_prep_avoided.store(g_draw_prep_avoided.load(std::memory_order_relaxed),
+	                                   std::memory_order_relaxed);
+	g_baseline_draw_prep_avoided_time_ns.store(
+	    g_draw_prep_avoided_time_ns.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -1426,6 +1457,26 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.draw_prep_fallback =
 	    (cur_dp_fall >= base_dp_fall) ? (cur_dp_fall - base_dp_fall) : cur_dp_fall;
 
+	const auto cur_dp_avd  = g_draw_prep_avoided.load(std::memory_order_relaxed);
+	const auto base_dp_avd = g_baseline_draw_prep_avoided.load(std::memory_order_relaxed);
+	snapshot.draw_prep_avoided =
+	    (cur_dp_avd >= base_dp_avd) ? (cur_dp_avd - base_dp_avd) : cur_dp_avd;
+
+	const auto cur_dp_avd_ns = g_draw_prep_avoided_time_ns.load(std::memory_order_relaxed);
+	const auto base_dp_avd_ns =
+	    g_baseline_draw_prep_avoided_time_ns.load(std::memory_order_relaxed);
+	snapshot.draw_prep_avoided_time_ns =
+	    (cur_dp_avd_ns >= base_dp_avd_ns) ? (cur_dp_avd_ns - base_dp_avd_ns) : cur_dp_avd_ns;
+
+	if (snapshot.draw_prep_committed > 0) {
+		const auto total_req = snapshot.draw_prep_committed;
+		const auto avoided   = std::min(snapshot.draw_prep_avoided, total_req);
+		snapshot.draw_prep_duplication_pct =
+		    (1.0 - (static_cast<double>(avoided) / static_cast<double>(total_req))) * 100.0;
+	} else {
+		snapshot.draw_prep_duplication_pct = 0.0;
+	}
+
 	// Frametimes calculation across the captured window
 	const auto total_recorded_frames = g_captured_frame_count.load(std::memory_order_relaxed);
 	snapshot.total_frames            = total_recorded_frames;
@@ -2025,6 +2076,14 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"cp_sequencer_lockstep_waits", snap.cp_sequencer_lockstep_waits},
 	    {"cp_sequencer_snapshots_taken", snap.cp_sequencer_snapshots_taken},
 	    {"cp_sequencer_waits_spin", snap.cp_sequencer_waits_spin},
+	    {"draw_prep_enabled", snap.draw_prep_enabled},
+	    {"draw_prep_published", snap.draw_prep_published},
+	    {"draw_prep_prepared", snap.draw_prep_prepared},
+	    {"draw_prep_committed", snap.draw_prep_committed},
+	    {"draw_prep_fallback", snap.draw_prep_fallback},
+	    {"draw_prep_avoided", snap.draw_prep_avoided},
+	    {"draw_prep_avoided_time_ms", static_cast<double>(snap.draw_prep_avoided_time_ns) / 1e6},
+	    {"draw_prep_duplication_pct", snap.draw_prep_duplication_pct},
 	};
 
 	nlohmann::json waits_json = nlohmann::json::object();
@@ -2397,6 +2456,16 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Optimization,CpSequencerSnapshotsTaken,{}\n",
 	                   snap.cp_sequencer_snapshots_taken);
 	out << fmt::format("Optimization,CpSequencerWaitsSpin,{}\n", snap.cp_sequencer_waits_spin);
+	out << fmt::format("Optimization,DrawPrepEnabled,{}\n", snap.draw_prep_enabled ? 1 : 0);
+	out << fmt::format("Optimization,DrawPrepPublished,{}\n", snap.draw_prep_published);
+	out << fmt::format("Optimization,DrawPrepPrepared,{}\n", snap.draw_prep_prepared);
+	out << fmt::format("Optimization,DrawPrepCommitted,{}\n", snap.draw_prep_committed);
+	out << fmt::format("Optimization,DrawPrepFallback,{}\n", snap.draw_prep_fallback);
+	out << fmt::format("Optimization,DrawPrepAvoided,{}\n", snap.draw_prep_avoided);
+	out << fmt::format("Optimization,DrawPrepAvoidedTimeMs,{:.3f}\n",
+	                   static_cast<double>(snap.draw_prep_avoided_time_ns) / 1e6);
+	out << fmt::format("Optimization,DrawPrepDuplicationPct,{:.1f}%\n",
+	                   snap.draw_prep_duplication_pct);
 
 	out << fmt::format("PhaseLoading,FrameCount,{}\n", snap.phase_loading.frame_count);
 	out << fmt::format("PhaseLoading,TotalFrameMs,{:.2f}\n", snap.phase_loading.total_frame_ms);
@@ -2587,6 +2656,13 @@ void RecordDrawPrepCommitted() noexcept {
 
 void RecordDrawPrepFallback() noexcept {
 	g_draw_prep_fallback.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordDrawPrepAvoided(uint64_t ns) noexcept {
+	g_draw_prep_avoided.fetch_add(1, std::memory_order_relaxed);
+	if (ns > 0) {
+		g_draw_prep_avoided_time_ns.fetch_add(ns, std::memory_order_relaxed);
+	}
 }
 
 } // namespace Common::AuditProfiler

@@ -331,6 +331,9 @@ struct ProfileSnapshot {
 	uint64_t draw_prep_prepared           = 0;
 	uint64_t draw_prep_committed          = 0;
 	uint64_t draw_prep_fallback           = 0;
+	uint64_t draw_prep_avoided            = 0;
+	uint64_t draw_prep_avoided_time_ns    = 0;
+	double   draw_prep_duplication_pct    = 0.0;
 
 	// Frametime metrics (in milliseconds, calculated over all frames of the captured window)
 	double   p50_frame_ms  = 0.0;
@@ -574,6 +577,7 @@ void RecordDrawPrepPublished() noexcept;
 void RecordDrawPrepPrepared() noexcept;
 void RecordDrawPrepCommitted() noexcept;
 void RecordDrawPrepFallback() noexcept;
+void RecordDrawPrepAvoided(uint64_t ns = 0) noexcept;
 
 /// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
 class ScopedStageTimer {

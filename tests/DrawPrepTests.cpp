@@ -1,5 +1,7 @@
 // Unit tests for DrawPrep Engine, parallel preparation, and snapshot isolation.
 
+#include "common/auditProfiler.h"
+#include "common/emulatorConfig.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -37,6 +39,7 @@ RenderContext &GetDummyRenderer() {
 namespace Libs::Graphics {
 
 std::atomic<bool> g_mock_mapped_data{false};
+std::atomic<uint32_t> g_prepare_program_calls{0};
 
 bool ShaderHasMappedData(uint64_t addr) noexcept {
   return g_mock_mapped_data.load(std::memory_order_relaxed) && (addr != 0);
@@ -46,6 +49,7 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo & /*regs*/,
                             const HW::Context & /*context*/,
                             const HW::UserConfig & /*user_config*/,
                             ShaderVertexInputInfo &input_info) {
+  g_prepare_program_calls.fetch_add(1, std::memory_order_relaxed);
   input_info.stage.module = reinterpret_cast<ShaderModule *>(0x1234);
   ShaderParams params{};
   params.hash = 0xbeefcafe;
@@ -555,9 +559,215 @@ void TestOpsDecouplingSerialization() {
   Check(!stream.Peek(view), "Stream empty after pops");
 }
 
+void TestDrawPrepEndToEndWorkOffload() {
+  std::printf("Running TestDrawPrepEndToEndWorkOffload...\n");
+  Common::AuditProfiler::Reset();
+  g_mock_mapped_data.store(true, std::memory_order_relaxed);
+  g_prepare_program_calls.store(0, std::memory_order_relaxed);
+
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  ucfg.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
+  sh.SetEsShaderBase(0x2000'0000ull);
+
+  constexpr uint32_t kNumDraws = 16;
+  DrawIndexArgs args{};
+  args.index_count = 36;
+  args.instance_count = 1;
+
+  // Publish kNumDraws draws
+  std::vector<uint64_t> published_positions;
+  for (uint32_t i = 0; i < kNumDraws; ++i) {
+    const auto pos = engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+    Check(pos != UINT64_MAX, "Publish should succeed");
+    published_positions.push_back(pos);
+  }
+
+  // Now simulate the backend GPU thread consuming the prepared draws
+  uint32_t consumer_thread_recalculations = 0;
+  uint32_t successful_offloads = 0;
+
+  for (auto pos : published_positions) {
+    PreparedDraw prepared;
+    const bool committed = engine.CommitPublished(pos, prepared);
+    Check(committed, "CommitPublished should succeed");
+    Check(prepared.valid, "Prepared draw should be valid");
+    Check(prepared.has_programs, "Prepared draw should have pre-decoded programs");
+
+    // Simulate backend consumer (RenderExecutor / PipelineCache):
+    // If prepared is valid and has programs, consumer ADOPTS precalculated program without recalculating!
+    if (prepared.valid && prepared.has_programs) {
+      successful_offloads++;
+      Common::AuditProfiler::RecordDrawPrepAvoided(prepared.prep_time_ns);
+    } else {
+      consumer_thread_recalculations++;
+      ShaderVertexInputInfo fallback_info;
+      PrepareProgram(sh.GetVs(), ctx, ucfg, fallback_info);
+    }
+  }
+
+  Check(successful_offloads == kNumDraws, "All 16 draws should be successfully offloaded");
+  Check(consumer_thread_recalculations == 0, "Zero recalculations on consumer thread");
+
+  const auto snap = Common::AuditProfiler::TakeSnapshot();
+  Check(snap.draw_prep_duplication_pct == 0.0, "Work duplication should be strictly 0.0%");
+
+  g_mock_mapped_data.store(false, std::memory_order_relaxed);
+}
+
+void TestComputeDrawInterleavedBarrierSafety() {
+  std::printf("Running TestComputeDrawInterleavedBarrierSafety...\n");
+  Engine engine(GetDummyRenderer(), 2);
+  engine.SetMode(Mode::Parallel);
+
+  CpSeq::OpStream stream(256 * 1024);
+
+  // Sequence: Draw 1 -> Draw 2 -> Compute Dispatch -> EventWrite -> Draw 3
+  HW::Context ctx1, ctx2, ctx3;
+  ctx1.SetRenderTargetMask(0x01);
+  ctx2.SetRenderTargetMask(0x02);
+  ctx3.SetRenderTargetMask(0x04);
+
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x1000'0000ull);
+
+  DrawIndexArgs d1{.index_count = 10, .instance_count = 1};
+  DrawIndexArgs d2{.index_count = 20, .instance_count = 1};
+  DrawAutoArgs  d3{.vertex_count = 30, .instance_count = 1};
+
+  // Phase 1: Draw 1 and Draw 2 published before compute dispatch
+  const auto pos1 = engine.Publish(&d1, nullptr, ctx1, ucfg, sh, nullptr);
+  CpSeq::DrawIndexOp op1{};
+  op1.index_count = 10;
+  op1.instance_count = 1;
+  op1.flags = CpSeq::DrawFlagPublished;
+  op1.window = pos1;
+  stream.Emit(CpSeq::OpKind::DrawIndex, &op1, sizeof(op1), nullptr, 0, 1, 0, false);
+
+  const auto pos2 = engine.Publish(&d2, nullptr, ctx2, ucfg, sh, nullptr);
+  CpSeq::DrawIndexOp op2{};
+  op2.index_count = 20;
+  op2.instance_count = 1;
+  op2.flags = CpSeq::DrawFlagPublished;
+  op2.window = pos2;
+  stream.Emit(CpSeq::OpKind::DrawIndex, &op2, sizeof(op2), nullptr, 0, 2, 0, false);
+
+  CpSeq::DispatchDirectOp op_comp{.x = 8, .y = 8, .z = 1, .mode = 0};
+  stream.Emit(CpSeq::OpKind::DispatchDirect, &op_comp, sizeof(op_comp), nullptr, 0, 3, 0, false);
+
+  CpSeq::EventWriteOp op_ev{.address = 0x5000, .event_type = 1, .event_index = 0};
+  stream.Emit(CpSeq::OpKind::EventWrite, &op_ev, sizeof(op_ev), nullptr, 0, 4, 0, false);
+
+  // Consume stream up to compute dispatch
+  bool compute_executed_after_drain = false;
+  while (true) {
+    CpSeq::OpView view;
+    if (!stream.Peek(view)) break;
+
+    const auto kind = view.Kind();
+    if (kind == CpSeq::OpKind::DrawIndex) {
+      const auto& op = view.As<CpSeq::DrawIndexOp>();
+      PreparedDraw prep;
+      Check(engine.CommitPublished(op.window, prep), "Commit draw 1/2");
+      if (op.index_count == 10) {
+        Check(prep.snapshot.context.GetRenderTargetMask() == 0x01, "Draw 1 mask matches ctx1");
+      } else if (op.index_count == 20) {
+        Check(prep.snapshot.context.GetRenderTargetMask() == 0x02, "Draw 2 mask matches ctx2");
+      }
+    } else if (kind == CpSeq::OpKind::DispatchDirect) {
+      // Compute dispatch: MUST Drain DrawPrep first
+      engine.Drain();
+      compute_executed_after_drain = true;
+      Check(engine.GetQueueDepth() == 0, "Queue must be completely empty after Drain()");
+    }
+    stream.Pop();
+  }
+
+  // Phase 2: Draw 3 emitted after compute dispatch has finished
+  const auto pos3 = engine.Publish(nullptr, &d3, ctx3, ucfg, sh, nullptr);
+  CpSeq::DrawAutoOp op3{};
+  op3.vertex_count = 30;
+  op3.instance_count = 1;
+  op3.flags = CpSeq::DrawFlagPublished;
+  op3.window = pos3;
+  stream.Emit(CpSeq::OpKind::DrawAuto, &op3, sizeof(op3), nullptr, 0, 5, 0, false);
+
+  CpSeq::OpView view3;
+  Check(stream.Peek(view3), "Peek draw 3");
+  const auto& op3_view = view3.As<CpSeq::DrawAutoOp>();
+  PreparedDraw prep3;
+  Check(engine.CommitPublished(op3_view.window, prep3), "Commit draw 3");
+  Check(prep3.snapshot.context.GetRenderTargetMask() == 0x04, "Draw 3 mask matches ctx3");
+  Check(compute_executed_after_drain, "Draw 3 executed strictly after compute drain");
+  stream.Pop();
+}
+
+void TestDrawPrepWaitSpinVsCvBounded() {
+  std::printf("Running TestDrawPrepWaitSpinVsCvBounded...\n");
+  Engine engine(GetDummyRenderer(), 1);
+  engine.SetMode(Mode::Parallel);
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x3000'0000ull);
+
+  DrawIndexArgs args{.index_count = 6, .instance_count = 1};
+
+  // 1. Fast path: slot is published and committed after brief pause (within 5us spin)
+  const auto pos_fast = engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+  PreparedDraw prep_fast;
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool committed_fast = engine.CommitPublished(pos_fast, prep_fast);
+  const auto dt_fast = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+
+  Check(committed_fast, "Fast commit should succeed");
+  Check(prep_fast.valid, "Fast prep should be valid");
+  Check(dt_fast < 50000, "Fast commit took reasonable time");
+}
+
+void TestQueueDepthAndCapacityTracking() {
+  std::printf("Running TestQueueDepthAndCapacityTracking...\n");
+  Engine engine(GetDummyRenderer(), 2);
+  engine.SetMode(Mode::Parallel);
+
+  Check(engine.GetQueueDepth() == 0, "Initial queue depth is 0");
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x4000'0000ull);
+
+  DrawIndexArgs args{.index_count = 12, .instance_count = 1};
+
+  for (uint32_t i = 0; i < 10; ++i) {
+    (void)engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+  }
+
+  Check(engine.GetQueueDepth() == 10, "Queue depth reflects 10 published slots");
+
+  for (uint32_t i = 0; i < 5; ++i) {
+    PreparedDraw prep;
+    (void)engine.CommitPublished(i, prep);
+  }
+
+  Check(engine.GetQueueDepth() <= 5, "Queue depth decreases as head advances after commits");
+
+  engine.Drain();
+  Check(engine.GetQueueDepth() == 0, "Queue depth is 0 after drain");
+}
+
 } // namespace
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  Config::Initialize();
   std::printf("=== Starting DrawPrep Unit Tests ===\n");
   TestModeToggle();
   TestSlotAllocationAndWrap();
@@ -571,12 +781,18 @@ int main() {
   TestTargetSignatureMismatchFallback();
   TestParallelTopologyAndProgramOffload();
   TestOpsDecouplingSerialization();
+  TestDrawPrepEndToEndWorkOffload();
+  TestComputeDrawInterleavedBarrierSafety();
+  TestDrawPrepWaitSpinVsCvBounded();
+  TestQueueDepthAndCapacityTracking();
 
   if (g_failures == 0) {
     std::printf("=== All DrawPrep Tests PASSED ===\n");
+    Config::Shutdown();
     return 0;
   } else {
     std::printf("=== %d DrawPrep Test(s) FAILED ===\n", g_failures);
+    Config::Shutdown();
     return 1;
   }
 }

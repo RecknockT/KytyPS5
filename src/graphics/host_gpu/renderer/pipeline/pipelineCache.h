@@ -37,6 +37,10 @@ struct GraphicContext;
 struct ShaderParams;
 class CommandBuffer;
 
+namespace DrawPrep {
+struct PreparedDraw;
+}
+
 namespace ShaderRecompiler {
 struct CompileOptions;
 struct ShaderSource;
@@ -214,7 +218,8 @@ public:
 	};
 
 	// Reads the shaders and registers bound in `command` into the state's shader stages.
-	void GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state);
+	void GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state,
+	                         const DrawPrep::PreparedDraw* prepared = nullptr);
 	// Null skips the dispatch.
 	const ShaderModule* GetComputeProgram(const HW::ComputeShaderInfo& regs,
 	                                      ShaderComputeInputInfo&      input_info);

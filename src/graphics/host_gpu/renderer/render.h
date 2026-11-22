@@ -22,6 +22,10 @@ class UserConfig;
 class Shader;
 } // namespace HW
 
+namespace DrawPrep {
+struct PreparedDraw;
+}
+
 struct GraphicContext;
 struct DrawCallInfo;
 struct DrawEmitInfo;
@@ -177,6 +181,15 @@ public:
 	[[nodiscard]] TextureBinding ResolveTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	                                            const ShaderRecompiler::IR::DescriptorValue& value);
 
+	void SetPreparedDraw(const DrawPrep::PreparedDraw* prep) noexcept { m_prepared_draw = prep; }
+	void ClearPreparedDraw() noexcept { m_prepared_draw = nullptr; }
+	[[nodiscard]] const DrawPrep::PreparedDraw* TakePreparedDraw() noexcept {
+		return std::exchange(m_prepared_draw, nullptr);
+	}
+	[[nodiscard]] const DrawPrep::PreparedDraw* GetPreparedDraw() const noexcept {
+		return m_prepared_draw;
+	}
+
 private:
 	// False, with nothing drawn, when the draw's indirect records need CPU counts.
 	bool DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args);
@@ -233,9 +246,10 @@ private:
 		bool    unclamped    = false;
 	};
 
-	RenderContext&   m_context;
-	bool             m_lod_stats = Config::LodStatsEnabled();
-	GraphicsBindings m_graphics_bindings;
+	RenderContext&                m_context;
+	bool                          m_lod_stats     = Config::LodStatsEnabled();
+	const DrawPrep::PreparedDraw* m_prepared_draw = nullptr;
+	GraphicsBindings              m_graphics_bindings;
 	// The current draw's targets; PrepareDrawRenderState resolves them again for each draw.
 	DrawTargets m_targets;
 	struct CachedTargetsSignature {

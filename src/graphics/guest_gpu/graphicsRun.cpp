@@ -892,16 +892,19 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.first_instance      = op.first_instance;
 			args.index_addr          = reinterpret_cast<const void*>(op.index_addr);
 			DrawPrep::PreparedDraw prepared;
-			bool                   has_snapshot = false;
+			bool                   has_snapshot   = false;
+			bool                   prepared_valid = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
-				if (m_draw_prep->CommitPublished(op.window, prepared)) {
-					has_snapshot = true;
+				prepared_valid = m_draw_prep->CommitPublished(op.window, prepared);
+				has_snapshot   = true;
+				if (prepared_valid) {
 					const uint64_t current_target_sig =
 					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
 					    (static_cast<uint64_t>(
 					         prepared.snapshot.context.GetShaderRegisters().m_cbShaderMask)
 					     << 32u);
 					if (prepared.target_signature != current_target_sig) {
+						prepared_valid = false;
 						Common::AuditProfiler::RecordDrawPrepFallback();
 					}
 				}
@@ -910,7 +913,11 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
 				                                                    prepared.snapshot.user_config,
 				                                                    prepared.snapshot.shaders);
+				if (prepared_valid) {
+					m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
+				}
 				DrawIndex(args);
+				m_renderer.GetRenderExecutor().ClearPreparedDraw();
 				GetScheduler().RestoreRegisters(prev_regs);
 			} else {
 				DrawIndex(args);
@@ -930,16 +937,19 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.first_instance = op.first_instance;
 			args.offset_source  = static_cast<DrawOffsetSource>(op.offset_source);
 			DrawPrep::PreparedDraw prepared;
-			bool                   has_snapshot = false;
+			bool                   has_snapshot   = false;
+			bool                   prepared_valid = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
-				if (m_draw_prep->CommitPublished(op.window, prepared)) {
-					has_snapshot = true;
+				prepared_valid = m_draw_prep->CommitPublished(op.window, prepared);
+				has_snapshot   = true;
+				if (prepared_valid) {
 					const uint64_t current_target_sig =
 					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
 					    (static_cast<uint64_t>(
 					         prepared.snapshot.context.GetShaderRegisters().m_cbShaderMask)
 					     << 32u);
 					if (prepared.target_signature != current_target_sig) {
+						prepared_valid = false;
 						Common::AuditProfiler::RecordDrawPrepFallback();
 					}
 				}
@@ -948,7 +958,11 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
 				                                                    prepared.snapshot.user_config,
 				                                                    prepared.snapshot.shaders);
+				if (prepared_valid) {
+					m_renderer.GetRenderExecutor().SetPreparedDraw(&prepared);
+				}
 				DrawIndexAuto(args);
+				m_renderer.GetRenderExecutor().ClearPreparedDraw();
 				GetScheduler().RestoreRegisters(prev_regs);
 			} else {
 				DrawIndexAuto(args);

@@ -14,6 +14,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
+#include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
@@ -851,7 +852,8 @@ void PipelineCache::WriteDriverCache() const {
 	                 Common::PathToString(m_driver_cache_path));
 }
 
-void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state) {
+void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state,
+                                        const DrawPrep::PreparedDraw* prepared) {
 	PumpAsync();
 	const auto& context             = command.GetRegisters();
 	const auto& user_config         = command.GetUserConfig();
@@ -907,6 +909,10 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 		for (auto& stage: vertex_info) {
 			stage.tess = layout->second;
 		}
+	} else if (prepared != nullptr && prepared->valid && prepared->has_programs) {
+		vertex_params[0] = prepared->vertex_params;
+		vertex_info[0]   = prepared->render_state.vertex_info[0];
+		Common::AuditProfiler::RecordDrawPrepAvoided(prepared->prep_time_ns);
 	} else {
 		vertex_params[0] = PrepareProgram(vertex_regs, context, user_config, vertex_info[0]);
 	}
