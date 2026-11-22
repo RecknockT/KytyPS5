@@ -44,9 +44,9 @@ static thread_local GuestGpu*     g_gpu_state         = nullptr;
 
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	m_gfx_cp                    = std::make_unique<CommandProcessor>(renderer, 0);
-	const bool enable_sequencer = Config::CpSequencerEnabled() || Config::DrawPrepEnabled() ||
-	                              CpSeq::ConfiguredMode() == CpSeq::Mode::Thread;
+	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
+	const bool enable_sequencer =
+	    Config::CpSequencerEnabled() || CpSeq::ConfiguredMode() == CpSeq::Mode::Thread;
 	if (enable_sequencer) {
 		m_sequencer = std::make_unique<CpSeq::Sequencer>(*m_gfx_cp);
 		m_gfx_cp->AttachSequencer(m_sequencer.get());
@@ -55,7 +55,12 @@ GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 		m_gfx_cp->SetFrontMode(CommandProcessor::FrontMode::Inline);
 	}
 	if (Config::DrawPrepEnabled()) {
-		m_gfx_cp->InitDrawPrep(Config::DrawPrepWorkers());
+		if (!enable_sequencer) {
+			LOGF("WARNING: --draw-prep was specified without --cp-sequencer; DrawPrep will remain "
+			     "inactive because pipelined draw preparation requires CpSequencer.\n");
+		} else {
+			m_gfx_cp->InitDrawPrep(Config::DrawPrepWorkers());
+		}
 	}
 	m_thread = std::jthread(ThreadRun, this);
 }
@@ -866,18 +871,30 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.base_vertex         = op.base_vertex;
 			args.first_instance      = op.first_instance;
 			args.index_addr          = reinterpret_cast<const void*>(op.index_addr);
+			DrawPrep::PreparedDraw prepared;
+			bool                   has_snapshot = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
-				DrawPrep::PreparedDraw prepared;
 				if (m_draw_prep->CommitPublished(op.window, prepared)) {
+					has_snapshot = true;
 					const uint64_t current_target_sig =
-					    static_cast<uint64_t>(m_ctx.GetRenderTargetMask()) |
-					    (static_cast<uint64_t>(m_ctx.GetShaderRegisters().m_cbShaderMask) << 32u);
+					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
+					    (static_cast<uint64_t>(
+					         prepared.snapshot.context.GetShaderRegisters().m_cbShaderMask)
+					     << 32u);
 					if (prepared.target_signature != current_target_sig) {
 						Common::AuditProfiler::RecordDrawPrepFallback();
 					}
 				}
 			}
-			DrawIndex(args);
+			if (has_snapshot) {
+				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
+				                                                    prepared.snapshot.user_config,
+				                                                    prepared.snapshot.shaders);
+				DrawIndex(args);
+				GetScheduler().RestoreRegisters(prev_regs);
+			} else {
+				DrawIndex(args);
+			}
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);
@@ -892,18 +909,30 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 			args.first_vertex   = op.first_vertex;
 			args.first_instance = op.first_instance;
 			args.offset_source  = static_cast<DrawOffsetSource>(op.offset_source);
+			DrawPrep::PreparedDraw prepared;
+			bool                   has_snapshot = false;
 			if ((op.flags & CpSeq::DrawFlagPublished) != 0 && m_draw_prep != nullptr) {
-				DrawPrep::PreparedDraw prepared;
 				if (m_draw_prep->CommitPublished(op.window, prepared)) {
+					has_snapshot = true;
 					const uint64_t current_target_sig =
-					    static_cast<uint64_t>(m_ctx.GetRenderTargetMask()) |
-					    (static_cast<uint64_t>(m_ctx.GetShaderRegisters().m_cbShaderMask) << 32u);
+					    static_cast<uint64_t>(prepared.snapshot.context.GetRenderTargetMask()) |
+					    (static_cast<uint64_t>(
+					         prepared.snapshot.context.GetShaderRegisters().m_cbShaderMask)
+					     << 32u);
 					if (prepared.target_signature != current_target_sig) {
 						Common::AuditProfiler::RecordDrawPrepFallback();
 					}
 				}
 			}
-			DrawIndexAuto(args);
+			if (has_snapshot) {
+				const auto prev_regs = GetScheduler().BindRegisters(prepared.snapshot.context,
+				                                                    prepared.snapshot.user_config,
+				                                                    prepared.snapshot.shaders);
+				DrawIndexAuto(args);
+				GetScheduler().RestoreRegisters(prev_regs);
+			} else {
+				DrawIndexAuto(args);
+			}
 			execution.m_made_progress = true;
 			m_ops->Pop();
 			sequencer.NoteExecuted(seq + 1u);

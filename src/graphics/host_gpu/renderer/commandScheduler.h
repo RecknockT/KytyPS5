@@ -74,6 +74,28 @@ public:
 	}
 	[[nodiscard]] static bool InDeferredOperation() noexcept;
 
+	// In decoupled PM4 / DrawPrep pipelines, the CommandBuffer register pointers can be
+	// redirected to a draw call's register snapshot and restored afterwards.
+	struct RegisterBinding {
+		HW::Context*    registers   = nullptr;
+		HW::UserConfig* user_config = nullptr;
+		HW::Shader*     shaders     = nullptr;
+	};
+
+	[[nodiscard]] RegisterBinding BindRegisters(HW::Context& registers, HW::UserConfig& user_config,
+	                                            HW::Shader& shaders) noexcept {
+		const RegisterBinding previous {m_command.m_registers, m_command.m_user_config,
+		                                m_command.m_shaders};
+		m_command.Bind(registers, user_config, shaders);
+		return previous;
+	}
+
+	void RestoreRegisters(const RegisterBinding& binding) noexcept {
+		m_command.m_registers   = binding.registers;
+		m_command.m_user_config = binding.user_config;
+		m_command.m_shaders     = binding.shaders;
+	}
+
 	[[nodiscard]] bool     Active() const noexcept { return m_command.m_registers != nullptr; }
 	void                   CheckActive() const;
 	CommandBuffer&         Current();

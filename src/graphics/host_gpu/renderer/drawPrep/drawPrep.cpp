@@ -215,6 +215,7 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 	const bool vs_active =
 	    (sh_ctx.GetVs().es_regs.data_addr != 0 || sh_ctx.GetVs().ls_regs.data_addr != 0 ||
 	     sh_ctx.GetVs().gs_regs.data_addr != 0);
+	slot.prepared.snapshot = slot.snapshot;
 	if (vs_active) {
 		slot.prepared.valid        = true;
 		slot.prepared.pixel_active = (sh_ctx.GetPs().ps_regs.data_addr != 0);
@@ -252,8 +253,8 @@ bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
 	const uint32_t slot_idx     = static_cast<uint32_t>(position & m_window_mask);
 	auto&          slot         = m_window[slot_idx];
 
-	// Spin wait for slot readiness (up to 200 us)
-	constexpr uint64_t max_spin_ns = 200'000;
+	// Bounded spin wait for slot readiness (up to 5 us to prevent thread starvation)
+	constexpr uint64_t max_spin_ns = 5'000;
 	bool               ready       = false;
 
 	while (GetNowNs() - t_wait_start < max_spin_ns) {
@@ -279,6 +280,9 @@ bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
 		Common::AuditProfiler::RecordPipelineStage(
 		    Common::AuditProfiler::PipelineStage::DrawPrepCommitWait, t_wait_end - t_wait_start);
 	}
+
+	// Always transfer snapshot to caller so registers are isolated even during fallback
+	out_prepared.snapshot = slot.snapshot;
 
 	bool success = false;
 	if (ready && slot.prepared.valid) {

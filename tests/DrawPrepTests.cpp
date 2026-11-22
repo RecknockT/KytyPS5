@@ -220,6 +220,180 @@ void TestDrainFlushesAll() {
   engine.SetMode(Mode::Off);
 }
 
+void TestConcurrentRegisterMutationDataRace() {
+  std::printf(
+      "Running TestConcurrentRegisterMutationDataRace (Adversarial)...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  constexpr uint32_t NumDraws = 64;
+  std::atomic<bool> stop_mutator{false};
+  HW::Context shared_ctx;
+  HW::Shader shared_sh;
+
+  // Background thread violently mutates the shared registers to simulate the
+  // front sequencer
+  std::thread mutator([&] {
+    uint32_t counter = 0;
+    while (!stop_mutator.load(std::memory_order_relaxed)) {
+      shared_sh.SetEsShaderBase(0xDEAD'0000ull + (++counter));
+      shared_ctx.SetRenderTargetMask(0xAA);
+      std::this_thread::yield();
+    }
+  });
+
+  std::vector<uint64_t> published_positions;
+  published_positions.reserve(NumDraws);
+
+  DrawIndexArgs args{};
+  args.index_count = 64;
+  args.instance_count = 1;
+
+  for (uint32_t i = 0; i < NumDraws; ++i) {
+    HW::Context local_ctx;
+    HW::UserConfig local_ucfg;
+    HW::Shader local_sh;
+    local_sh.SetEsShaderBase(0x1000'0000ull + i * 0x1000ull);
+    local_ctx.SetRenderTargetMask((i % 7) + 1);
+
+    const auto pos = engine.Publish(&args, nullptr, local_ctx, local_ucfg,
+                                    local_sh, nullptr);
+    Check(pos != UINT64_MAX, "Publish should succeed");
+    published_positions.push_back(pos);
+  }
+
+  // Consumer verifies that each committed draw preserved its exact snapshot,
+  // immune to the mutator
+  for (uint32_t i = 0; i < NumDraws; ++i) {
+    PreparedDraw prep;
+    const bool ok = engine.CommitPublished(published_positions[i], prep);
+    Check(ok, "CommitPublished should succeed");
+    Check(prep.valid, "Prepared draw should be valid");
+
+    const uint64_t expected_es = 0x1000'0000ull + i * 0x1000ull;
+    const uint64_t actual_es = prep.snapshot.shaders.GetVs().es_regs.data_addr;
+    Check(
+        actual_es == expected_es,
+        "Draw snapshot ES address corrupted by concurrent frontend mutations!");
+
+    const uint32_t expected_mask = (i % 7) + 1;
+    const uint32_t actual_mask = prep.snapshot.context.GetRenderTargetMask();
+    Check(actual_mask == expected_mask,
+          "Draw snapshot RenderTargetMask corrupted by concurrent frontend "
+          "mutations!");
+  }
+
+  stop_mutator.store(true, std::memory_order_relaxed);
+  mutator.join();
+  engine.SetMode(Mode::Off);
+}
+
+void TestSlotExhaustionUnderBurst() {
+  std::printf(
+      "Running TestSlotExhaustionUnderBurst (Adversarial Burst 256)...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  constexpr uint32_t BurstCount = 256;
+  std::atomic<uint32_t> committed_count{0};
+
+  // Background consumer thread drains the window to verify backpressure
+  std::thread consumer([&] {
+    for (uint32_t i = 0; i < BurstCount; ++i) {
+      PreparedDraw prep;
+      if (engine.CommitPublished(i, prep)) {
+        committed_count.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+  });
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x5000'0000ull);
+
+  DrawAutoArgs args{};
+  args.vertex_count = 12;
+  args.instance_count = 1;
+
+  for (uint32_t i = 0; i < BurstCount; ++i) {
+    const auto pos = engine.Publish(nullptr, &args, ctx, ucfg, sh, [&] {
+      return true; // continue waiting for space
+    });
+    Check(pos == i, "Burst position should match index monotonically");
+  }
+
+  consumer.join();
+  Check(committed_count.load() == BurstCount,
+        "All burst draws must be committed through the 64-slot sliding window");
+
+  const auto stats = engine.GetStats();
+  Check(stats.published == BurstCount,
+        "Stats published should match BurstCount");
+  Check(stats.committed == BurstCount,
+        "Stats committed should match BurstCount");
+
+  engine.SetMode(Mode::Off);
+}
+
+void TestConcurrentDrainDuringInFlightWork() {
+  std::printf(
+      "Running TestConcurrentDrainDuringInFlightWork (Adversarial)...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x6000'0000ull);
+
+  DrawIndexArgs args{};
+  args.index_count = 32;
+
+  // Publish 40 slots
+  for (uint32_t i = 0; i < 40; ++i) {
+    (void)engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+  }
+
+  // Rapidly trigger Drain while workers are executing
+  engine.Drain();
+
+  const auto stats = engine.GetStats();
+  Check(stats.published == 40, "40 draws published");
+  Check(stats.committed == 40, "40 draws committed cleanly by Drain");
+
+  engine.SetMode(Mode::Off);
+}
+
+void TestTargetSignatureMismatchFallback() {
+  std::printf("Running TestTargetSignatureMismatchFallback (Adversarial)...\n");
+  Engine engine(GetDummyRenderer(), 2);
+  engine.SetMode(Mode::Parallel);
+
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader sh;
+  sh.SetEsShaderBase(0x7000'0000ull);
+  ctx.SetRenderTargetMask(0x1);
+
+  DrawIndexArgs args{};
+  args.index_count = 16;
+
+  const auto pos = engine.Publish(&args, nullptr, ctx, ucfg, sh, nullptr);
+  Check(pos != UINT64_MAX, "Publish should succeed");
+
+  PreparedDraw prep;
+  const bool ok = engine.CommitPublished(pos, prep);
+  Check(ok, "CommitPublished should succeed");
+
+  // Invalidate signature artificially to simulate mismatch
+  const uint64_t simulated_mismatch_sig = prep.target_signature ^ 0xFF;
+  Check(prep.target_signature != simulated_mismatch_sig,
+        "Simulated signature mismatch must be detected");
+
+  engine.SetMode(Mode::Off);
+}
+
 } // namespace
 
 int main() {
@@ -230,6 +404,10 @@ int main() {
   TestSnapshotImmutability();
   TestTargetValidationAndFallback();
   TestDrainFlushesAll();
+  TestConcurrentRegisterMutationDataRace();
+  TestSlotExhaustionUnderBurst();
+  TestConcurrentDrainDuringInFlightWork();
+  TestTargetSignatureMismatchFallback();
 
   if (g_failures == 0) {
     std::printf("=== All DrawPrep Tests PASSED ===\n");

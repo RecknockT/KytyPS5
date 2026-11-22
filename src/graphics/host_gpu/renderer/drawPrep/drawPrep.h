@@ -36,6 +36,7 @@ struct PreparedDraw {
 	PipelineCache::Pipeline* pipeline     = nullptr;
 	uint64_t                 prep_time_ns = 0;
 	bool                     pixel_active = false;
+	RegisterSnapshot         snapshot;
 };
 
 struct Slot {
