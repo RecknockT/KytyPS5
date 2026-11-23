@@ -616,6 +616,46 @@ void TestInterleavedPm4Ordering() {
 	Check(snapshots.HasFree(), "All snapshots released cleanly");
 }
 
+void TestSnapshotRingUnderflowProtection() {
+	std::printf("Running TestSnapshotRingUnderflowProtection (Etapa 8.4F.1)...\n");
+	CpSeq::SnapshotRing ring(256);
+
+	Check(ring.HasFree(), "Ring initially has free slots");
+
+	// Simulate skew where a release occurs when acquired is 0 (acq=0, rel=1)
+	ring.Release();
+	Check(ring.HasFree(), "HasFree does not underflow when acq < rel");
+
+	const uint32_t slot0 = ring.AcquireBlocking();
+	Check(slot0 == 0, "AcquireBlocking succeeds and returns slot 0 despite skew");
+
+	const uint32_t slot1 = ring.AcquireBlocking();
+	Check(slot1 == 1, "AcquireBlocking succeeds and returns slot 1");
+
+	// At this point acq = 2, rel = 1. One more release balances acq == rel == 2.
+	ring.Release();
+	Check(ring.HasFree(), "HasFree is true when acq == rel");
+
+	// Fill to capacity and verify saturation
+	for (uint32_t i = 0; i < 256; ++i) {
+		const uint32_t slot = ring.AcquireBlocking();
+		Check(slot < 256, "Acquired valid slot");
+	}
+	Check(!ring.HasFree(), "Ring is full after 256 acquires");
+
+	ring.Release();
+	Check(ring.HasFree(), "Ring has free slot after 1 release");
+	const uint32_t slot_recycle = ring.AcquireBlocking();
+	Check(slot_recycle < 256, "Acquired recycled slot successfully");
+	Check(!ring.HasFree(), "Ring full again");
+
+	// Drain remaining 256 entries
+	for (uint32_t i = 0; i < 256; ++i) {
+		ring.Release();
+	}
+	Check(ring.HasFree(), "Ring cleanly drained");
+}
+
 } // namespace
 
 int main() {
@@ -630,6 +670,7 @@ int main() {
 	TestPipelineCacheMruCoherency();
 	TestSnapshotRingSaturationAndShutdown();
 	TestInterleavedPm4Ordering();
+	TestSnapshotRingUnderflowProtection();
 	if (g_failures != 0) {
 		std::printf("cp sequencer tests: %d failure(s)\n", g_failures);
 		return EXIT_FAILURE;

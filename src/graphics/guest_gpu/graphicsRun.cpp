@@ -230,9 +230,6 @@ void CommandProcessor::Reset() {
 	if (m_draw_prep) {
 		m_draw_prep->Drain();
 	}
-	if (m_sequencer != nullptr) {
-		m_sequencer->ResetSnapshots();
-	}
 	m_sh_ctx.Reset();
 	m_ucfg.Reset();
 	m_ctx.Reset();
@@ -663,7 +660,9 @@ bool GuestGpu::Process(Submission& submission) {
 			m_renderer.GetCommandScheduler().DeferPriorityOperation(
 			    [ready = m_suspend_point_ready] { ready->release(); });
 			cp.BufferFlush();
-			cp.Reset();
+			if (!cp.Sequenced()) {
+				cp.Reset();
+			}
 			break;
 	}
 

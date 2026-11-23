@@ -36,7 +36,9 @@ public:
 		return static_cast<uint32_t>(m_entries.size());
 	}
 	[[nodiscard]] bool HasFree() const noexcept {
-		return m_acquired - m_released.load(std::memory_order_seq_cst) < m_entries.size();
+		const auto rel       = m_released.load(std::memory_order_seq_cst);
+		const auto in_flight = m_acquired >= rel ? (m_acquired - rel) : 0ull;
+		return in_flight < m_entries.size();
 	}
 	[[nodiscard]] uint32_t Acquire() noexcept {
 		return static_cast<uint32_t>((m_acquired++) % m_entries.size());
