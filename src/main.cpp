@@ -422,6 +422,8 @@ static constexpr Flag FLAGS[] = {
     {"--no-resolve-texture-cache-512", &ConfigOptions::resolve_texture_cache_512_enabled, false},
     {"--profile-programs", &ConfigOptions::profile_programs_enabled, true},
     {"--no-profile-programs", &ConfigOptions::profile_programs_enabled, false},
+    {"--vertex-input-cache", &ConfigOptions::vertex_input_cache_enabled, true},
+    {"--no-vertex-input-cache", &ConfigOptions::vertex_input_cache_enabled, false},
     {"--descriptor-cache", &ConfigOptions::descriptor_cache_enabled, true},
     {"--no-descriptor-cache", &ConfigOptions::descriptor_cache_enabled, false},
     {"--render-target-cache", &ConfigOptions::render_target_cache_enabled, true},

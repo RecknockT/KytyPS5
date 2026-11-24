@@ -1,14 +1,13 @@
 # Estado Actual de Optimización Continua
 
-- **SHA actual:** `f5c460adc` + toggle OPT-08 (`--resolve-texture-cache-512` default `true`) + `--profile-programs` (en commit).
-- **Último checkpoint estable:** `f5c460adc` (OPT-08 revalidada: **20,25 FPS** mediana vs `19,79 FPS` con 64 entradas).
-- **Última optimización aceptada:** **OPT-08** (`--resolve-texture-cache-512` / `--no-resolve-texture-cache-512`, default `true`): en 3+3 corridas alternadas con el mismo ejecutable en Sky Garden (`StreamBuffer Ring Waits = 0,00 ms`), la mediana subió de `19,79 FPS` (`50,65 ms/f`, `DescriptorPrep = 9,29 ms/f`, `hit = 84,24%`) a **`20,25 FPS`** (`+2,32%`, `49,42 ms/f`, `DescriptorPrep = 8,20 ms/f`, `hit = 95,15%`, `-69%` conflict misses).
-- **Hallazgo crítico de OPT-09 (`--profile-programs`, 7,38M draws):**
-  1. `ShaderApplyAttribSemantics` (`src/graphics/shader/shader.cpp:194`): **`4.932 - 7.084 ns/draw`** (`6.403 - 9.610 ns/call`, ~57% de todo `GetGraphicsPrograms` — lee `attrib[in.semantic]` 5 veces y `sharp[0..3]` 4 veces por atributo desde memoria guest/WC).
-  2. `WalkSrt` (`src/graphics/shader/recompiler/ir/passes/SrtWalker.cpp:1452`): **`2.146 ns/draw`** (`1.167 ns/call`).
-  3. `Pm4Dispatch` (exclusivo): `10,30 ms/frame`.
-  4. `DescriptorPrep`: `8,20 ms/frame`.
-  5. `BufferReadback` wait: `6,39 ms/frame`.
-  6. `CommandRecording`: `4,29 ms/frame`.
+- **SHA actual:** `086e7e80f` + **OPT-10** (`--vertex-input-cache` default `true`, pendiente de commit).
+- **Último checkpoint estable:** `086e7e80f` (**20,25 FPS** mediana con OPT-08).
+- **Última optimización aceptada:** **OPT-10** (`--vertex-input-cache` / `--no-vertex-input-cache`, default `true`): en 3+3 corridas alternadas con el mismo ejecutable en Sky Garden (`StreamBuffer Ring Waits = 0,00 ms`), la mediana subió de `19,65 FPS` (`50,93 ms/f`, `RenderStatePrep = 20,70 ms/f`) a **`20,23 FPS`** (`+2,95%`, `49,48 ms/f`, `RenderStatePrep = 19,35 ms/f`, `-1,35 ms/f`, `p95 <= 50,86 ms` en 3/3 corridas vs `66,5-66,7 ms` en 2/3 OFF).
+- **Cuellos de botella actuales (`Thread_Gpu`, ~5.260 draws/frame):**
+  1. `RenderStatePrep`: `19,35 ms/frame` (`GetGraphicsPrograms` + `Targets` + `EnsureGraphicsPipeline`).
+  2. `Pm4Dispatch` (exclusivo): `10,25 ms/frame`.
+  3. `DescriptorPrep`: `8,28 ms/frame`.
+  4. `BufferReadback` wait: `6,44 ms/frame`.
+  5. `CommandRecording`: `4,34 ms/frame`.
 - **Resultados de tests:** `ctest` 10/10 suites críticas PASSED.
-- **Próxima acción exacta:** Atacar **OPT-10 (`ShaderApplyAttribSemantics`)** reduciendo lecturas WC/guest redundantes y separando/cacheando estado estático de vértices con invalidación segura, seguido de **OPT-11 (`WalkSrt`)**, **OPT-12 (`--read-buffer-reuse` / `--extended-stream-buffer`)** y comparación completa A/B/C en Sky Garden.
+- **Próxima acción exacta:** Evaluar **OPT-12 (`--read-buffer-reuse` y `--extended-stream-buffer`)** en Sky Garden A/B, atacar **OPT-11 (`WalkSrt` / `ResourceMaterialization`)** y completar la comparativa A/B/C en Sky Garden.

@@ -124,6 +124,7 @@ struct ConfigOptions {
 	bool     program_cache_mru_enabled         = true;
 	bool     resolve_texture_cache_512_enabled = true;
 	bool     profile_programs_enabled          = false;
+	bool     vertex_input_cache_enabled        = true;
 	bool     coalesce_read_faults_enabled      = true;
 	bool     effect_profile_enabled            = false;
 	bool     gpu_timestamps_enabled            = true;
@@ -292,6 +293,7 @@ void     ApplyBindingReuseMode();
 bool     ProgramCacheMruEnabled();
 bool     ResolveTextureCache512Enabled();
 bool     ProfileProgramsEnabled();
+bool     VertexInputCacheEnabled();
 bool     CoalesceReadFaultsEnabled();
 bool     GpuTimestampsEnabled();
 bool     DiagnosticSkipWaterPassEnabled();

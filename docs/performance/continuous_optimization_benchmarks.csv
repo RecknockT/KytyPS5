@@ -9,3 +9,5 @@ fecha,commit,perfil,escena,frames,duracion_s,fps_efectivo,frametime_avg_ms,p99_m
 2026-11-24,6908216ac+OPT08,A (Sky Garden Auto),Sky Garden (Landing),570,30.02,18.99,52.75,66.43,5569.8,21.44,8.23,10.19,4.42,OPT-08: 512-entry ResolveTexture cache (DescriptorPrep 9.20->8.23 ms/f; 511ms StreamBufferWait)
 2026-11-24,f5c460adc+AB,A (Sky Garden Auto - 64),Sky Garden (Landing),594,30.01,19.79,50.65,51.31,5298.6,19.55,9.29,10.19,4.31,OPT-08 A/B Mediana 64 entradas (R1=18.65 R3=19.79 R5=20.12; hit=84.24%)
 2026-11-24,f5c460adc+AB,A (Sky Garden Auto - 512),Sky Garden (Landing),608,30.02,20.25,49.42,50.70,5271.2,19.45,8.20,10.30,4.29,OPT-08 A/B Mediana 512 entradas (R2=20.15 R4=20.25 R6=20.50; hit=95.15%; +2.32% FPS)
+2026-11-24,086e7e80f+OPT10_AB,A (Sky Garden Auto - OFF),Sky Garden (Landing),590,30.02,19.65,50.93,66.47_p95,5254.9,20.70,8.33,10.34,4.33,OPT-10 A/B Mediana OFF (R1=19.20 R3=20.51 R5=19.65)
+2026-11-24,086e7e80f+OPT10_AB,A (Sky Garden Auto - ON),Sky Garden (Landing),607,30.01,20.23,49.48,50.86_p95,5262.0,19.35,8.28,10.25,4.34,OPT-10 A/B Mediana ON (R2=20.62 R4=20.13 R6=20.23; RenderStatePrep -1.35ms/f; +2.95% FPS)

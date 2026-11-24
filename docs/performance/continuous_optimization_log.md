@@ -71,6 +71,18 @@
     - Resto (`PumpAsync`, `PrepareProgramPS`, `ShaderStaticInputPS`, `GetShaderParams`, `BuildStageStaticKey`, `ProgramCacheFind`, `BuildResourceSpec`, `PixelRawParamMask`, `NoteTargetDraw`, `ShaderDetectBuffers`): < `400 ns/draw` combinados.
 - **Estado:** OPT-08 aceptada por defecto; OPT-09 completado y listo para atacar `ShaderApplyAttribSemantics` en OPT-10.
 
+---
+
+## Iteración 5 — OPT-10 (`--vertex-input-cache` en `ShaderGetStaticVertexInputInfo` + lectura única en `ShaderApplyAttribSemantics`)
+- **Archivos modificados:**
+  - `src/graphics/shader/shader.cpp`: lectura única de `attrib[in.semantic]` en `ShaderApplyAttribSemantics` y caché TLS de 16 entradas en `ShaderGetStaticVertexInputInfo` indexada por `(shader_addr, attrib, buffer, gen)` con verificación exacta de `va` y `sharp[0..3]`.
+  - `src/common/emulatorConfig.h/.cpp`, `src/main.cpp`: toggle `--vertex-input-cache` / `--no-vertex-input-cache` (activado por defecto).
+- **Resultados medidos (3+3 A/B alternado con el mismo ejecutable en Sky Garden, `sky_garden_fast_replay.json`, Perfil A, `StreamBuffer Ring Waits = 0,00 ms`):**
+  - **OFF (`--no-vertex-input-cache`):** R1 `19,20 FPS` (`52,14 ms/f`, `p95=66,71 ms`, `RenderStatePrep=21,18 ms/f`), R3 `20,51 FPS` (`48,81 ms/f`, `p95=50,79 ms`, `RenderStatePrep=18,77 ms/f`), R5 `19,65 FPS` (`50,93 ms/f`, `p95=66,47 ms`, `RenderStatePrep=20,70 ms/f`). **Mediana: `19,65 FPS`**, `RenderStatePrep = 20,70 ms/f`.
+  - **ON (`--vertex-input-cache`):** R2 `20,62 FPS` (`48,52 ms/f`, `p95=50,79 ms`, `RenderStatePrep=18,53 ms/f`), R4 `20,13 FPS` (`49,72 ms/f`, `p95=50,71 ms`, `RenderStatePrep=19,35 ms/f`), R6 `20,23 FPS` (`49,48 ms/f`, `p95=50,86 ms`, `RenderStatePrep=19,44 ms/f`). **Mediana: `20,23 FPS` (`+2,95%`)**, `RenderStatePrep = 19,35 ms/f` (`-1,35 ms/f`), **`p95 <= 50,86 ms` en 3/3 corridas** (vs `66,5-66,7 ms` en 2/3 corridas OFF).
+- **Tests:** `ctest` 10/10 suites críticas PASSED.
+- **Estado:** Validada y aceptada por defecto.
+
 
 ---
 
@@ -119,6 +131,18 @@
     - `ShaderGetMappedData`: `49,28 ns/call` (`ShaderMapTLS` hit rate `89,29% - 90,31%`).
     - Resto (`PumpAsync`, `PrepareProgramPS`, `ShaderStaticInputPS`, `GetShaderParams`, `BuildStageStaticKey`, `ProgramCacheFind`, `BuildResourceSpec`, `PixelRawParamMask`, `NoteTargetDraw`, `ShaderDetectBuffers`): < `400 ns/draw` combinados.
 - **Estado:** OPT-08 aceptada por defecto; OPT-09 completado y listo para atacar `ShaderApplyAttribSemantics` en OPT-10.
+
+---
+
+## Iteración 5 — OPT-10 (`--vertex-input-cache` en `ShaderGetStaticVertexInputInfo` + lectura única en `ShaderApplyAttribSemantics`)
+- **Archivos modificados:**
+  - `src/graphics/shader/shader.cpp`: lectura única de `attrib[in.semantic]` en `ShaderApplyAttribSemantics` y caché TLS de 16 entradas en `ShaderGetStaticVertexInputInfo` indexada por `(shader_addr, attrib, buffer, gen)` con verificación exacta de `va` y `sharp[0..3]`.
+  - `src/common/emulatorConfig.h/.cpp`, `src/main.cpp`: toggle `--vertex-input-cache` / `--no-vertex-input-cache` (activado por defecto).
+- **Resultados medidos (3+3 A/B alternado con el mismo ejecutable en Sky Garden, `sky_garden_fast_replay.json`, Perfil A, `StreamBuffer Ring Waits = 0,00 ms`):**
+  - **OFF (`--no-vertex-input-cache`):** R1 `19,20 FPS` (`52,14 ms/f`, `p95=66,71 ms`, `RenderStatePrep=21,18 ms/f`), R3 `20,51 FPS` (`48,81 ms/f`, `p95=50,79 ms`, `RenderStatePrep=18,77 ms/f`), R5 `19,65 FPS` (`50,93 ms/f`, `p95=66,47 ms`, `RenderStatePrep=20,70 ms/f`). **Mediana: `19,65 FPS`**, `RenderStatePrep = 20,70 ms/f`.
+  - **ON (`--vertex-input-cache`):** R2 `20,62 FPS` (`48,52 ms/f`, `p95=50,79 ms`, `RenderStatePrep=18,53 ms/f`), R4 `20,13 FPS` (`49,72 ms/f`, `p95=50,71 ms`, `RenderStatePrep=19,35 ms/f`), R6 `20,23 FPS` (`49,48 ms/f`, `p95=50,86 ms`, `RenderStatePrep=19,44 ms/f`). **Mediana: `20,23 FPS` (`+2,95%`)**, `RenderStatePrep = 19,35 ms/f` (`-1,35 ms/f`), **`p95 <= 50,86 ms` en 3/3 corridas** (vs `66,5-66,7 ms` en 2/3 corridas OFF).
+- **Tests:** `ctest` 10/10 suites críticas PASSED.
+- **Estado:** Validada y aceptada por defecto.
 
 
 

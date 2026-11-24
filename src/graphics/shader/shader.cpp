@@ -227,11 +227,11 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo&          info,
 			     attrib[in.semantic]);
 		}
 
-		size_t index = attrib[in.semantic] & 0x1fu;
-		auto   format =
-		    static_cast<Prospero::VertexAttribFormat>((attrib[in.semantic] >> 5u) & 0x1ffu);
-		uint32_t offset      = (attrib[in.semantic] >> 14u) & 0xfffu;
-		uint32_t fetch_index = (attrib[in.semantic] >> 26u) & 0x1u;
+		const uint32_t va          = attrib[in.semantic];
+		const size_t   index       = va & 0x1fu;
+		const auto     format      = static_cast<Prospero::VertexAttribFormat>((va >> 5u) & 0x1ffu);
+		const uint32_t offset      = (va >> 14u) & 0xfffu;
+		const uint32_t fetch_index = (va >> 26u) & 0x1u;
 
 		EXIT_NOT_IMPLEMENTED(index >= ShaderVertexInputInfo::RES_MAX);
 
@@ -375,6 +375,90 @@ static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserS
 			LOGF("ShaderGetVertexInputInfo(): null vertex table pointer shader=0x%016" PRIx64 "\n",
 			     shader_addr);
 			return false;
+		}
+		const size_t sem_count = metadata.input_semantics.size();
+		if (Config::VertexInputCacheEnabled() && !Config::GraphicsDebugDumpEnabled() &&
+		    sem_count <= ShaderVertexInputInfo::RES_MAX) {
+			struct TlsVertexInputSlot {
+				uint64_t                shader_addr = 0;
+				uint64_t                gen         = 0;
+				const uint32_t*         attrib      = nullptr;
+				const uint32_t*         buffer      = nullptr;
+				uint32_t                sem_count   = 0;
+				uint32_t                va[ShaderVertexInputInfo::RES_MAX] {};
+				uint32_t                sharp[ShaderVertexInputInfo::RES_MAX][4] {};
+				int                     resources_num = 0;
+				int                     buffers_num   = 0;
+				ShaderBufferResource    resources[ShaderVertexInputInfo::RES_MAX] {};
+				ShaderVertexDestination resources_dst[ShaderVertexInputInfo::RES_MAX] {};
+				ShaderVertexInputBuffer buffers[ShaderVertexInputInfo::RES_MAX] {};
+				bool                    valid = false;
+			};
+			constexpr size_t                                          TlsCacheSize = 16;
+			thread_local std::array<TlsVertexInputSlot, TlsCacheSize> tls_cache {};
+
+			const uint64_t gen = g_shader_map_generation.load(std::memory_order_acquire);
+			const uint64_t mix = (shader_addr >> 6u) ^ (reinterpret_cast<uintptr_t>(attrib) >> 4u) ^
+			                     (reinterpret_cast<uintptr_t>(buffer) >> 4u);
+			auto&          cached = tls_cache[static_cast<size_t>(mix) & (TlsCacheSize - 1u)];
+			if (cached.valid && cached.gen == gen && cached.shader_addr == shader_addr &&
+			    cached.attrib == attrib && cached.buffer == buffer &&
+			    cached.sem_count == sem_count) {
+				bool match = true;
+				for (size_t i = 0; i < sem_count; i++) {
+					const auto& in = metadata.input_semantics[i];
+					if (in.static_vb_index == 1 || in.static_attribute == 1) {
+						match = false;
+						break;
+					}
+					const uint32_t va = attrib[in.semantic];
+					if (va != cached.va[i]) {
+						match = false;
+						break;
+					}
+					const size_t    idx   = va & 0x1fu;
+					const uint32_t* sharp = &buffer[idx * 4];
+					if (sharp[0] != cached.sharp[i][0] || sharp[1] != cached.sharp[i][1] ||
+					    sharp[2] != cached.sharp[i][2] || sharp[3] != cached.sharp[i][3]) {
+						match = false;
+						break;
+					}
+				}
+				if (match) {
+					info.resources_num = cached.resources_num;
+					info.buffers_num   = cached.buffers_num;
+					std::copy_n(cached.resources, cached.resources_num, info.resources);
+					std::copy_n(cached.resources_dst, cached.resources_num, info.resources_dst);
+					std::copy_n(cached.buffers, cached.buffers_num, info.buffers);
+					return true;
+				}
+			}
+
+			ShaderApplyAttribSemantics(info, metadata.input_semantics, attrib, buffer);
+			ShaderDetectBuffers(info);
+
+			cached.shader_addr   = shader_addr;
+			cached.gen           = gen;
+			cached.attrib        = attrib;
+			cached.buffer        = buffer;
+			cached.sem_count     = static_cast<uint32_t>(sem_count);
+			cached.resources_num = info.resources_num;
+			cached.buffers_num   = info.buffers_num;
+			for (size_t i = 0; i < sem_count; i++) {
+				const uint32_t va   = attrib[metadata.input_semantics[i].semantic];
+				cached.va[i]        = va;
+				const size_t    idx = va & 0x1fu;
+				const uint32_t* sp  = &buffer[idx * 4];
+				cached.sharp[i][0]  = sp[0];
+				cached.sharp[i][1]  = sp[1];
+				cached.sharp[i][2]  = sp[2];
+				cached.sharp[i][3]  = sp[3];
+			}
+			std::copy_n(info.resources, info.resources_num, cached.resources);
+			std::copy_n(info.resources_dst, info.resources_num, cached.resources_dst);
+			std::copy_n(info.buffers, info.buffers_num, cached.buffers);
+			cached.valid = true;
+			return true;
 		}
 		ShaderApplyAttribSemantics(info, metadata.input_semantics, attrib, buffer);
 		ShaderDetectBuffers(info);

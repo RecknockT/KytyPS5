@@ -506,6 +506,10 @@ bool ProfileProgramsEnabled() {
 	return g_config != nullptr ? g_config->profile_programs_enabled : false;
 }
 
+bool VertexInputCacheEnabled() {
+	return g_config != nullptr ? g_config->vertex_input_cache_enabled : true;
+}
+
 bool CoalesceReadFaultsEnabled() {
 	return g_config != nullptr ? g_config->coalesce_read_faults_enabled : true;
 }
