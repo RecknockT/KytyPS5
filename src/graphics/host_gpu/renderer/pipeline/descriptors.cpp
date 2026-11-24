@@ -439,6 +439,28 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	if (descriptor.IsNull()) {
 		return {.layout = vk::ImageLayout::eGeneral};
 	}
+	const bool use_tex_cache =
+	    Config::DescriptorCacheEnabled() && !m_lod_stats && !resource.heap && !resource.atomic64;
+	const uint8_t tex_flags = static_cast<uint8_t>(
+	    (storage ? 1u : 0u) | (resource.r128 ? 2u : 0u) | (resource.skip_degamma ? 4u : 0u) |
+	    (resource.depth_compare ? 8u : 0u) |
+	    ((static_cast<uint32_t>(resource.mip_mode) & 0x7u) << 4u));
+	size_t tex_cache_slot = 0;
+	if (use_tex_cache) {
+		const uint64_t h = (static_cast<uint64_t>(value.dwords[0]) * 0x9e3779b97f4a7c15ull) ^
+		                   (static_cast<uint64_t>(value.dwords[1]) * 0xbf58476d1ce4e5b9ull) ^
+		                   (static_cast<uint64_t>(value.dwords[2]) ^
+		                    (static_cast<uint64_t>(value.dwords[3]) << 17u));
+		tex_cache_slot   = static_cast<size_t>(h ^ (h >> 16u)) & (ResolvedTextureCacheSize - 1u);
+		const auto& ent  = m_resolved_texture_cache[tex_cache_slot];
+		if (ent.valid && ent.flags == tex_flags &&
+		    ent.tc_gen == texture_cache.StructureGeneration() &&
+		    std::equal(ent.dwords.begin(), ent.dwords.end(), value.dwords.begin()) &&
+		    (ent.binding.image_id == 0 ||
+		     texture_cache.ValidateAndTouchCachedImage(ent.binding.image_id))) {
+			return ent.binding;
+		}
+	}
 	// Image heap resolves do not follow the draws that sample them and storage access is not
 	// sampling: neither reports samples.
 	if (m_lod_stats && descriptor.MipStatsCntEn() && !resource.heap && !storage) {
@@ -614,7 +636,16 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		(void)SelectSampledColorView(image->info.pixel_format, desc.view_info.format,
 		                             descriptor.DstSelXYZW());
 	}
-	return {id, nullptr, std::move(desc)};
+	TextureBinding result {id, nullptr, std::move(desc)};
+	if (use_tex_cache && !stencil_association) {
+		auto& ent = m_resolved_texture_cache[tex_cache_slot];
+		std::copy_n(value.dwords.begin(), 8, ent.dwords.begin());
+		ent.flags   = tex_flags;
+		ent.tc_gen  = texture_cache.StructureGeneration();
+		ent.binding = result;
+		ent.valid   = true;
+	}
+	return result;
 }
 
 static vk::Sampler NativeSampler(RenderContext&                                  context,
@@ -727,22 +758,51 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		return;
 	}
 
+	const bool same_module      = prepared.cached_module == runtime.module;
+	const bool use_image_cache  = Config::DescriptorCacheEnabled() && !m_lod_stats;
+	auto&      texture_cache    = m_context.GetTextureCache();
+	const auto tc_gen           = texture_cache.StructureGeneration();
+	const bool image_memo_ready = use_image_cache && same_module &&
+	                              prepared.images.size() == program.info.images.size() &&
+	                              prepared.image_memos.size() == program.info.images.size();
+
 	prepared.runtime          = &runtime;
 	prepared.cached_module    = runtime.module;
 	prepared.cached_resources = runtime.resources;
 	prepared.images.resize(program.info.images.size());
+	if (use_image_cache) {
+		prepared.image_memos.resize(program.info.images.size());
+	}
 	prepared.samplers.clear();
 	prepared.shader_data.clear();
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		if (program.info.images[i].heap) {
 			prepared.images[i] = {};
+			if (use_image_cache) {
+				prepared.image_memos[i].valid = false;
+			}
 			continue;
+		}
+		if (image_memo_ready) {
+			const auto& memo = prepared.image_memos[i];
+			if (memo.valid && memo.tc_gen == tc_gen && memo.descriptor == snapshot.images[i] &&
+			    (prepared.images[i].image_id == 0 ||
+			     texture_cache.ValidateAndTouchCachedImage(prepared.images[i].image_id))) {
+				BindImage(prepared.images[i].image_id,
+				          prepared.images[i].desc.type == TextureCache::BindingType::Storage);
+				continue;
+			}
 		}
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
 		binding.mip_views.swap(prepared.images[i].mip_views);
 		binding.mip_views.clear();
 		prepared.images[i] = std::move(binding);
+		if (use_image_cache) {
+			prepared.image_memos[i].descriptor = snapshot.images[i];
+			prepared.image_memos[i].tc_gen     = tc_gen;
+			prepared.image_memos[i].valid      = true;
+		}
 	}
 	prepared.samplers.reserve(program.info.samplers.size());
 	const bool reuse          = Config::BindingReuseEnabled();
@@ -925,6 +985,9 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 		if (!old_image.registered || old_image.binding.needs_rebind) {
 			old_image.binding = {};
 			images[i]         = ResolveTexture(program.info.images[i], snapshot.images[i]);
+			if (i < prepared.image_memos.size()) {
+				prepared.image_memos[i].valid = false;
+			}
 			BindImage(images[i].image_id,
 			          images[i].desc.type == TextureCache::BindingType::Storage);
 			if (!images[i].image_id) continue;

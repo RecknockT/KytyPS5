@@ -403,9 +403,11 @@ void TextureCache::RegisterImage(ImageId id) {
 	image.registered = true;
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
 	m_total_used_memory += image.AccountedSize();
+	m_structure_generation.fetch_add(1, std::memory_order_release);
 }
 
 void TextureCache::UnregisterImage(ImageId id) {
+	m_structure_generation.fetch_add(1, std::memory_order_release);
 	auto& image = m_slot_images[id];
 	image.HeapChanged();
 	UntrackImage(id);
@@ -500,6 +502,21 @@ void TextureCache::TouchImage(Image& image) {
 	if (image.registered) {
 		m_lru_cache.Touch(image.lru_id, m_gc_tick);
 	}
+}
+
+bool TextureCache::ValidateAndTouchCachedImage(ImageId id) {
+	if (!id) {
+		return false;
+	}
+	std::scoped_lock lock {m_lock};
+	auto*            image = m_slot_images.try_get(id);
+	if (image == nullptr || !image->registered || image->binding.needs_rebind || image->depth_id) {
+		return false;
+	}
+	image->tick_accessed_last    = m_scheduler.CurrentTick();
+	image->gc_tick_accessed_last = m_gc_tick;
+	TouchImage(*image);
+	return true;
 }
 
 void TextureCache::MarkAsMaybeDirty(ImageId id, Image& image) {

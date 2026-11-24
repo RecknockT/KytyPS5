@@ -420,6 +420,8 @@ static constexpr Flag FLAGS[] = {
     {"--no-ensure-pipeline-cache", &ConfigOptions::ensure_pipeline_cache_enabled, false},
     {"--descriptor-cache", &ConfigOptions::descriptor_cache_enabled, true},
     {"--no-descriptor-cache", &ConfigOptions::descriptor_cache_enabled, false},
+    {"--render-target-cache", &ConfigOptions::render_target_cache_enabled, true},
+    {"--no-render-target-cache", &ConfigOptions::render_target_cache_enabled, false},
     {"--effect-profile", &ConfigOptions::effect_profile_enabled, true},
     {"--no-effect-profile", &ConfigOptions::effect_profile_enabled, false},
     {"--gpu-timestamps", &ConfigOptions::gpu_timestamps_enabled, true},

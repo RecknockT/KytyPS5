@@ -10,79 +10,91 @@
 namespace Libs::Graphics::HW {
 
 struct ColorBase {
-	uint64_t addr = 0;
+	uint64_t addr                               = 0;
+	bool     operator==(const ColorBase&) const = default;
 };
 
 struct ColorView {
-	uint32_t base_array_slice_index = 0;
-	uint32_t last_array_slice_index = 0;
-	uint32_t current_mip_level      = 0;
+	uint32_t base_array_slice_index             = 0;
+	uint32_t last_array_slice_index             = 0;
+	uint32_t current_mip_level                  = 0;
+	bool     operator==(const ColorView&) const = default;
 };
 
 struct ColorInfo {
-	bool                    fmask_compression_enable       = false;
-	bool                    fmask_data_compression_disable = false;
-	bool                    fmask_one_frag_mode            = false;
-	bool                    cmask_fast_clear_enable        = false;
-	bool                    dcc_compression_enable         = false;
-	bool                    blend_clamp                    = false;
-	bool                    blend_bypass                   = false;
-	bool                    round_mode                     = false;
-	Prospero::ChannelLayout format                         = Prospero::ChannelLayout::kInvalid;
-	Prospero::ChannelType   channel_type                   = Prospero::ChannelType::kUNorm;
-	Prospero::ChannelOrder  channel_order                  = Prospero::ChannelOrder::kStandard;
+	bool                    fmask_compression_enable           = false;
+	bool                    fmask_data_compression_disable     = false;
+	bool                    fmask_one_frag_mode                = false;
+	bool                    cmask_fast_clear_enable            = false;
+	bool                    dcc_compression_enable             = false;
+	bool                    blend_clamp                        = false;
+	bool                    blend_bypass                       = false;
+	bool                    round_mode                         = false;
+	Prospero::ChannelLayout format                             = Prospero::ChannelLayout::kInvalid;
+	Prospero::ChannelType   channel_type                       = Prospero::ChannelType::kUNorm;
+	Prospero::ChannelOrder  channel_order                      = Prospero::ChannelOrder::kStandard;
+	bool                    operator==(const ColorInfo&) const = default;
 };
 
 struct ColorAttrib {
-	bool     force_dest_alpha_to_one = false;
-	uint32_t num_samples             = 0;
-	uint32_t num_fragments           = 0;
+	bool     force_dest_alpha_to_one              = false;
+	uint32_t num_samples                          = 0;
+	uint32_t num_fragments                        = 0;
+	bool     operator==(const ColorAttrib&) const = default;
 };
 
 struct ColorAttrib2 {
-	uint32_t height         = 0;
-	uint32_t width          = 0;
-	uint32_t num_mip_levels = 0;
+	uint32_t height                                = 0;
+	uint32_t width                                 = 0;
+	uint32_t num_mip_levels                        = 0;
+	bool     operator==(const ColorAttrib2&) const = default;
 };
 
 struct ColorAttrib3 {
-	uint32_t           depth                        = 0;
-	Prospero::TileMode tile_mode                    = Prospero::TileMode::kRenderTarget;
-	uint32_t           dimension                    = 0;
-	bool               metadata_pipe_aligned        = false;
-	bool               write_vrs_rate_hint_to_cmask = false;
+	uint32_t           depth                                 = 0;
+	Prospero::TileMode tile_mode                             = Prospero::TileMode::kRenderTarget;
+	uint32_t           dimension                             = 0;
+	bool               metadata_pipe_aligned                 = false;
+	bool               write_vrs_rate_hint_to_cmask          = false;
+	bool               operator==(const ColorAttrib3&) const = default;
 };
 
 struct ColorDccControl {
 	enum class IndependentBlockSize : uint8_t { Disabled, Bytes64, Bytes128 };
 
-	uint32_t             max_uncompressed_block_size    = 2;
-	uint32_t             max_compressed_block_size      = 2;
-	uint32_t             color_transform                = 0;
-	bool                 dcc_clear_key_enable           = false;
-	bool                 overwrite_combiner_disable     = false;
-	IndependentBlockSize independent_block_size         = IndependentBlockSize::Disabled;
-	bool                 data_write_on_dcc_clear_to_reg = false;
+	uint32_t             max_uncompressed_block_size              = 2;
+	uint32_t             max_compressed_block_size                = 2;
+	uint32_t             color_transform                          = 0;
+	bool                 dcc_clear_key_enable                     = false;
+	bool                 overwrite_combiner_disable               = false;
+	IndependentBlockSize independent_block_size                   = IndependentBlockSize::Disabled;
+	bool                 data_write_on_dcc_clear_to_reg           = false;
+	bool                 operator==(const ColorDccControl&) const = default;
 };
 
 struct ColorCmask {
-	uint64_t addr = 0;
+	uint64_t addr                                = 0;
+	bool     operator==(const ColorCmask&) const = default;
 };
 
 struct ColorFmask {
-	uint64_t addr = 0;
+	uint64_t addr                                = 0;
+	bool     operator==(const ColorFmask&) const = default;
 };
 
 struct ColorClearWord0 {
-	uint32_t word0 = 0;
+	uint32_t word0                                    = 0;
+	bool     operator==(const ColorClearWord0&) const = default;
 };
 
 struct ColorClearWord1 {
-	uint32_t word1 = 0;
+	uint32_t word1                                    = 0;
+	bool     operator==(const ColorClearWord1&) const = default;
 };
 
 struct ColorDccAddr {
-	uint64_t addr = 0;
+	uint64_t addr                                  = 0;
+	bool     operator==(const ColorDccAddr&) const = default;
 };
 
 struct RenderTarget {
@@ -98,6 +110,7 @@ struct RenderTarget {
 	ColorClearWord0 clear_word0;
 	ColorClearWord1 clear_word1;
 	ColorDccAddr    dcc_addr;
+	bool            operator==(const RenderTarget&) const = default;
 };
 
 struct DepthZInfo {
@@ -133,6 +146,7 @@ struct DepthZInfo {
 			default: return false;
 		}
 	}
+	bool operator==(const DepthZInfo&) const = default;
 };
 
 struct DepthStencilInfo {
@@ -161,20 +175,23 @@ struct DepthStencilInfo {
 			default: return false;
 		}
 	}
+	bool operator==(const DepthStencilInfo&) const = default;
 };
 
 struct DepthDepthView {
-	uint32_t slice_start           = 0;
-	uint32_t slice_max             = 0;
-	uint8_t  current_mip_level     = 0;
-	bool     depth_write_disable   = false;
-	bool     stencil_write_disable = false;
+	uint32_t slice_start                             = 0;
+	uint32_t slice_max                               = 0;
+	uint8_t  current_mip_level                       = 0;
+	bool     depth_write_disable                     = false;
+	bool     stencil_write_disable                   = false;
+	bool     operator==(const DepthDepthView&) const = default;
 };
 
 struct DepthDepthSizeXY {
-	uint16_t x_max = 0;
-	uint16_t y_max = 0;
-	bool     valid = false;
+	uint16_t x_max                                     = 0;
+	uint16_t y_max                                     = 0;
+	bool     valid                                     = false;
+	bool     operator==(const DepthDepthSizeXY&) const = default;
 };
 
 struct DepthRenderTarget {
@@ -183,24 +200,26 @@ struct DepthRenderTarget {
 	DepthDepthView   depth_view;
 	DepthDepthSizeXY size;
 
-	uint64_t z_read_base_addr        = 0;
-	uint64_t stencil_read_base_addr  = 0;
-	uint64_t z_write_base_addr       = 0;
-	uint64_t stencil_write_base_addr = 0;
-	uint64_t htile_data_base_addr    = 0;
-	uint8_t  shading_rate_encoding   = 0;
+	uint64_t z_read_base_addr                           = 0;
+	uint64_t stencil_read_base_addr                     = 0;
+	uint64_t z_write_base_addr                          = 0;
+	uint64_t stencil_write_base_addr                    = 0;
+	uint64_t htile_data_base_addr                       = 0;
+	uint8_t  shading_rate_encoding                      = 0;
+	bool     operator==(const DepthRenderTarget&) const = default;
 };
 
 struct RenderControl {
-	bool    depth_clear_enable       = false;
-	bool    stencil_clear_enable     = false;
-	bool    resummarize_enable       = false;
-	bool    stencil_compress_disable = false;
-	bool    depth_compress_disable   = false;
-	bool    copy_depth_to_color      = false;
-	bool    copy_stencil_to_color    = false;
-	bool    copy_centroid            = false;
-	uint8_t copy_sample              = 0;
+	bool    depth_clear_enable                     = false;
+	bool    stencil_clear_enable                   = false;
+	bool    resummarize_enable                     = false;
+	bool    stencil_compress_disable               = false;
+	bool    depth_compress_disable                 = false;
+	bool    copy_depth_to_color                    = false;
+	bool    copy_stencil_to_color                  = false;
+	bool    copy_centroid                          = false;
+	uint8_t copy_sample                            = 0;
+	bool    operator==(const RenderControl&) const = default;
 };
 
 struct DepthRenderOverride {
@@ -230,34 +249,37 @@ struct ClipControl {
 };
 
 struct DepthControl {
-	bool    stencil_enable      = false;
-	bool    z_enable            = false;
-	bool    z_write_enable      = false;
-	bool    depth_bounds_enable = false;
-	uint8_t zfunc               = 0;
-	bool    backface_enable     = false;
-	uint8_t stencilfunc         = 0;
-	uint8_t stencilfunc_bf      = 0;
+	bool    stencil_enable                        = false;
+	bool    z_enable                              = false;
+	bool    z_write_enable                        = false;
+	bool    depth_bounds_enable                   = false;
+	uint8_t zfunc                                 = 0;
+	bool    backface_enable                       = false;
+	uint8_t stencilfunc                           = 0;
+	uint8_t stencilfunc_bf                        = 0;
+	bool    operator==(const DepthControl&) const = default;
 };
 
 struct StencilControl {
-	uint8_t stencil_fail     = 0;
-	uint8_t stencil_zpass    = 0;
-	uint8_t stencil_zfail    = 0;
-	uint8_t stencil_fail_bf  = 0;
-	uint8_t stencil_zpass_bf = 0;
-	uint8_t stencil_zfail_bf = 0;
+	uint8_t stencil_fail                            = 0;
+	uint8_t stencil_zpass                           = 0;
+	uint8_t stencil_zfail                           = 0;
+	uint8_t stencil_fail_bf                         = 0;
+	uint8_t stencil_zpass_bf                        = 0;
+	uint8_t stencil_zfail_bf                        = 0;
+	bool    operator==(const StencilControl&) const = default;
 };
 
 struct StencilMask {
-	uint8_t stencil_testval      = 0;
-	uint8_t stencil_mask         = 0;
-	uint8_t stencil_writemask    = 0;
-	uint8_t stencil_opval        = 0;
-	uint8_t stencil_testval_bf   = 0;
-	uint8_t stencil_mask_bf      = 0;
-	uint8_t stencil_writemask_bf = 0;
-	uint8_t stencil_opval_bf     = 0;
+	uint8_t stencil_testval                      = 0;
+	uint8_t stencil_mask                         = 0;
+	uint8_t stencil_writemask                    = 0;
+	uint8_t stencil_opval                        = 0;
+	uint8_t stencil_testval_bf                   = 0;
+	uint8_t stencil_mask_bf                      = 0;
+	uint8_t stencil_writemask_bf                 = 0;
+	uint8_t stencil_opval_bf                     = 0;
+	bool    operator==(const StencilMask&) const = default;
 };
 
 struct ModeControl {

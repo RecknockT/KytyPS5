@@ -52,6 +52,11 @@ struct PreparedBindings {
 		uint32_t                              policy  = 0;
 		bool                                  valid   = false;
 	};
+	struct ImageMemo {
+		ShaderRecompiler::IR::DescriptorValue descriptor;
+		uint64_t                              tc_gen = 0;
+		bool                                  valid  = false;
+	};
 	struct UploadMemo {
 		vk::DescriptorBufferInfo info;
 		uint64_t                 epoch = 0;
@@ -64,6 +69,7 @@ struct PreparedBindings {
 	// These memos contain no texture state, dirty-state result or synchronization decision.
 	std::vector<BufferMemo>  buffer_memos;
 	std::vector<SamplerMemo> sampler_memos;
+	std::vector<ImageMemo>   image_memos;
 
 	// The draw owns the immutable compiled-program/runtime-snapshot association through commit.
 	const ShaderStageRuntime*                     runtime          = nullptr;

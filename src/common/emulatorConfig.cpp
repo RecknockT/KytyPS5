@@ -423,6 +423,10 @@ bool DescriptorCacheEnabled() {
 	return g_config != nullptr ? g_config->descriptor_cache_enabled : true;
 }
 
+bool RenderTargetCacheEnabled() {
+	return g_config != nullptr ? g_config->render_target_cache_enabled : true;
+}
+
 bool TileLayoutCacheEnabled() {
 	const auto mode = g_tile_layout_effective.load(std::memory_order_relaxed);
 	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->tile_layout_cache_enabled;

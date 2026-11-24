@@ -1451,6 +1451,80 @@ TEST_F(AuditProfilerTest, ScratchMemoryCounterBaselines) {
   EXPECT_FALSE(Config::TrimScratchMemoryEnabled());
 }
 
+TEST_F(AuditProfilerTest, WorkloadTimeDistributionGpuBound) {
+  SetEnabled(true);
+  StartCapture("tripartite-gpu-bound");
+
+  // Queue: 2 ms
+  RecordQueueLatency(QueueLatencyType::Submission, 1'000'000);
+  RecordQueueLatency(QueueLatencyType::OpStream, 1'000'000);
+
+  // CPU Active: 8 ms
+  RecordPipelineStage(PipelineStage::Pm4Decode, 3'000'000);
+  RecordPipelineStage(PipelineStage::CommandRecording, 5'000'000);
+
+  // GPU Wait: 30 ms (75% -> GpuBound)
+  RecordGpuWait(GpuWaitReason::StreamBufferWait, 20'000'000);
+  RecordGpuWait(GpuWaitReason::Swapchain, 10'000'000);
+
+  const auto snap = TakeSnapshot();
+  const auto &td  = snap.time_distribution;
+
+  EXPECT_DOUBLE_EQ(td.queue_submission_ms, 1.0);
+  EXPECT_DOUBLE_EQ(td.queue_opstream_ms, 1.0);
+  EXPECT_DOUBLE_EQ(td.total_queue_ms, 2.0);
+  EXPECT_DOUBLE_EQ(td.total_cpu_active_ms, 8.0);
+  EXPECT_DOUBLE_EQ(td.total_gpu_wait_ms, 30.0);
+  EXPECT_DOUBLE_EQ(td.total_workload_ms, 40.0);
+
+  EXPECT_NEAR(td.queue_pct, 5.0, 0.01);
+  EXPECT_NEAR(td.cpu_active_pct, 20.0, 0.01);
+  EXPECT_NEAR(td.gpu_wait_pct, 75.0, 0.01);
+  EXPECT_EQ(td.bottleneck, WorkloadTimeDistribution::Bottleneck::GpuBound);
+
+  const auto path = std::filesystem::temp_directory_path() / "kyty_test_time_dist.json";
+  ASSERT_TRUE(ExportJson(path.string(), &snap));
+  std::ifstream in(path);
+  const auto j = nlohmann::json::parse(in);
+  EXPECT_TRUE(j.contains("time_distribution"));
+  EXPECT_NEAR(j["time_distribution"]["gpu_wait_pct"].get<double>(), 75.0, 0.01);
+  in.close();
+  std::filesystem::remove(path);
+
+  StopCapture();
+}
+
+TEST_F(AuditProfilerTest, WorkloadTimeDistributionQueueAndCpuBound) {
+  SetEnabled(true);
+  StartCapture("tripartite-queue-bound");
+
+  // Queue: 15 ms (60%)
+  RecordQueueLatency(QueueLatencyType::Intake, 5'000'000);
+  RecordQueueLatency(QueueLatencyType::Backpressure, 10'000'000);
+  // CPU: 6 ms (24%)
+  RecordPipelineStage(PipelineStage::DescriptorPrep, 6'000'000);
+  // GPU: 4 ms (16%)
+  RecordGpuWait(GpuWaitReason::BufferReadback, 4'000'000);
+
+  auto snap = TakeSnapshot();
+  EXPECT_NEAR(snap.time_distribution.queue_pct, 60.0, 0.01);
+  EXPECT_EQ(snap.time_distribution.bottleneck,
+            WorkloadTimeDistribution::Bottleneck::QueueSyncBound);
+  StopCapture();
+
+  // Now CPU bound test
+  StartCapture("tripartite-cpu-bound");
+  RecordQueueLatency(QueueLatencyType::Submission, 1'000'000);
+  RecordPipelineStage(PipelineStage::DrawPrepWorker, 14'000'000);
+  RecordPipelineStage(PipelineStage::Submit, 2'000'000);
+  RecordGpuWait(GpuWaitReason::PriorityOperation, 3'000'000);
+
+  snap = TakeSnapshot();
+  EXPECT_NEAR(snap.time_distribution.cpu_active_pct, 80.0, 0.01);
+  EXPECT_EQ(snap.time_distribution.bottleneck, WorkloadTimeDistribution::Bottleneck::CpuBound);
+  StopCapture();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {

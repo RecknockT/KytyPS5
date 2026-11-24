@@ -114,6 +114,7 @@ struct ConfigOptions {
 	bool     draw_state_dirty_check_enabled = false;
 	bool     ensure_pipeline_cache_enabled  = true;
 	bool     descriptor_cache_enabled       = true;
+	bool     render_target_cache_enabled    = true;
 	bool     tile_layout_cache_enabled      = false;
 	bool     binding_reuse_enabled          = false;
 	bool     resource_prep_reuse_enabled    = false;
@@ -263,6 +264,7 @@ uint64_t           GetGpuSubmitCadenceIntervalUs();
 uint32_t           GetAuditCaptureDelaySec();
 uint32_t           GetAuditCaptureDurationSec();
 bool               RedundantBindElisionEnabled();
+bool               RenderTargetCacheEnabled();
 bool               PipelineCacheMruEnabled();
 bool               PipelineKeyCacheEnabled();
 bool               DrawStateDirtyCheckEnabled();

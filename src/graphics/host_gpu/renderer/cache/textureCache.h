@@ -55,7 +55,11 @@ public:
 	~TextureCache();
 	KYTY_CLASS_NO_COPY(TextureCache);
 
-	[[nodiscard]] ImageId       FindImage(ImageDesc& desc, bool exact_format = false);
+	[[nodiscard]] ImageId  FindImage(ImageDesc& desc, bool exact_format = false);
+	[[nodiscard]] uint64_t StructureGeneration() const noexcept {
+		return m_structure_generation.load(std::memory_order_acquire);
+	}
+	[[nodiscard]] bool          ValidateAndTouchCachedImage(ImageId id);
 	void                        UpdateImage(ImageId id);
 	[[nodiscard]] ImageId       FindImageFromRange(uint64_t address, uint64_t size,
 	                                               bool ensure_valid = true);
@@ -329,11 +333,12 @@ private:
 	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 3ull * 1024 * 1024 * 1024;
 	// Written and read without the lock only on the GPU thread.
-	uint64_t m_gc_tick                 = 0;
-	bool     m_readback_linear_images  = false;
-	bool     m_readback_tiled_images   = false;
-	bool     m_readback_storage_images = false;
-	bool     m_partial_buffer_refresh  = false;
+	uint64_t              m_gc_tick                 = 0;
+	std::atomic<uint64_t> m_structure_generation    = {1};
+	bool                  m_readback_linear_images  = false;
+	bool                  m_readback_tiled_images   = false;
+	bool                  m_readback_storage_images = false;
+	bool                  m_partial_buffer_refresh  = false;
 
 	friend struct TextureCacheTestAccess;
 	friend class BufferCache;

@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
@@ -268,6 +269,29 @@ private:
 		uint8_t                 msaa_samples        = 0;
 		bool                    valid               = false;
 	} m_cached_targets_sig;
+	struct CachedColorTarget {
+		HW::RenderTarget rt_reg {};
+		uint32_t         slot_mask          = 0;
+		bool             ignore_target_mask = false;
+		bool             exact_format       = false;
+		bool             has_color_meta     = false;
+		bool             valid              = false;
+		uint64_t         tc_gen             = 0;
+		RenderColorInfo  info {};
+	};
+	std::array<CachedColorTarget, RENDER_COLOR_ATTACHMENTS_MAX> m_color_target_cache {};
+	struct CachedDepthTarget {
+		HW::DepthRenderTarget z_reg {};
+		HW::RenderControl     rc {};
+		HW::DepthControl      dc {};
+		HW::StencilControl    sc {};
+		HW::StencilMask       sm {};
+		float                 depth_clear   = 0.0f;
+		uint8_t               stencil_clear = 0;
+		bool                  valid         = false;
+		uint64_t              tc_gen        = 0;
+		RenderDepthInfo       info {};
+	} m_depth_target_cache {};
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                 m_bound_images;
 	std::vector<vk::DescriptorImageInfo> m_descriptor_images;
@@ -277,6 +301,15 @@ private:
 	vk::Pipeline                         m_pssr_pipeline          = nullptr;
 	std::vector<UpscalerContext>         m_upscaler_contexts;
 	std::array<MipStatsCounter, 256>     m_mip_stats {};
+	struct CachedResolvedTexture {
+		std::array<uint32_t, 8> dwords {};
+		uint8_t                 flags  = 0;
+		bool                    valid  = false;
+		uint64_t                tc_gen = 0;
+		TextureBinding          binding {};
+	};
+	static constexpr size_t                                     ResolvedTextureCacheSize = 64;
+	std::array<CachedResolvedTexture, ResolvedTextureCacheSize> m_resolved_texture_cache {};
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

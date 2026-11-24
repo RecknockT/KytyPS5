@@ -50,7 +50,7 @@ set "GAME_PATH=%GAME_PATH:"=%"
 if not exist "%GAME_PATH%" (
     echo.
     echo [ERROR] La ruta especificada no existe: "%GAME_PATH%"
-    echo Asegurese de indicar un eboot.bin o directorio valido de Astro Bot (PPSA21567).
+    echo Asegurese de indicar un eboot.bin o directorio valido de Astro Bot [PPSA21567].
     echo.
     pause
     exit /b 1
@@ -60,13 +60,9 @@ if not exist "%GAME_PATH%" (
 if not exist "%REPO_ROOT%\_TestLogs" mkdir "%REPO_ROOT%\_TestLogs"
 
 :: Generar timestamp independiente de locale
-for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value 2^>nul') do if not "%%I"=="" set "LDT=%%I"
-if "%LDT%"=="" (
-    set "TSTAMP=%DATE:~10,4%%DATE:~4,2%%DATE:~7,2%_%TIME:~0,2%%TIME:~3,2%%TIME:~6,2%"
-    set "TSTAMP=%TSTAMP: =0%"
-) else (
-    set "TSTAMP=%LDT:~0,4%%LDT:~4,2%%LDT:~6,2%_%LDT:~8,2%%LDT:~10,2%%LDT:~12,2%"
-)
+set "TSTAMP="
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss" 2^>nul') do set "TSTAMP=%%I"
+if "%TSTAMP%"=="" set "TSTAMP=latest"
 
 set "LOG_FILE=%REPO_ROOT%\_TestLogs\astrobot_profile_a_baseline_%TSTAMP%.json"
 

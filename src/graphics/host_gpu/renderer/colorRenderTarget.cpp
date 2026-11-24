@@ -45,8 +45,8 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	KYTY_PROFILER_FUNCTION();
 	const auto& hw = buffer.GetRegisters();
 
-	const auto& rt      = hw.GetRenderTarget(rt_slot);
-	auto        mask    = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
+	const auto& rt   = hw.GetRenderTarget(rt_slot);
+	auto        mask = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
 	if (ignore_target_mask && rt.base.addr != 0 && mask == 0) {
 		mask = 0x0f;
 	}
@@ -66,6 +66,24 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		}
 
 		return;
+	}
+	if (Config::RenderTargetCacheEnabled() && rt_slot < RENDER_COLOR_ATTACHMENTS_MAX) {
+		auto&       texture_cache = m_context.GetTextureCache();
+		const auto& cached        = m_color_target_cache[rt_slot];
+		if (cached.valid && cached.ignore_target_mask == ignore_target_mask &&
+		    cached.exact_format == exact_format && cached.slot_mask == mask &&
+		    cached.tc_gen == texture_cache.StructureGeneration() && cached.rt_reg == rt &&
+		    (cached.info.image_id == 0 ||
+		     texture_cache.ValidateAndTouchCachedImage(cached.info.image_id))) {
+			r = cached.info;
+			if (cached.has_color_meta && r.image_id) {
+				texture_cache.MaterializeColorClear(r.image_id, r.desc, r.guest_array_layer);
+			}
+			if (r.image_id) {
+				BindRenderTarget(r.image_id);
+			}
+			return;
+		}
 	}
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	// TODO(PPSA24156): Replace this 2x MSAA approximation with proper 4-coverage/2-fragment EQAA.
@@ -103,10 +121,10 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	const uint32_t depth = volume ? rt.attrib3.depth + 1u : 1u;
 	// For volumes, CB_COLOR_VIEW bounds exported slices; ATTRIB3 defines storage depth.
 	// The host attachment contains only the selected slices that exist in this mip.
-	const uint32_t last_layer = volume
-	                                ? std::min(rt.view.last_array_slice_index,
-	                                           std::max(depth >> rt.view.current_mip_level, 1u) - 1u)
-	                                : rt.view.last_array_slice_index;
+	const uint32_t last_layer =
+	    volume ? std::min(rt.view.last_array_slice_index,
+	                      std::max(depth >> rt.view.current_mip_level, 1u) - 1u)
+	           : rt.view.last_array_slice_index;
 	if (rt.view.base_array_slice_index > last_layer) {
 		EXIT("invalid render-target view: base=%u last=%u\n", rt.view.base_array_slice_index,
 		     last_layer);
@@ -149,11 +167,10 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		EXIT("linear 3D render targets are unsupported\n");
 	}
 
-	const uint32_t width  = rt.attrib2.width + 1;
-	const uint32_t height = rt.attrib2.height + 1;
-	const auto target_format =
-	    TextureGetRenderTargetFormat(m_context.GetGraphics(), rt.info.format, rt.info.channel_type,
-	                                 rt.info.channel_order);
+	const uint32_t width         = rt.attrib2.width + 1;
+	const uint32_t height        = rt.attrib2.height + 1;
+	const auto     target_format = TextureGetRenderTargetFormat(
+	    m_context.GetGraphics(), rt.info.format, rt.info.channel_type, rt.info.channel_order);
 	// A surface with one stored level starts every MIP_LEVEL at the base address, so a level with
 	// mip 0's padded pitch aliases mip 0's top-left texels.
 	uint32_t mip = rt.view.current_mip_level;
@@ -194,14 +211,14 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		     " layer=%u/%u\n",
 		     rt.attrib3.dimension, rt.attrib3.depth, view.base_layer, view.image_layers);
 	}
-	auto& desc = r.desc;
+	auto& desc             = r.desc;
 	desc.type              = TextureCache::BindingType::RenderTarget;
-	desc.info.data            = {rt.base.addr, 0};
+	desc.info.data         = {rt.base.addr, 0};
 	desc.info.pixel_format = target_format.format;
 	desc.info.guest_format = target_format.guest_format;
 	desc.info.type         = volume ? Prospero::ImageType::kColor3D : Prospero::ImageType::kColor2D;
 	desc.info.extent       = {width, height, depth};
-	desc.info.resources       = {levels, volume ? 1u : view.image_layers};
+	desc.info.resources    = {levels, volume ? 1u : view.image_layers};
 	desc.info.bytes_per_block = bytes_per_element;
 	desc.info.samples         = samples;
 	desc.info.tile_mode       = rt.attrib3.tile_mode;
@@ -213,13 +230,12 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	if (!desc.info.data.Valid()) {
 		EXIT("render-target backing range is invalid\n");
 	}
-	const bool has_dcc        = rt.info.dcc_compression_enable && rt.dcc_addr.addr != 0;
-	const bool has_cmask      = !rt.info.dcc_compression_enable && rt.info.cmask_fast_clear_enable &&
-	                            rt.cmask.addr != 0 &&
-	                            !rt.attrib3.write_vrs_rate_hint_to_cmask;
+	const bool has_dcc   = rt.info.dcc_compression_enable && rt.dcc_addr.addr != 0;
+	const bool has_cmask = !rt.info.dcc_compression_enable && rt.info.cmask_fast_clear_enable &&
+	                       rt.cmask.addr != 0 && !rt.attrib3.write_vrs_rate_hint_to_cmask;
 	if (has_dcc || has_cmask) {
 		TileSizeAlign metadata_size {};
-		const auto layers = volume ? depth : view.image_layers;
+		const auto    layers = volume ? depth : view.image_layers;
 		if (has_dcc) {
 			(void)TileGetDccSize(width, height, layers, bytes_per_element, levels,
 			                     rt.attrib3.tile_mode, metadata_size, rt.attrib.num_fragments);
@@ -228,7 +244,7 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 			(void)TileGetCmaskSize(width, height, layers, levels, metadata_size);
 		}
 		// DCC owns the clear when both planes are enabled.
-		desc.info.metadata.kind = has_dcc ? ImageMetadataKind::Dcc : ImageMetadataKind::Cmask;
+		desc.info.metadata.kind  = has_dcc ? ImageMetadataKind::Dcc : ImageMetadataKind::Cmask;
 		desc.info.metadata.range = {has_dcc ? rt.dcc_addr.addr : rt.cmask.addr, metadata_size.size};
 		desc.info.metadata.clear_word =
 		    rt.clear_word0.word0 | (uint64_t {rt.clear_word1.word1} << 32u);
@@ -248,6 +264,17 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	r.guest_array_layer        = view.base_layer;
 	r.image_id                 = texture_cache.FindImage(r.desc, exact_format);
 	r.export_mapping           = target_format.export_mapping;
+	if (Config::RenderTargetCacheEnabled() && rt_slot < RENDER_COLOR_ATTACHMENTS_MAX) {
+		auto& cached              = m_color_target_cache[rt_slot];
+		cached.rt_reg             = rt;
+		cached.slot_mask          = mask;
+		cached.ignore_target_mask = ignore_target_mask;
+		cached.exact_format       = exact_format;
+		cached.has_color_meta     = (has_dcc || has_cmask);
+		cached.tc_gen             = texture_cache.StructureGeneration();
+		cached.info               = r;
+		cached.valid              = true;
+	}
 	BindRenderTarget(r.image_id);
 }
 
