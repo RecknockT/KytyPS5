@@ -53,7 +53,7 @@ void Relax() noexcept {
 
 uint32_t SnapshotCount() {
 	static const auto count =
-	    static_cast<uint32_t>(EnvUnsigned("KYTY_CP_SEQ_SNAPSHOTS", 64, 4, 4096));
+	    static_cast<uint32_t>(EnvUnsigned("KYTY_CP_SEQ_SNAPSHOTS", 256, 4, 4096));
 	return count;
 }
 

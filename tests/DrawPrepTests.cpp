@@ -2,6 +2,7 @@
 
 #include "common/auditProfiler.h"
 #include "common/emulatorConfig.h"
+#include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -763,6 +764,148 @@ void TestQueueDepthAndCapacityTracking() {
   Check(engine.GetQueueDepth() == 0, "Queue depth is 0 after drain");
 }
 
+void TestDrawPrepSaturationAndSnapshotIntegrity() {
+  std::printf("Running TestDrawPrepSaturationAndSnapshotIntegrity (Regression Test A)...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  constexpr uint32_t total_draws = 256;
+  std::atomic<uint32_t> published_count{0};
+
+  std::thread producer([&] {
+    HW::Context ctx;
+    HW::UserConfig ucfg;
+    HW::Shader sh;
+    sh.SetEsShaderBase(0x1000'0000ull);
+    ucfg.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
+
+    DrawIndexArgs args{.index_count = 36, .instance_count = 1};
+
+    for (uint32_t i = 0; i < total_draws; ++i) {
+      ctx.SetPsInControl(0xa000u + i);
+      const auto pos = engine.Publish(&args, nullptr, ctx, ucfg, sh, [] { return true; });
+      Check(pos == i, "Published monotonic position matches loop index");
+      published_count.store(i + 1, std::memory_order_release);
+    }
+  });
+
+  bool all_intact = true;
+  for (uint32_t i = 0; i < total_draws; ++i) {
+    while (published_count.load(std::memory_order_acquire) <= i) {
+      std::this_thread::yield();
+    }
+    PreparedDraw prep;
+    const bool committed = engine.CommitPublished(i, prep);
+    Check(committed, "Commit succeeds across ring wraps");
+    if (prep.snapshot.context.GetShaderRegisters().ps_in_control != (0xa000u + i)) {
+      all_intact = false;
+    }
+    if (prep.snapshot.user_config.GetPrimType() != Prospero::PrimitiveType::kTriList) {
+      all_intact = false;
+    }
+  }
+  producer.join();
+  Check(all_intact, "All 256 snapshots arrived intact across multiple 64-slot ring wrap cycles");
+
+  // Out of bounds / stale position tests
+  PreparedDraw invalid_prep;
+  Check(!engine.CommitPublished(0, invalid_prep), "Already consumed slot 0 returns false");
+  Check(!engine.CommitPublished(total_draws, invalid_prep), "Unpublished future slot returns false");
+  Check(!engine.CommitPublished(99999, invalid_prep), "Way out of range slot returns false");
+}
+
+void TestAdversarialInterleavedConcurrency() {
+  std::printf("Running TestAdversarialInterleavedConcurrency (Regression Test D)...\n");
+  Engine engine(GetDummyRenderer(), 4);
+  engine.SetMode(Mode::Parallel);
+
+  CpSeq::OpStream stream(512u << 10u);
+  CpSeq::SnapshotRing snapshots(256);
+
+  constexpr uint32_t iterations = 100;
+  std::atomic<bool> stop_flag{false};
+
+  // Producer thread simulating CpSequencer
+  std::thread sequencer_thread([&] {
+    HW::Context ctx;
+    HW::UserConfig ucfg;
+    HW::Shader sh;
+    sh.SetEsShaderBase(0x2000'0000ull);
+    ucfg.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
+
+    DrawIndexArgs args{.index_count = 24, .instance_count = 1};
+
+    for (uint32_t i = 0; i < iterations; ++i) {
+      ctx.SetPsInControl(0xb000u + i);
+
+      // Snapshot + DrawPrep publish
+      const auto snap_idx = snapshots.AcquireBlocking([&] { return stop_flag.load(); });
+      if (snap_idx == UINT32_MAX) break;
+
+      auto& snap = snapshots.Entry(snap_idx);
+      snap.context = ctx;
+      snap.user_config = ucfg;
+      snap.shaders = sh;
+
+      const auto win_pos = engine.Publish(&args, nullptr, ctx, ucfg, sh, [&] { return !stop_flag.load(); });
+
+      CpSeq::DrawIndexOp op{};
+      op.index_count = args.index_count;
+      op.instance_count = 1;
+      op.flags = CpSeq::DrawFlagSnapshot;
+      op.snapshot = snap_idx;
+      if (win_pos != UINT64_MAX) {
+        op.flags |= CpSeq::DrawFlagPublished;
+        op.window = win_pos;
+      }
+      stream.Emit(CpSeq::OpKind::DrawIndex, &op, sizeof(op), nullptr, 0, i * 2, 0, false);
+
+      // Interleave non-draw operations (dispatch, release mem) without draining draw prep!
+      if ((i % 4) == 0) {
+        CpSeq::DispatchDirectOp disp{};
+        disp.x = 1; disp.y = 1; disp.z = 1;
+        stream.Emit(CpSeq::OpKind::DispatchDirect, &disp, sizeof(disp), nullptr, 0, i * 2 + 1, 0, false);
+      }
+    }
+  });
+
+  // Consumer thread simulating GPU thread (ResolveSubmission)
+  uint32_t draws_consumed = 0;
+  bool data_intact = true;
+
+  while (draws_consumed < iterations) {
+    CpSeq::OpView view;
+    if (!stream.Peek(view)) {
+      std::this_thread::yield();
+      continue;
+    }
+
+    if (view.Kind() == CpSeq::OpKind::DrawIndex) {
+      const auto& op = view.As<CpSeq::DrawIndexOp>();
+      PreparedDraw prep;
+      if ((op.flags & CpSeq::DrawFlagPublished) != 0) {
+        (void)engine.CommitPublished(op.window, prep);
+      }
+      if ((op.flags & CpSeq::DrawFlagSnapshot) != 0) {
+        const auto& snap = snapshots.Entry(op.snapshot);
+        if (snap.context.GetShaderRegisters().ps_in_control != (0xb000u + draws_consumed)) {
+          data_intact = false;
+        }
+        snapshots.Release();
+      }
+      draws_consumed++;
+      stream.Pop();
+    } else {
+      // Non-draw op: do NOT call engine.Drain()! Process smoothly.
+      stream.Pop();
+    }
+  }
+
+  sequencer_thread.join();
+  Check(draws_consumed == iterations, "All draws consumed in adversarial interleaved test");
+  Check(data_intact, "All snapshot register payloads intact under high interleaved concurrency");
+}
+
 } // namespace
 
 int main() {
@@ -785,6 +928,8 @@ int main() {
   TestComputeDrawInterleavedBarrierSafety();
   TestDrawPrepWaitSpinVsCvBounded();
   TestQueueDepthAndCapacityTracking();
+  TestDrawPrepSaturationAndSnapshotIntegrity();
+  TestAdversarialInterleavedConcurrency();
 
   if (g_failures == 0) {
     std::printf("=== All DrawPrep Tests PASSED ===\n");

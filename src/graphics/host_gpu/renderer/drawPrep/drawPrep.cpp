@@ -304,9 +304,20 @@ bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
 		return false;
 	}
 
-	const auto     t_wait_start = GetNowNs();
-	const uint32_t slot_idx     = static_cast<uint32_t>(position & m_window_mask);
-	auto&          slot         = m_window[slot_idx];
+	const auto cur_head = m_head.load(std::memory_order_acquire);
+	const auto cur_tail = m_tail.load(std::memory_order_acquire);
+	if (position < cur_head || position >= cur_tail) {
+		return false;
+	}
+
+	const uint32_t slot_idx = static_cast<uint32_t>(position & m_window_mask);
+	auto&          slot     = m_window[slot_idx];
+
+	if (slot.position != position) {
+		return false;
+	}
+
+	const auto t_wait_start = GetNowNs();
 
 	// Bounded spin wait for slot readiness (up to 5 us to prevent thread starvation)
 	constexpr uint64_t max_spin_ns = 5'000;

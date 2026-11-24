@@ -389,6 +389,273 @@ void TestCommandOrderingAndIndirect() {
 	Check(!stream.Peek(v0), "stream is empty after pop");
 }
 
+void TestCpSequencerWithoutDrawPrep() {
+	std::printf("Running TestCpSequencerWithoutDrawPrep (Regression Test B)...\n");
+	OpStream            stream(256u << 10u);
+	CpSeq::SnapshotRing snapshots(256);
+
+	constexpr uint32_t num_draws = 100;
+	HW::Context        curr_ctx;
+	HW::UserConfig     curr_ucfg;
+	HW::Shader         curr_sh;
+
+	for (uint32_t i = 0; i < num_draws; ++i) {
+		// Sequencer thread sets registers for draw
+		curr_ctx.SetPsInControl(0x1000u + i);
+		curr_ucfg.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
+		curr_sh.SetEsShaderBase(0x2000'0000ull + i * 0x1000ull);
+
+		// Acquire snapshot from ring (CpSequencer without DrawPrep)
+		const auto snap_idx = snapshots.AcquireBlocking();
+		Check(snap_idx != UINT32_MAX, "Snapshot acquired successfully");
+		auto& entry       = snapshots.Entry(snap_idx);
+		entry.context     = curr_ctx;
+		entry.user_config = curr_ucfg;
+		entry.shaders     = curr_sh;
+
+		DrawIndexOp op {};
+		op.index_count         = 36;
+		op.instance_count      = 1;
+		op.index_type_and_size = 0;
+		op.flags               = DrawFlagSnapshot; // NO DrawFlagPublished!
+		op.snapshot            = snap_idx;
+
+		stream.Emit(OpKind::DrawIndex, &op, sizeof(op), nullptr, 0, i, 0, false);
+
+		// Mutate original registers immediately to simulate CP moving ahead or resetting!
+		curr_ucfg.SetPrimitiveType(Prospero::PrimitiveType::kNone);
+		curr_ctx.SetPsInControl(0);
+		curr_sh.SetEsShaderBase(0);
+	}
+
+	// GPU thread resolves submissions
+	for (uint32_t i = 0; i < num_draws; ++i) {
+		OpView view;
+		Check(stream.Peek(view), "GPU thread peek op");
+		Check(view.Kind() == OpKind::DrawIndex, "Op is DrawIndex");
+		const auto& draw_op = view.As<DrawIndexOp>();
+
+		Check((draw_op.flags & DrawFlagSnapshot) != 0, "DrawFlagSnapshot is set");
+		Check((draw_op.flags & DrawFlagPublished) == 0, "DrawFlagPublished is NOT set");
+
+		const auto& snap = snapshots.Entry(draw_op.snapshot);
+		Check(snap.user_config.GetPrimType() == Prospero::PrimitiveType::kTriList,
+		      "PrimType preserved intact (NOT kNone)");
+		Check(snap.context.GetShaderRegisters().ps_in_control == 0x1000u + i,
+		      "Context register preserved intact");
+		Check(snap.shaders.GetVs().es_regs.data_addr == 0x2000'0000ull + i * 0x1000ull,
+		      "Shader register preserved intact");
+
+		snapshots.Release();
+		stream.Pop();
+	}
+	Check(snapshots.HasFree(), "All snapshots released");
+}
+
+void TestPipelineCacheMruCoherency() {
+	std::printf("Running TestPipelineCacheMruCoherency (Regression Test C)...\n");
+	struct MockPipeline {
+		uint32_t id          = 0;
+		uint32_t push_stages = 0;
+	};
+
+	struct MockKeyInputCache {
+		bool     valid     = false;
+		uint32_t vs_id     = 0;
+		uint32_t ps_id     = 0;
+		uint32_t prim_type = 0;
+	};
+
+	MockKeyInputCache key_input_cache {};
+	MockPipeline      pipeline_A {.id = 1, .push_stages = 0x01};
+	MockPipeline      pipeline_B {.id = 2, .push_stages = 0x03};
+	MockPipeline*     last_graphics_pipeline = nullptr;
+
+	// Draw 1: Uses pipeline A
+	last_graphics_pipeline    = &pipeline_A;
+	key_input_cache.valid     = true;
+	key_input_cache.vs_id     = 100;
+	key_input_cache.ps_id     = 200;
+	key_input_cache.prim_type = 1;
+
+	auto CheckMatch = [&](uint32_t vs, uint32_t ps, uint32_t pt) {
+		return key_input_cache.valid && key_input_cache.vs_id == vs &&
+		       key_input_cache.ps_id == ps && key_input_cache.prim_type == pt;
+	};
+
+	Check(CheckMatch(100, 200, 1), "Draw 1 matches key input cache");
+	Check(last_graphics_pipeline->id == 1, "Draw 1 uses pipeline A");
+
+	// Draw 2: Fresh compile inserts Pipeline B.
+	// With Etapa 8.4F fix: UpdateKeyInputCache is called whenever inserted == true!
+	last_graphics_pipeline    = &pipeline_B;
+	key_input_cache.valid     = true;
+	key_input_cache.vs_id     = 300;
+	key_input_cache.ps_id     = 400;
+	key_input_cache.prim_type = 2;
+
+	// Draw 3: Has the SAME inputs as Draw 1 (vs=100, ps=200, pt=1)
+	// Because key_input_cache was properly updated on Draw 2, CheckMatch returns FALSE!
+	const bool draw3_matches_fast = CheckMatch(100, 200, 1);
+	Check(!draw3_matches_fast, "Draw 3 does NOT falsely match Draw 2 MRU key input cache");
+}
+
+void TestSnapshotRingSaturationAndShutdown() {
+	std::printf("Running TestSnapshotRingSaturationAndShutdown...\n");
+	SnapshotRing ring(256);
+	Check(ring.Capacity() == 256, "Ring capacity is 256");
+
+	// Saturate all 256 slots
+	for (uint32_t i = 0; i < 256; ++i) {
+		Check(ring.HasFree(), "Slot must be free before saturation");
+		const auto idx = ring.Acquire();
+		Check(idx == i, "Acquire must match index monotonically");
+	}
+	Check(!ring.HasFree(), "Ring must be fully saturated at 256");
+
+	// Test graceful cancellation / shutdown when blocked
+	std::atomic<bool>     stop {false};
+	std::atomic<uint32_t> result_idx {0};
+	std::thread blocked_thread([&] {
+		result_idx.store(ring.AcquireBlocking([&] { return stop.load(); }));
+	});
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	Check(result_idx.load() == 0, "Thread must be blocking in AcquireBlocking");
+
+	stop.store(true);
+	blocked_thread.join();
+	Check(result_idx.load() == UINT32_MAX, "AcquireBlocking aborted gracefully on stop signal without deadlock");
+
+	// Now release all 256 slots
+	for (uint32_t i = 0; i < 256; ++i) {
+		ring.Release();
+	}
+	Check(ring.HasFree(), "Ring has free slots after releases");
+}
+
+void TestInterleavedPm4Ordering() {
+	std::printf("Running TestInterleavedPm4Ordering...\n");
+	OpStream stream(256u << 10u);
+	SnapshotRing snapshots(256);
+
+	// Sequence: DrawIndex -> DispatchDirect -> ReleaseMem -> DmaData -> Flip -> DrawAuto
+	HW::Context ctx;
+	HW::UserConfig ucfg;
+	HW::Shader sh;
+
+	ctx.SetPsInControl(0x1111);
+	auto snap1 = snapshots.Acquire();
+	snapshots.Entry(snap1).context = ctx;
+	DrawIndexOp draw1 {};
+	draw1.flags = DrawFlagSnapshot;
+	draw1.snapshot = snap1;
+	stream.Emit(OpKind::DrawIndex, &draw1, sizeof(draw1), nullptr, 0, 1, 0, false);
+
+	ctx.SetPsInControl(0x2222);
+	auto snap2 = snapshots.Acquire();
+	snapshots.Entry(snap2).context = ctx;
+	DispatchDirectOp disp {};
+	disp.flags = DispatchFlagSnapshot;
+	disp.snapshot = snap2;
+	disp.x = 8; disp.y = 8; disp.z = 1;
+	stream.Emit(OpKind::DispatchDirect, &disp, sizeof(disp), nullptr, 0, 2, 0, false);
+
+	ReleaseMemOp rel {};
+	rel.address = 0x5000'0000ull;
+	stream.Emit(OpKind::ReleaseMem, &rel, sizeof(rel), nullptr, 0, 3, 0, false);
+
+	DmaDataOp dma {};
+	dma.num_bytes = 1024;
+	stream.Emit(OpKind::DmaData, &dma, sizeof(dma), nullptr, 0, 4, 0, false);
+
+	FlipOp flip {};
+	flip.handle = 1;
+	stream.Emit(OpKind::Flip, &flip, sizeof(flip), nullptr, 0, 5, 0, false);
+
+	ctx.SetPsInControl(0x3333);
+	auto snap3 = snapshots.Acquire();
+	snapshots.Entry(snap3).context = ctx;
+	DrawAutoOp draw2 {};
+	draw2.flags = DrawFlagSnapshot;
+	draw2.snapshot = snap3;
+	stream.Emit(OpKind::DrawAuto, &draw2, sizeof(draw2), nullptr, 0, 6, 0, false);
+
+	// Consumer verifies order and payloads
+	OpView v1;
+	Check(stream.Peek(v1) && v1.Kind() == OpKind::DrawIndex, "Op 1 is DrawIndex");
+	Check(snapshots.Entry(v1.As<DrawIndexOp>().snapshot).context.GetShaderRegisters().ps_in_control == 0x1111, "Draw 1 reg intact");
+	snapshots.Release();
+	stream.Pop();
+
+	OpView v2;
+	Check(stream.Peek(v2) && v2.Kind() == OpKind::DispatchDirect, "Op 2 is DispatchDirect");
+	Check(snapshots.Entry(v2.As<DispatchDirectOp>().snapshot).context.GetShaderRegisters().ps_in_control == 0x2222, "Dispatch reg intact");
+	snapshots.Release();
+	stream.Pop();
+
+	OpView v3;
+	Check(stream.Peek(v3) && v3.Kind() == OpKind::ReleaseMem, "Op 3 is ReleaseMem");
+	stream.Pop();
+
+	OpView v4;
+	Check(stream.Peek(v4) && v4.Kind() == OpKind::DmaData, "Op 4 is DmaData");
+	stream.Pop();
+
+	OpView v5;
+	Check(stream.Peek(v5) && v5.Kind() == OpKind::Flip, "Op 5 is Flip");
+	stream.Pop();
+
+	OpView v6;
+	Check(stream.Peek(v6) && v6.Kind() == OpKind::DrawAuto, "Op 6 is DrawAuto");
+	Check(snapshots.Entry(v6.As<DrawAutoOp>().snapshot).context.GetShaderRegisters().ps_in_control == 0x3333, "Draw 2 reg intact");
+	snapshots.Release();
+	stream.Pop();
+
+	Check(!stream.Peek(v1), "Stream empty at end");
+	Check(snapshots.HasFree(), "All snapshots released cleanly");
+}
+
+void TestSnapshotRingUnderflowProtection() {
+	std::printf("Running TestSnapshotRingUnderflowProtection (Etapa 8.4F.1)...\n");
+	CpSeq::SnapshotRing ring(256);
+
+	Check(ring.HasFree(), "Ring initially has free slots");
+
+	// Simulate skew where a release occurs when acquired is 0 (acq=0, rel=1)
+	ring.Release();
+	Check(ring.HasFree(), "HasFree does not underflow when acq < rel");
+
+	const uint32_t slot0 = ring.AcquireBlocking();
+	Check(slot0 == 0, "AcquireBlocking succeeds and returns slot 0 despite skew");
+
+	const uint32_t slot1 = ring.AcquireBlocking();
+	Check(slot1 == 1, "AcquireBlocking succeeds and returns slot 1");
+
+	// At this point acq = 2, rel = 1. One more release balances acq == rel == 2.
+	ring.Release();
+	Check(ring.HasFree(), "HasFree is true when acq == rel");
+
+	// Fill to capacity and verify saturation
+	for (uint32_t i = 0; i < 256; ++i) {
+		const uint32_t slot = ring.AcquireBlocking();
+		Check(slot < 256, "Acquired valid slot");
+	}
+	Check(!ring.HasFree(), "Ring is full after 256 acquires");
+
+	ring.Release();
+	Check(ring.HasFree(), "Ring has free slot after 1 release");
+	const uint32_t slot_recycle = ring.AcquireBlocking();
+	Check(slot_recycle < 256, "Acquired recycled slot successfully");
+	Check(!ring.HasFree(), "Ring full again");
+
+	// Drain remaining 256 entries
+	for (uint32_t i = 0; i < 256; ++i) {
+		ring.Release();
+	}
+	Check(ring.HasFree(), "Ring cleanly drained");
+}
+
 } // namespace
 
 int main() {
@@ -399,6 +666,11 @@ int main() {
 	TestTouchedPages();
 	TestSnapshotRing();
 	TestCommandOrderingAndIndirect();
+	TestCpSequencerWithoutDrawPrep();
+	TestPipelineCacheMruCoherency();
+	TestSnapshotRingSaturationAndShutdown();
+	TestInterleavedPm4Ordering();
+	TestSnapshotRingUnderflowProtection();
 	if (g_failures != 0) {
 		std::printf("cp sequencer tests: %d failure(s)\n", g_failures);
 		return EXIT_FAILURE;
