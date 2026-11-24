@@ -35,3 +35,16 @@
   - Tests: `audit_profiler_tests.exe` 42/42 PASSED; `cp_sequencer`, `draw_prep`, `stream_buffer_ring`, `depth_bits`, `texture_cache_layered_image`, `texture_cache_image_views`, `texture_cache_storage_sampled`, `texture_cache_depth_readback`, `color_render_target_1d` PASSED.
 - **Estado:** Validada y aceptada.
 
+---
+
+## Iteración 2 — OPT-04 (Lock-Free `ShaderGetMappedData` TLS Cache + Eliminación de `TouchImage` redundante)
+- **Archivos modificados:**
+  - `src/graphics/shader/shader.cpp`: `g_shader_map_generation` + caché `thread_local` lock-free de 64 entradas en `ShaderGetMappedData` (evita ~11.000 bloqueos de `g_shader_map_mutex` y `unordered_map::find` por frame).
+  - `src/graphics/host_gpu/renderer/cache/textureCache.cpp`: eliminación de `TouchImage(*image)` redundante en `ValidateAndTouchCachedImage` (los callers inmediatamente llaman `BindImage`/`BindRenderTarget`/`FindTexture`, que ya actualizan el LRU).
+- **Resultados medidos (Sky Garden automatizado, `sky_garden_fast_replay.json`, Perfil A):**
+  - Antes (`OPT-03`, `20261124_145334_007_A`, 586 frames): **19,51 FPS** (`51,34 ms/f`), `RenderStatePrep` = `20,11 ms/f`, `DescriptorPrep` = `9,26 ms/f`.
+  - Después (`OPT-04`, `20261124_150509_983_A`, 598 frames): **19,91 FPS** (**+2,05%**, `50,25 ms/f`), `RenderStatePrep` = **`19,28 ms/f` (-0,83 ms/f)**, `DescriptorPrep` = `9,20 ms/f`, `Pm4Dispatch (incl)` = `47,10 ms/f` (`-1,03 ms/f`).
+  - Tests: `ctest` 10/10 suites críticas PASSED.
+- **Estado:** Validada y aceptada.
+
+

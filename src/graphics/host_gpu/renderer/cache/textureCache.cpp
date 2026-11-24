@@ -515,7 +515,6 @@ bool TextureCache::ValidateAndTouchCachedImage(ImageId id) {
 	}
 	image->tick_accessed_last    = m_scheduler.CurrentTick();
 	image->gc_tick_accessed_last = m_gc_tick;
-	TouchImage(*image);
 	return true;
 }
 

@@ -49,6 +49,7 @@ struct ShaderMapEntry {
 
 static std::unique_ptr<std::unordered_map<uint64_t, ShaderMapEntry>> g_shader_map;
 static std::mutex                                                    g_shader_map_mutex;
+static std::atomic<uint64_t>                                         g_shader_map_generation {1};
 
 void ShaderInit() {
 	EXIT_IF(g_shader_map != nullptr);
@@ -87,6 +88,7 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	    ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, mapped.vertex);
 	std::scoped_lock lock(g_shader_map_mutex);
 	(*g_shader_map)[addr] = {mapped, hash};
+	g_shader_map_generation.fetch_add(1, std::memory_order_release);
 }
 
 bool ShaderHasMappedData(uint64_t addr) noexcept {
@@ -100,13 +102,36 @@ bool ShaderHasMappedData(uint64_t addr) noexcept {
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
 
-	std::scoped_lock lock(g_shader_map_mutex);
+	struct TlsShaderSlot {
+		uint64_t       addr  = 0;
+		uint64_t       gen   = 0;
+		bool           valid = false;
+		ShaderMapEntry entry {};
+	};
+	constexpr size_t                                     TlsCacheSize = 64;
+	thread_local std::array<TlsShaderSlot, TlsCacheSize> tls_cache {};
 
-	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
-		return iter->second;
+	const uint64_t gen    = g_shader_map_generation.load(std::memory_order_acquire);
+	const size_t   slot   = static_cast<size_t>((addr >> 6u) ^ (addr >> 14u)) & (TlsCacheSize - 1u);
+	auto&          cached = tls_cache[slot];
+	if (cached.valid && cached.gen == gen && cached.addr == addr) {
+		return cached.entry;
 	}
 
-	EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);
+	ShaderMapEntry result {};
+	{
+		std::scoped_lock lock(g_shader_map_mutex);
+		if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
+			result = iter->second;
+		} else {
+			EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);
+		}
+	}
+	cached.addr  = addr;
+	cached.gen   = g_shader_map_generation.load(std::memory_order_acquire);
+	cached.entry = result;
+	cached.valid = true;
+	return result;
 }
 
 static ShaderParams GetShaderParams(uint64_t shader_addr, uint64_t hash,
