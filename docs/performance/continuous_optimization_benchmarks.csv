@@ -6,3 +6,4 @@ fecha,commit,perfil,escena,frames,duracion_s,fps_efectivo,frametime_avg_ms,p99_m
 2026-11-24,045798338+OPT01_02,C (Sky Garden Auto),Sky Garden (Landing),382,30.02,12.73,78.76,84.95,5962.2,18.15,14.32,35.09,4.69,Perfil C en Sky Garden (+24.8 ms/f overhead Snapshot/OpStream)
 2026-11-24,045798338+OPT03,A (Sky Garden Auto),Sky Garden (Landing),586,30.04,19.51,51.34,66.71,5496.3,20.11,9.26,10.04,4.47,OPT-03: RT cache DCC-aware + ResolveTexture 64-entry cache (+21.5% FPS vs replay previo)
 2026-11-24,180420631+OPT04,A (Sky Garden Auto),Sky Garden (Landing),598,30.04,19.91,50.25,66.70,5450.2,19.28,9.20,10.01,4.37,OPT-04: TLS lock-free ShaderGetMappedData + remove redundant TouchImage (+2.05% FPS)
+2026-11-24,6908216ac+OPT08,A (Sky Garden Auto),Sky Garden (Landing),570,30.02,18.99,52.75,66.43,5569.8,21.44,8.23,10.19,4.42,OPT-08: 512-entry ResolveTexture cache (DescriptorPrep 9.20->8.23 ms/f; 511ms StreamBufferWait)

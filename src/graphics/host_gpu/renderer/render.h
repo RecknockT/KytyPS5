@@ -308,7 +308,7 @@ private:
 		uint64_t                tc_gen = 0;
 		TextureBinding          binding {};
 	};
-	static constexpr size_t                                     ResolvedTextureCacheSize = 64;
+	static constexpr size_t                                     ResolvedTextureCacheSize = 512;
 	std::array<CachedResolvedTexture, ResolvedTextureCacheSize> m_resolved_texture_cache {};
 
 	friend class CommandProcessor;

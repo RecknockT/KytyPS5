@@ -37,6 +37,27 @@
 
 ---
 
+## Iteración 3 — OPT-05 / OPT-06 / OPT-07 (Descartadas por regresión o sin ganancia) + OPT-08 (Expansión a 512 entradas en `ResolveTexture` cache)
+- **Experimentos descartados y revertidos:**
+  - `OPT-05` (`ProgramCacheMru` 256 entradas): `RenderStatePrep` subió de `19,28` a `21,22 ms/f` (`18,70 FPS`). Revertida.
+  - `OPT-06` (`--srt-resource-cache` 16 entradas): comparar/copiar hasta 32 KiB de `srt_scratch` subió `RenderStatePrep` a `22,53 ms/f` (`18,18 FPS`). Revertida.
+  - `OPT-07` (`--async-fast-pump` + `NoteTargetDraw` MRU): sin ganancia neta (`18,17 FPS`). Revertida.
+  - `-Transfers Combined` sobre `OPT-04`: `18,75 FPS` (`BufferReadback = 8,05 ms/f`). Sin mejora.
+- **Micro-profiling de `PrepareDrawRenderState` (`renderDraw.cpp` / `pipelineCache.cpp` / `ResourceMaterialization.cpp`):**
+  - `GetGraphicsPrograms`: **5.554 ns/draw** (~91% de `RenderStatePrep`), con `WalkSrt` en `1.050 ns/call` y `prep+ps` en `4.761 ns/draw`.
+  - `Targets`: **466 ns/draw** (~8%).
+  - `EnsureGraphicsPipeline`: **86,8 ns/draw** (~1,5%).
+- **OPT-08 implementada:**
+  - `src/graphics/host_gpu/renderer/render.h`: `ResolvedTextureCacheSize` ampliado de `64` a `512` entradas.
+  - **Resultados medidos (`20261124_160012_889_A`, 570 frames, 5.569 draws/f):**
+    - `DescriptorPrep` bajó de **`9,20 ms/f` (`1,69 µs/draw`)** a **`8,23 ms/f` (`1,48 µs/draw`, -12,4% por draw)**.
+    - `Thread_Gpu CPU` bajó de `26.000 ms` a `24.765 ms` (FPS total `18,99` en esta ventana por `511,85 ms` de `StreamBuffer Ring Waits` y `8,23 ms/f` de `BufferReadback`).
+  - Tests: `ctest` 10/10 suites críticas PASSED.
+- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada.
+
+
+---
+
 ## Iteración 2 — OPT-04 (Lock-Free `ShaderGetMappedData` TLS Cache + Eliminación de `TouchImage` redundante)
 - **Archivos modificados:**
   - `src/graphics/shader/shader.cpp`: `g_shader_map_generation` + caché `thread_local` lock-free de 64 entradas en `ShaderGetMappedData` (evita ~11.000 bloqueos de `g_shader_map_mutex` y `unordered_map::find` por frame).
@@ -46,5 +67,26 @@
   - Después (`OPT-04`, `20261124_150509_983_A`, 598 frames): **19,91 FPS** (**+2,05%**, `50,25 ms/f`), `RenderStatePrep` = **`19,28 ms/f` (-0,83 ms/f)**, `DescriptorPrep` = `9,20 ms/f`, `Pm4Dispatch (incl)` = `47,10 ms/f` (`-1,03 ms/f`).
   - Tests: `ctest` 10/10 suites críticas PASSED.
 - **Estado:** Validada y aceptada.
+
+---
+
+## Iteración 3 — OPT-05 / OPT-06 / OPT-07 (Descartadas por regresión o sin ganancia) + OPT-08 (Expansión a 512 entradas en `ResolveTexture` cache)
+- **Experimentos descartados y revertidos:**
+  - `OPT-05` (`ProgramCacheMru` 256 entradas): `RenderStatePrep` subió de `19,28` a `21,22 ms/f` (`18,70 FPS`). Revertida.
+  - `OPT-06` (`--srt-resource-cache` 16 entradas): comparar/copiar hasta 32 KiB de `srt_scratch` subió `RenderStatePrep` a `22,53 ms/f` (`18,18 FPS`). Revertida.
+  - `OPT-07` (`--async-fast-pump` + `NoteTargetDraw` MRU): sin ganancia neta (`18,17 FPS`). Revertida.
+  - `-Transfers Combined` sobre `OPT-04`: `18,75 FPS` (`BufferReadback = 8,05 ms/f`). Sin mejora.
+- **Micro-profiling de `PrepareDrawRenderState` (`renderDraw.cpp` / `pipelineCache.cpp` / `ResourceMaterialization.cpp`):**
+  - `GetGraphicsPrograms`: **5.554 ns/draw** (~91% de `RenderStatePrep`), con `WalkSrt` en `1.050 ns/call` y `prep+ps` en `4.761 ns/draw`.
+  - `Targets`: **466 ns/draw** (~8%).
+  - `EnsureGraphicsPipeline`: **86,8 ns/draw** (~1,5%).
+- **OPT-08 implementada:**
+  - `src/graphics/host_gpu/renderer/render.h`: `ResolvedTextureCacheSize` ampliado de `64` a `512` entradas.
+  - **Resultados medidos (`20261124_160012_889_A`, 570 frames, 5.569 draws/f):**
+    - `DescriptorPrep` bajó de **`9,20 ms/f` (`1,69 µs/draw`)** a **`8,23 ms/f` (`1,48 µs/draw`, -12,4% por draw)**.
+    - `Thread_Gpu CPU` bajó de `26.000 ms` a `24.765 ms` (FPS total `18,99` en esta ventana por `511,85 ms` de `StreamBuffer Ring Waits` y `8,23 ms/f` de `BufferReadback`).
+  - Tests: `ctest` 10/10 suites críticas PASSED.
+- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada.
+
 
 
