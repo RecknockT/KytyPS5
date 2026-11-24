@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -101,6 +102,9 @@ bool ShaderHasMappedData(uint64_t addr) noexcept {
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
+	const bool                                   prof = Config::ProfileProgramsEnabled();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::ShaderGetMappedData, prof);
 
 	struct TlsShaderSlot {
 		uint64_t       addr  = 0;
@@ -115,8 +119,10 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	const size_t   slot   = static_cast<size_t>((addr >> 6u) ^ (addr >> 14u)) & (TlsCacheSize - 1u);
 	auto&          cached = tls_cache[slot];
 	if (cached.valid && cached.gen == gen && cached.addr == addr) {
+		if (prof) Common::AuditProfiler::RecordShaderMapTlsHit(true);
 		return cached.entry;
 	}
+	if (prof) Common::AuditProfiler::RecordShaderMapTlsHit(false);
 
 	ShaderMapEntry result {};
 	{
@@ -137,6 +143,8 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 static ShaderParams GetShaderParams(uint64_t shader_addr, uint64_t hash,
                                     std::span<const uint32_t> user_data,
                                     const ShaderMappedData& data, uint32_t user_data_base = 0) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::GetShaderParams, Config::ProfileProgramsEnabled());
 	const auto   code_words = data.code_size_bytes / sizeof(uint32_t);
 	const auto   code = std::span {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
 	ShaderParams params {
@@ -152,6 +160,9 @@ static ShaderParams GetShaderParams(uint64_t shader_addr, uint64_t hash,
 
 static void ShaderDetectBuffers(ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_FUNCTION();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::ShaderDetectBuffers,
+	    Config::ProfileProgramsEnabled());
 
 	info.buffers_num = 0;
 
@@ -195,6 +206,9 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo&          info,
                                        std::span<const ShaderSemantic> input_semantics,
                                        const uint32_t* attrib, const uint32_t* buffer) {
 	KYTY_PROFILER_FUNCTION();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::ShaderAttribSemantics,
+	    Config::ProfileProgramsEnabled());
 
 	EXIT_IF(attrib == nullptr || buffer == nullptr);
 
@@ -315,6 +329,9 @@ static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserS
                                            uint32_t user_sgpr_num, const HW::ShaderRegisters& sh,
                                            const ShaderMapData& data, ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_FUNCTION();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::ShaderStaticVertexInfo,
+	    Config::ProfileProgramsEnabled());
 
 	info.pa_cl_vs_out_cntl = sh.m_paClVsOutCntl;
 
@@ -370,6 +387,9 @@ static void ShaderGetStaticInputInfoPS(
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
     const ShaderMappedData& data, ShaderPixelInputInfo& ps_info) {
 	KYTY_PROFILER_FUNCTION();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::ShaderStaticInputPS,
+	    Config::ProfileProgramsEnabled());
 
 	ps_info.scratch_size_dwords = data.scratch_size_dwords;
 	ps_info.lds_size_dwords     = static_cast<uint32_t>(regs.ps_regs.rsrc2.extra_lds_size) * 128u;
@@ -567,6 +587,8 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
                             const HW::UserConfig& user_config, ShaderVertexInputInfo& info) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::PrepareProgramVS, Config::ProfileProgramsEnabled());
 	const auto& sh = context.GetShaderRegisters();
 	const auto [data, hash] =
 	    ShaderGetMappedData(regs.es_regs.data_addr, "ShaderGetInputInfoVS():");
@@ -720,6 +742,8 @@ ShaderParams
 PrepareProgram(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
                std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
                ShaderPixelInputInfo&                               ps_info) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::PrepareProgramPS, Config::ProfileProgramsEnabled());
 	const auto [data, hash] =
 	    ShaderGetMappedData(regs.ps_regs.data_addr, "ShaderGetInputInfoPS():");
 	ShaderGetStaticInputInfoPS(regs, sh, target_export_mapping, data, ps_info);

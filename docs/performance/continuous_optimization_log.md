@@ -53,7 +53,23 @@
     - `DescriptorPrep` bajó de **`9,20 ms/f` (`1,69 µs/draw`)** a **`8,23 ms/f` (`1,48 µs/draw`, -12,4% por draw)**.
     - `Thread_Gpu CPU` bajó de `26.000 ms` a `24.765 ms` (FPS total `18,99` en esta ventana por `511,85 ms` de `StreamBuffer Ring Waits` y `8,23 ms/f` de `BufferReadback`).
   - Tests: `ctest` 10/10 suites críticas PASSED.
-- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada.
+- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada (revalidada en Iteración 4 con toggle A/B).
+
+---
+
+## Iteración 4 — Revalidación A/B 3+3 de OPT-08 (64 vs 512) y Microprofiling Profundo OPT-09 (`--profile-programs`)
+- **Aislamiento de OPT-08 (`--resolve-texture-cache-512` / `--no-resolve-texture-cache-512`):**
+  - Mismo ejecutable, 3 pares alternados (64 vs 512) en Sky Garden (`sky_garden_fast_replay.json`, Perfil A, `StreamBuffer Ring Waits = 0,00 ms` en las 6 corridas):
+    - **64 entradas:** R1 `18,65 FPS` (`hit=84,92%`, `conflicts=728.874`), R3 `19,79 FPS` (`hit=81,24%`, `conflicts=949.502`), R5 `20,12 FPS` (`hit=84,24%`, `conflicts=807.632`). **Mediana: `19,79 FPS`**, `50,65 ms/f`, `DescriptorPrep = 9,29 ms/f`.
+    - **512 entradas:** R2 `20,15 FPS` (`hit=94,61%`, `conflicts=277.769`), R4 `20,25 FPS` (`hit=95,15%`, `conflicts=248.377`), R6 `20,50 FPS` (`hit=95,29%`, `conflicts=244.900`). **Mediana: `20,25 FPS` (`+2,32%`)**, `49,42 ms/f`, `DescriptorPrep = 8,20 ms/f` (`-1,09 ms/f`), **`-69%` conflict misses**.
+  - **Decisión:** OPT-08 validada 3/3 en FPS global, frametime y `DescriptorPrep`; activada por defecto (`resolve_texture_cache_512_enabled = true`).
+- **OPT-09 (`--profile-programs`, `20261124_162305_182_A`, 7.381.173 draws medidos):**
+  - `GetGraphicsPrograms`: **8.636 ns/draw**
+    - `PrepareProgramVS`: **5.189 ns/draw** -> **`ShaderApplyAttribSemantics` = `4.932 ns/draw` (`6.403 - 9.610 ns/call`)** (¡~57% de todo `GetGraphicsPrograms`!).
+    - `GetProgramVS + GetProgramPS`: **2.919 ns/draw** -> `FindModule = 3.017 ns/draw` -> `MaterializeResources = 2.805 ns/draw` -> **`WalkSrt = 2.146 ns/draw` (`1.167 ns/call`)**.
+    - `ShaderGetMappedData`: `49,28 ns/call` (`ShaderMapTLS` hit rate `89,29% - 90,31%`).
+    - Resto (`PumpAsync`, `PrepareProgramPS`, `ShaderStaticInputPS`, `GetShaderParams`, `BuildStageStaticKey`, `ProgramCacheFind`, `BuildResourceSpec`, `PixelRawParamMask`, `NoteTargetDraw`, `ShaderDetectBuffers`): < `400 ns/draw` combinados.
+- **Estado:** OPT-08 aceptada por defecto; OPT-09 completado y listo para atacar `ShaderApplyAttribSemantics` en OPT-10.
 
 
 ---
@@ -86,7 +102,23 @@
     - `DescriptorPrep` bajó de **`9,20 ms/f` (`1,69 µs/draw`)** a **`8,23 ms/f` (`1,48 µs/draw`, -12,4% por draw)**.
     - `Thread_Gpu CPU` bajó de `26.000 ms` a `24.765 ms` (FPS total `18,99` en esta ventana por `511,85 ms` de `StreamBuffer Ring Waits` y `8,23 ms/f` de `BufferReadback`).
   - Tests: `ctest` 10/10 suites críticas PASSED.
-- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada.
+- **Estado:** OPT-08 validada en `DescriptorPrep` y aceptada (revalidada en Iteración 4 con toggle A/B).
+
+---
+
+## Iteración 4 — Revalidación A/B 3+3 de OPT-08 (64 vs 512) y Microprofiling Profundo OPT-09 (`--profile-programs`)
+- **Aislamiento de OPT-08 (`--resolve-texture-cache-512` / `--no-resolve-texture-cache-512`):**
+  - Mismo ejecutable, 3 pares alternados (64 vs 512) en Sky Garden (`sky_garden_fast_replay.json`, Perfil A, `StreamBuffer Ring Waits = 0,00 ms` en las 6 corridas):
+    - **64 entradas:** R1 `18,65 FPS` (`hit=84,92%`, `conflicts=728.874`), R3 `19,79 FPS` (`hit=81,24%`, `conflicts=949.502`), R5 `20,12 FPS` (`hit=84,24%`, `conflicts=807.632`). **Mediana: `19,79 FPS`**, `50,65 ms/f`, `DescriptorPrep = 9,29 ms/f`.
+    - **512 entradas:** R2 `20,15 FPS` (`hit=94,61%`, `conflicts=277.769`), R4 `20,25 FPS` (`hit=95,15%`, `conflicts=248.377`), R6 `20,50 FPS` (`hit=95,29%`, `conflicts=244.900`). **Mediana: `20,25 FPS` (`+2,32%`)**, `49,42 ms/f`, `DescriptorPrep = 8,20 ms/f` (`-1,09 ms/f`), **`-69%` conflict misses**.
+  - **Decisión:** OPT-08 validada 3/3 en FPS global, frametime y `DescriptorPrep`; activada por defecto (`resolve_texture_cache_512_enabled = true`).
+- **OPT-09 (`--profile-programs`, `20261124_162305_182_A`, 7.381.173 draws medidos):**
+  - `GetGraphicsPrograms`: **8.636 ns/draw**
+    - `PrepareProgramVS`: **5.189 ns/draw** -> **`ShaderApplyAttribSemantics` = `4.932 ns/draw` (`6.403 - 9.610 ns/call`)** (¡~57% de todo `GetGraphicsPrograms`!).
+    - `GetProgramVS + GetProgramPS`: **2.919 ns/draw** -> `FindModule = 3.017 ns/draw` -> `MaterializeResources = 2.805 ns/draw` -> **`WalkSrt = 2.146 ns/draw` (`1.167 ns/call`)**.
+    - `ShaderGetMappedData`: `49,28 ns/call` (`ShaderMapTLS` hit rate `89,29% - 90,31%`).
+    - Resto (`PumpAsync`, `PrepareProgramPS`, `ShaderStaticInputPS`, `GetShaderParams`, `BuildStageStaticKey`, `ProgramCacheFind`, `BuildResourceSpec`, `PixelRawParamMask`, `NoteTargetDraw`, `ShaderDetectBuffers`): < `400 ns/draw` combinados.
+- **Estado:** OPT-08 aceptada por defecto; OPT-09 completado y listo para atacar `ShaderApplyAttribSemantics` en OPT-10.
 
 
 

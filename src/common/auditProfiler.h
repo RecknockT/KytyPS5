@@ -573,6 +573,51 @@ void CountPriorityWaitSpin() noexcept;
 void CountPriorityWaitSpinHit() noexcept;
 void CountPendingOpsFastSkip() noexcept;
 
+enum class ProgramSubStage : uint8_t {
+	GetGraphicsPrograms = 0,
+	PumpAsync,
+	PrepareProgramVS,
+	PrepareProgramPS,
+	ShaderGetMappedData,
+	ShaderStaticVertexInfo,
+	ShaderAttribSemantics,
+	ShaderDetectBuffers,
+	ShaderStaticInputPS,
+	GetShaderParams,
+	GetProgramVS,
+	GetProgramPS,
+	BuildStageStaticKey,
+	ProgramCacheFind,
+	FindModule,
+	MaterializeResources,
+	WalkSrt,
+	BuildResourceSpec,
+	PixelRawParamMask,
+	NoteTargetDraw,
+	Count
+};
+
+void RecordProgramSubStage(ProgramSubStage stage, uint64_t ns) noexcept;
+void RecordResolveTexHit() noexcept;
+void RecordResolveTexMiss(bool conflict) noexcept;
+void RecordShaderMapTlsHit(bool hit) noexcept;
+
+struct ScopedProgramSubStage {
+	ProgramSubStage   stage;
+	bool              enabled;
+	Clock::time_point start;
+	ScopedProgramSubStage(ProgramSubStage s, bool en) noexcept
+	    : stage(s), enabled(en), start(en ? Clock::now() : Clock::time_point {}) {}
+	~ScopedProgramSubStage() {
+		if (enabled) {
+			RecordProgramSubStage(
+			    stage, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                                     Clock::now() - start)
+			                                     .count()));
+		}
+	}
+};
+
 /// Records a vkQueueSubmit event.
 void RecordSubmit(SubmitReason reason) noexcept;
 

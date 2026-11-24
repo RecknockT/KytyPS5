@@ -385,6 +385,8 @@ template <bool HasCalls>
 ShaderModule* PipelineCache::Program::FindModule(const ShaderRecompiler::IR::SrtRuntime& runtime,
                                                  uint32_t push_data_cursor,
                                                  uint32_t push_data_ceiling) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::FindModule, Config::ProfileProgramsEnabled());
 	EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
 	    resource_plan, runtime, resources, specialization,
 	    Config::ResourcePrepReuseEnabled() ? &preparation_cache : nullptr));
@@ -531,12 +533,22 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 		runtime.workgroup_counts      = input_info.workgroup_counts;
 		runtime.indirect_args_address = input_info.indirect_args_address;
 	}
-	m_lookup_key.stage           = options.stage;
-	m_lookup_key.hash            = params.hash;
-	m_lookup_key.user_data_count = params.user_data_count;
-	BuildStageStaticKey(input_info, m_lookup_key.static_state);
-	auto       entry = m_program_cache.find(m_lookup_key);
-	const auto bind  = [&](const ShaderModule& module) {
+	const bool prof = Config::ProfileProgramsEnabled();
+	{
+		Common::AuditProfiler::ScopedProgramSubStage prof_key(
+		    Common::AuditProfiler::ProgramSubStage::BuildStageStaticKey, prof);
+		m_lookup_key.stage           = options.stage;
+		m_lookup_key.hash            = params.hash;
+		m_lookup_key.user_data_count = params.user_data_count;
+		BuildStageStaticKey(input_info, m_lookup_key.static_state);
+	}
+	decltype(m_program_cache)::iterator entry;
+	{
+		Common::AuditProfiler::ScopedProgramSubStage prof_find(
+		    Common::AuditProfiler::ProgramSubStage::ProgramCacheFind, prof);
+		entry = m_program_cache.find(m_lookup_key);
+	}
+	const auto bind = [&](const ShaderModule& module) {
 		input_info.stage = {.module = &module, .resources = &entry->second.resources};
 		if constexpr (!std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
 			module.info.bindings.AdvancePushData(push_data_cursor);
@@ -860,6 +872,9 @@ void PipelineCache::WriteDriverCache() const {
 
 void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state,
                                         const DrawPrep::PreparedDraw* prepared) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::GetGraphicsPrograms,
+	    Config::ProfileProgramsEnabled());
 	PumpAsync();
 	const auto& context             = command.GetRegisters();
 	const auto& user_config         = command.GetUserConfig();
@@ -1132,8 +1147,13 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 	// cannot be looked up without its push data layout, but their translation can start.
 	bool ready = true;
 	if (pixel_active) {
-		const auto* pixel_module = GetProgram(pixel_params, pixel_info, push_data_cursor,
-		                                      ShaderRecompiler::IR::PushData::DwordCount, mode);
+		const auto* pixel_module = [&] {
+			Common::AuditProfiler::ScopedProgramSubStage prof_ps(
+			    Common::AuditProfiler::ProgramSubStage::GetProgramPS,
+			    Config::ProfileProgramsEnabled());
+			return GetProgram(pixel_params, pixel_info, push_data_cursor,
+			                  ShaderRecompiler::IR::PushData::DwordCount, mode);
+		}();
 		if (pixel_module == nullptr) {
 			EXIT_IF(m_async == nullptr);
 			ready = false;
@@ -1146,14 +1166,24 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 			}
 			state.mrt_mask &= color_output_mask;
 			// The last pre-rasterization stage writes the pixel shader's raw varyings as integers.
-			last_stage.raw_parameter_mask = ShaderRecompiler::Spirv::PixelRawParameterMask(
-			    pixel_info, pixel_module->info.info.inputs);
+			{
+				Common::AuditProfiler::ScopedProgramSubStage prof_raw(
+				    Common::AuditProfiler::ProgramSubStage::PixelRawParamMask,
+				    Config::ProfileProgramsEnabled());
+				last_stage.raw_parameter_mask = ShaderRecompiler::Spirv::PixelRawParameterMask(
+				    pixel_info, pixel_module->info.info.inputs);
+			}
 		}
 	}
 	uint32_t push_data_ceiling = ShaderRecompiler::IR::PushData::DwordCount;
 	for (uint32_t i = 0; i < (tess_active ? 3u : 1u); i++) {
-		const auto* module = GetProgram(vertex_params[i], vertex_info[i], push_data_cursor,
-		                                push_data_ceiling, ready ? mode : AsyncMode::PrefetchOnly);
+		const auto* module = [&] {
+			Common::AuditProfiler::ScopedProgramSubStage prof_vs(
+			    Common::AuditProfiler::ProgramSubStage::GetProgramVS,
+			    Config::ProfileProgramsEnabled());
+			return GetProgram(vertex_params[i], vertex_info[i], push_data_cursor, push_data_ceiling,
+			                  ready ? mode : AsyncMode::PrefetchOnly);
+		}();
 		if (module == nullptr) {
 			ready = false;
 		} else if (module->info.bindings.UsesPushData()) {

@@ -3178,8 +3178,111 @@ bool ExportAll(const std::string& json_path, const std::string& csv_path,
 		frames_csv_path = json_path + "_frames.csv";
 	}
 	ExportFramesCsv(frames_csv_path);
+	extern void PrintProgramSubStatsImpl();
+	PrintProgramSubStatsImpl();
 
 	return json_ok && csv_ok;
+}
+
+namespace {
+struct SubStageStat {
+	std::atomic<uint64_t> calls {0};
+	std::atomic<uint64_t> ns {0};
+};
+std::array<SubStageStat, static_cast<size_t>(ProgramSubStage::Count)> g_prog_sub_stats {};
+std::atomic<uint64_t>                                                 g_resolve_tex_hits {0};
+std::atomic<uint64_t>                                                 g_resolve_tex_cold_misses {0};
+std::atomic<uint64_t> g_resolve_tex_conflict_misses {0};
+std::atomic<uint64_t> g_shader_map_tls_hits {0};
+std::atomic<uint64_t> g_shader_map_tls_misses {0};
+
+const char* SubStageName(ProgramSubStage s) noexcept {
+	switch (s) {
+		case ProgramSubStage::GetGraphicsPrograms: return "GetGraphicsPrograms";
+		case ProgramSubStage::PumpAsync: return "PumpAsync";
+		case ProgramSubStage::PrepareProgramVS: return "PrepareProgramVS";
+		case ProgramSubStage::PrepareProgramPS: return "PrepareProgramPS";
+		case ProgramSubStage::ShaderGetMappedData: return "ShaderGetMappedData";
+		case ProgramSubStage::ShaderStaticVertexInfo: return "ShaderStaticVertexInfo";
+		case ProgramSubStage::ShaderAttribSemantics: return "ShaderAttribSemantics";
+		case ProgramSubStage::ShaderDetectBuffers: return "ShaderDetectBuffers";
+		case ProgramSubStage::ShaderStaticInputPS: return "ShaderStaticInputPS";
+		case ProgramSubStage::GetShaderParams: return "GetShaderParams";
+		case ProgramSubStage::GetProgramVS: return "GetProgramVS";
+		case ProgramSubStage::GetProgramPS: return "GetProgramPS";
+		case ProgramSubStage::BuildStageStaticKey: return "BuildStageStaticKey";
+		case ProgramSubStage::ProgramCacheFind: return "ProgramCacheFind";
+		case ProgramSubStage::FindModule: return "FindModule";
+		case ProgramSubStage::MaterializeResources: return "MaterializeResources";
+		case ProgramSubStage::WalkSrt: return "WalkSrt";
+		case ProgramSubStage::BuildResourceSpec: return "BuildResourceSpec";
+		case ProgramSubStage::PixelRawParamMask: return "PixelRawParamMask";
+		case ProgramSubStage::NoteTargetDraw: return "NoteTargetDraw";
+		default: return "Unknown";
+	}
+}
+} // namespace
+
+void RecordProgramSubStage(ProgramSubStage stage, uint64_t ns) noexcept {
+	auto& st = g_prog_sub_stats[static_cast<size_t>(stage)];
+	st.calls.fetch_add(1, std::memory_order_relaxed);
+	st.ns.fetch_add(ns, std::memory_order_relaxed);
+}
+
+void RecordResolveTexHit() noexcept {
+	g_resolve_tex_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordResolveTexMiss(bool conflict) noexcept {
+	if (conflict) {
+		g_resolve_tex_conflict_misses.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		g_resolve_tex_cold_misses.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+void RecordShaderMapTlsHit(bool hit) noexcept {
+	if (hit) {
+		g_shader_map_tls_hits.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		g_shader_map_tls_misses.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+void PrintProgramSubStatsImpl() {
+	const uint64_t hits      = g_resolve_tex_hits.exchange(0, std::memory_order_relaxed);
+	const uint64_t cold      = g_resolve_tex_cold_misses.exchange(0, std::memory_order_relaxed);
+	const uint64_t conflicts = g_resolve_tex_conflict_misses.exchange(0, std::memory_order_relaxed);
+	const uint64_t total_tex = hits + cold + conflicts;
+	if (total_tex > 0) {
+		Log::WriteToConsoleAndLog(
+		    fmt::format("[ResolveTexCache] hits={} cold_misses={} conflict_misses={} total={} "
+		                "hit_rate={:.2f}%\n",
+		                hits, cold, conflicts, total_tex,
+		                100.0 * static_cast<double>(hits) / static_cast<double>(total_tex)));
+	}
+	const uint64_t sm_hits   = g_shader_map_tls_hits.exchange(0, std::memory_order_relaxed);
+	const uint64_t sm_misses = g_shader_map_tls_misses.exchange(0, std::memory_order_relaxed);
+	if (sm_hits + sm_misses > 0) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[ShaderMapTLS] hits={} misses={} hit_rate={:.2f}%\n", sm_hits, sm_misses,
+		    100.0 * static_cast<double>(sm_hits) / static_cast<double>(sm_hits + sm_misses)));
+	}
+	const uint64_t gp_calls = g_prog_sub_stats[0].calls.load(std::memory_order_relaxed);
+	if (gp_calls > 0) {
+		Log::WriteToConsoleAndLog("[ProgramProfile] === GetGraphicsPrograms Breakdown ===\n");
+		for (size_t i = 0; i < static_cast<size_t>(ProgramSubStage::Count); ++i) {
+			const uint64_t c  = g_prog_sub_stats[i].calls.exchange(0, std::memory_order_relaxed);
+			const uint64_t ns = g_prog_sub_stats[i].ns.exchange(0, std::memory_order_relaxed);
+			if (c > 0) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "  {:24s}: calls={:10d} total_ms={:9.2f} ns/call={:8.2f} ns/draw={:8.2f}\n",
+				    SubStageName(static_cast<ProgramSubStage>(i)), c, static_cast<double>(ns) / 1e6,
+				    static_cast<double>(ns) / static_cast<double>(c),
+				    static_cast<double>(ns) / static_cast<double>(gp_calls)));
+			}
+		}
+	}
 }
 
 void CountPriorityWaitSpin() noexcept {

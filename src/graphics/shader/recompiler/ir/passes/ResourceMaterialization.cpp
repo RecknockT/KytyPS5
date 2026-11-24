@@ -1,6 +1,8 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
+#include "common/emulatorConfig.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/Serialize.h"
@@ -1681,6 +1683,9 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization,
                           ResourceMaterializationCache* cache) {
+	const bool                                   prof = Config::ProfileProgramsEnabled();
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::MaterializeResources, prof);
 	if (cache != nullptr) {
 		cache->last_hit = false;
 		if (cache->plan != &program || cache->walker != program.srt_code.get()) {
@@ -1711,9 +1716,14 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	    program.capture_specialization_reads || !program.source_reads.empty() ||
 	    (runtime.indirect_args_address != 0u &&
 	     std::ranges::any_of(program.descriptor_sources, uses_workgroup_count));
-	auto& reads = snapshot.specialization_reads;
-	reads       = program.source_reads;
-	if (!WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr)) {
+	auto& reads        = snapshot.specialization_reads;
+	reads              = program.source_reads;
+	const bool walk_ok = [&] {
+		Common::AuditProfiler::ScopedProgramSubStage prof_walk(
+		    Common::AuditProfiler::ProgramSubStage::WalkSrt, prof);
+		return WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr);
+	}();
+	if (!walk_ok) {
 		if (cache != nullptr) cache->valid = false;
 		return SpecializationFail(fmt::format("SRT refresh complete={} reads={} user_data={}",
 		                                      program.srt_plan_complete, program.srt_reads.size(),
@@ -1925,7 +1935,11 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		}
 	}
 	snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
-	const bool success = BuildResourceSpecialization(program, snapshot, specialization);
+	const bool success = [&] {
+		Common::AuditProfiler::ScopedProgramSubStage prof_spec(
+		    Common::AuditProfiler::ProgramSubStage::BuildResourceSpec, prof);
+		return BuildResourceSpecialization(program, snapshot, specialization);
+	}();
 	if (success && cache != nullptr && cache->eligible) {
 		cache->walked         = program.srt_scratch;
 		cache->buffers        = snapshot.buffers;

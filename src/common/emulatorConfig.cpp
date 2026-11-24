@@ -498,6 +498,14 @@ bool ProgramCacheMruEnabled() {
 	return g_config != nullptr ? g_config->program_cache_mru_enabled : true;
 }
 
+bool ResolveTextureCache512Enabled() {
+	return g_config != nullptr ? g_config->resolve_texture_cache_512_enabled : true;
+}
+
+bool ProfileProgramsEnabled() {
+	return g_config != nullptr ? g_config->profile_programs_enabled : false;
+}
+
 bool CoalesceReadFaultsEnabled() {
 	return g_config != nullptr ? g_config->coalesce_read_faults_enabled : true;
 }

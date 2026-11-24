@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineAsync.h"
 
 #include "common/assert.h"
+#include "common/auditProfiler.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/threads.h"
@@ -248,6 +249,8 @@ void PipelineCache::PumpAsync() {
 	if (m_async == nullptr) {
 		return;
 	}
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::PumpAsync, Config::ProfileProgramsEnabled());
 	std::vector<Common::UniqueFunction<void>> done;
 	{
 		std::scoped_lock lock(m_async->done_mutex);
@@ -260,6 +263,8 @@ void PipelineCache::PumpAsync() {
 }
 
 bool PipelineCache::Async::NoteTargetDraw(uint64_t address) {
+	Common::AuditProfiler::ScopedProgramSubStage prof_scope(
+	    Common::AuditProfiler::ProgramSubStage::NoteTargetDraw, Config::ProfileProgramsEnabled());
 	const auto frame = CurrentFrame();
 	auto&      seen  = targets[address];
 	if (seen.frame != frame) {

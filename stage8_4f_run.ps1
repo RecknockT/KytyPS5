@@ -20,7 +20,8 @@ param(
     [switch]$NoGpuTimestamps,
     [ValidateRange(0,4)][int]$KeyboardPlayer = 0,
     [switch]$Preview,
-    [ValidateRange(0,3600)][int]$MaxRuntimeSeconds = 0
+    [ValidateRange(0,3600)][int]$MaxRuntimeSeconds = 0,
+    [string[]]$ExtraArgs = @()
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
@@ -61,6 +62,7 @@ if ($BootSeconds -eq 0) {
     $emuArguments += @('--audit-capture-duration', [string]$BootSeconds)
 }
 if ($ColdBoot) { $emuArguments += '--no-shader-cache' }
+if ($ExtraArgs.Count -gt 0) { $emuArguments += $ExtraArgs }
 if ($Preview) {
     [pscustomobject]@{profile=$Profile; transfers=$Transfers; bindingReuse=[bool]$BindingReuse; effectProfile=[bool]$EffectProfile; arguments=$emuArguments} | ConvertTo-Json -Depth 5
     return

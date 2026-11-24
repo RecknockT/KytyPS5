@@ -447,19 +447,22 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    ((static_cast<uint32_t>(resource.mip_mode) & 0x7u) << 4u));
 	size_t tex_cache_slot = 0;
 	if (use_tex_cache) {
+		const size_t   cache_mask = (Config::ResolveTextureCache512Enabled() ? 512u : 64u) - 1u;
 		const uint64_t h = (static_cast<uint64_t>(value.dwords[0]) * 0x9e3779b97f4a7c15ull) ^
 		                   (static_cast<uint64_t>(value.dwords[1]) * 0xbf58476d1ce4e5b9ull) ^
 		                   (static_cast<uint64_t>(value.dwords[2]) ^
 		                    (static_cast<uint64_t>(value.dwords[3]) << 17u));
-		tex_cache_slot   = static_cast<size_t>(h ^ (h >> 16u)) & (ResolvedTextureCacheSize - 1u);
+		tex_cache_slot   = static_cast<size_t>(h ^ (h >> 16u)) & cache_mask;
 		const auto& ent  = m_resolved_texture_cache[tex_cache_slot];
 		if (ent.valid && ent.flags == tex_flags &&
 		    ent.tc_gen == texture_cache.StructureGeneration() &&
 		    std::equal(ent.dwords.begin(), ent.dwords.end(), value.dwords.begin()) &&
 		    (ent.binding.image_id == 0 ||
 		     texture_cache.ValidateAndTouchCachedImage(ent.binding.image_id))) {
+			Common::AuditProfiler::RecordResolveTexHit();
 			return ent.binding;
 		}
+		Common::AuditProfiler::RecordResolveTexMiss(ent.valid);
 	}
 	// Image heap resolves do not follow the draws that sample them and storage access is not
 	// sampling: neither reports samples.
