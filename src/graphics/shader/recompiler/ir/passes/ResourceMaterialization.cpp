@@ -1679,7 +1679,27 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 }
 
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
-                          ResourceSnapshot& snapshot, ResourceSpecialization& specialization) {
+                          ResourceSnapshot& snapshot, ResourceSpecialization& specialization,
+                          ResourceMaterializationCache* cache) {
+	if (cache != nullptr) {
+		cache->last_hit = false;
+		if (cache->plan != &program || cache->walker != program.srt_code.get()) {
+			*cache        = {};
+			cache->plan   = &program;
+			cache->walker = program.srt_code.get();
+			cache->eligible =
+			    program.stage != ShaderType::Compute && program.stage != ShaderType::Unknown &&
+			    program.srt_scratch.size() <= 4096 && program.descriptor_sources.size() <= 256 &&
+			    program.uniform_fill.fill.kind == UniformFillKind::None &&
+			    program.uniform_fill.fill.words == 0 &&
+			    program.info.buffers.size() + program.info.images.size() +
+			            program.info.samplers.size() <=
+			        256 &&
+			    std::ranges::none_of(program.descriptor_sources, [](const auto& source) {
+				    return source.indirect_descriptor.has_value();
+			    });
+		}
+	}
 	for (auto& keys: program.selector_keys)
 		keys.resolved = false;
 	if (!program.resource_tracking_complete) return false;
@@ -1694,9 +1714,24 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	auto& reads = snapshot.specialization_reads;
 	reads       = program.source_reads;
 	if (!WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr)) {
+		if (cache != nullptr) cache->valid = false;
 		return SpecializationFail(fmt::format("SRT refresh complete={} reads={} user_data={}",
 		                                      program.srt_plan_complete, program.srt_reads.size(),
 		                                      runtime.user_data.size()));
+	}
+	if (cache != nullptr && cache->eligible) {
+		if (cache->valid && cache->walked == program.srt_scratch) {
+			// Flattened SRT and read ranges above are fresh; no cached dirty/hazard decisions.
+			snapshot.buffers      = cache->buffers;
+			snapshot.images       = cache->images;
+			snapshot.samplers     = cache->samplers;
+			snapshot.uniform_fill = {};
+			snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
+			specialization  = cache->specialization;
+			cache->last_hit = true;
+			return true;
+		}
+		cache->valid = false;
 	}
 	SrtReadCapture          capture {runtime, reads};
 	auto                    observed = capture_reads ? capture.ObservedRuntime() : runtime;
@@ -1890,7 +1925,16 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		}
 	}
 	snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
-	return BuildResourceSpecialization(program, snapshot, specialization);
+	const bool success = BuildResourceSpecialization(program, snapshot, specialization);
+	if (success && cache != nullptr && cache->eligible) {
+		cache->walked         = program.srt_scratch;
+		cache->buffers        = snapshot.buffers;
+		cache->images         = snapshot.images;
+		cache->samplers       = snapshot.samplers;
+		cache->specialization = specialization;
+		cache->valid          = true;
+	}
+	return success;
 }
 
 uint32_t ImageHeapKind(const ImageResource& root, DescriptorValue& value) {

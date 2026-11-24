@@ -171,6 +171,8 @@ void BufferCache::Unregister(BufferId id) {
 
 template <bool insert>
 void BufferCache::ChangeRegister(BufferId id) {
+	// Invalidate discovery hints before an ID can be retired, recycled or replaced by a merge.
+	++m_registration_epoch;
 	auto&                buffer = m_slot_buffers[id];
 	PageTable::PageRange pages {};
 	EXIT_IF(!(GuestRange {buffer.CpuAddress(), buffer.Size()}.Valid()) ||
@@ -313,7 +315,8 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		m_scheduler.DeferPriorityOperation(
 		    [this, pending = std::move(pending)] { PublishDownload(pending); });
 	} else {
-		const auto tick = m_scheduler.CurrentTick();
+		EffectProfiler::ReadbackScope effect_readback;
+		const auto                    tick = m_scheduler.CurrentTick();
 		m_scheduler.Wait(tick, Common::AuditProfiler::GpuWaitReason::BufferReadback);
 		m_scheduler.WaitPriorityOperations(tick);
 		PublishDownload(pending);
@@ -435,6 +438,53 @@ void BufferCache::CollectRecentPiece(uint64_t address, uint64_t size, uint64_t& 
 	batch.push_back({&buffer, std::move(pending), address, size});
 }
 
+// Adapted to this cache's synchronous publication from Jetsku's KYTY_READBACK_SPAN
+// (06fa23d11d19eb0efc578b1bcbe556765a6fb301, originally chenxiao07/0a0f59ac6).
+// Only registered, mapped, page-aligned neighbours participate. No buffer is created or
+// merged here, and each source retains its own barriers and exact dirty-byte copies.
+void BufferCache::CollectNeighbourDownloads(BufferId main_id, uint64_t vaddr, uint64_t size,
+                                            uint64_t& budget, std::vector<BatchedDownload>& batch) {
+	const auto window_begin = Common::AlignDown(vaddr, m_download_window_size);
+	const auto window_end   = std::max(window_begin + m_download_window_size, vaddr + size);
+	auto       it           = m_buffers.lower_bound(window_begin);
+	if (it != m_buffers.begin()) {
+		--it;
+	}
+	constexpr size_t MaxInspected = 64;
+	size_t           inspected    = 0;
+	for (;
+	     it != m_buffers.end() && it->first < window_end && budget != 0 && inspected < MaxInspected;
+	     ++it, ++inspected) {
+		if (it->second == main_id) {
+			continue;
+		}
+		auto& buffer = m_slot_buffers[it->second];
+		if (std::ranges::any_of(batch, [&](const auto& item) { return item.buffer == &buffer; })) {
+			continue;
+		}
+		const auto begin = std::max(window_begin, buffer.CpuAddress());
+		const auto end   = std::min(window_end, buffer.CpuAddress() + buffer.Size());
+		if (begin >= end || ((begin | end) % TRACKER_PAGE_SIZE) != 0 ||
+		    !m_scheduler.Context().IsMapped(begin, end - begin) ||
+		    m_texture_cache.WriteBackTick(begin, end - begin) != 0) {
+			continue;
+		}
+		const auto estimate = EstimateDownloadBytes(begin, end - begin);
+		if (estimate == 0 || estimate > budget) {
+			continue;
+		}
+		auto pending = CollectDownloadCopies(buffer, begin, end - begin);
+		if (pending.copies.empty()) {
+			continue;
+		}
+		budget -= std::min(budget, pending.total_size);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferNeighbourDownloads);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferNeighbourDownloadBytes,
+		                           pending.total_size);
+		batch.push_back({&buffer, std::move(pending), begin, end - begin});
+	}
+}
+
 /// Downloads the main window, the GPU-written bytes of hot buffers and the finished recent small
 /// writes with one GPU wait. The extras are marked clean here, and the caller does that for the
 /// main window. Nothing is marked CPU-modified, since only a faulting write does that. Returns
@@ -445,13 +495,21 @@ bool BufferCache::DownloadWithHotBuffers(BufferId main_id, Buffer& buffer, uint6
 	if (main_pending.copies.empty()) {
 		return false;
 	}
-	std::vector<BatchedDownload> batch;
+	EffectProfiler::ReadbackScope effect_readback;
+	std::vector<BatchedDownload>  batch;
 	batch.reserve(MaxHotReadbackEntries + 1);
 	batch.push_back({&buffer, std::move(main_pending)});
 	uint64_t budget = MaxHotReadbackBytes;
-	CollectHotDownloads(main_id, budget, batch);
+	if (m_batch_hot_readbacks) {
+		CollectHotDownloads(main_id, budget, batch);
+	}
+	if (m_readback_neighbours) {
+		CollectNeighbourDownloads(main_id, vaddr, size, budget, batch);
+	}
 	auto claimed = ClaimedDownloadPages(batch, vaddr, size);
-	CollectRecentWrites(claimed, budget, batch);
+	if (m_batch_hot_readbacks) {
+		CollectRecentWrites(claimed, budget, batch);
+	}
 	// The pointers are taken once the batch has stopped growing, so none can be invalidated.
 	std::vector<PendingDownload*> pendings;
 	pendings.reserve(batch.size());
@@ -488,7 +546,9 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_download_buffer(graphics, scheduler, MemoryUsage::Download,
                         Config::ExtendedStreamBufferEnabled() ? 128 * MiB : 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
-      m_texture_cache(texture_cache), m_batch_hot_readbacks(Config::BatchHotReadbacksEnabled()) {
+      m_texture_cache(texture_cache), m_batch_hot_readbacks(Config::BatchHotReadbacksEnabled()),
+      m_readback_neighbours(Config::ReadbackNeighboursEnabled()),
+      m_download_window_size(Config::WideReadbackWindowEnabled() ? 4 * MiB : DownloadWindowSize) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
 	SetVulkanObjectNameF(m_graphics.device, m_bda_pagetable_buffer.Handle(),
@@ -626,11 +686,11 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		auto&      buffer    = m_slot_buffers[buffer_id];
 		if (IsRegionGpuModified(vaddr, size)) {
 			const auto start =
-			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
-			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
+			    std::max(Common::AlignDown(vaddr, m_download_window_size), buffer.CpuAddress());
+			const auto end = std::min(std::max(start + m_download_window_size, vaddr + size),
 			                          buffer.CpuAddress() + buffer.Size());
 			const bool downloaded =
-			    m_batch_hot_readbacks
+			    (m_batch_hot_readbacks || m_readback_neighbours)
 			        ? DownloadWithHotBuffers(buffer_id, buffer, start, end - start)
 			        : DownloadBufferMemory<false>(buffer, start, end - start);
 			if (downloaded) {
@@ -971,6 +1031,22 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
                                                        bool is_written, bool is_texel_buffer,
                                                        BufferId id) {
 	EXIT_IF(!(GuestRange {vaddr, size}.Valid()));
+	ReadBufferMemo* read_memo = nullptr;
+	if (!is_written && !is_texel_buffer && Config::ReadBufferReuseEnabled()) {
+		auto hash = (vaddr >> 4u) ^ (size * 0x9e3779b97f4a7c15ull);
+		hash ^= hash >> 29u;
+		read_memo = &m_read_buffer_memos[hash % m_read_buffer_memos.size()];
+		if (read_memo->address == vaddr && read_memo->size == size &&
+		    read_memo->registration == m_registration_epoch &&
+		    m_memory_tracker.MatchesReadGeneration(vaddr, size, read_memo->generation)) {
+			auto& buffer = m_slot_buffers[read_memo->id];
+			TouchBuffer(buffer);
+			Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadBufferHits);
+			return {&buffer, buffer.Offset(vaddr)};
+		}
+		*read_memo = {};
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadBufferMisses);
+	}
 
 	const auto image             = is_texel_buffer && !is_written
 	                                   ? m_texture_cache.FindImageFromRange(vaddr, size)
@@ -1009,6 +1085,15 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
 	(void)SynchronizeBuffer(buffer, vaddr, end - vaddr, is_written, image);
+	if (read_memo != nullptr) {
+		// Only the regular synchronization path establishes this proof. CPU faults,
+		// GPU ownership changes and unmaps invalidate its generation; buffer merges
+		// and retirement invalidate its registration epoch. No Vulkan barrier is elided.
+		const auto generation = m_memory_tracker.ReadCleanGeneration(vaddr, size);
+		if (generation != 0) {
+			*read_memo = {vaddr, size, m_registration_epoch, generation, id};
+		}
+	}
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);

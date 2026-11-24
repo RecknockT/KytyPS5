@@ -1,0 +1,41 @@
+[
+  {
+    "at_ms": 0,
+    "action": "compact_image_readback",
+    "enabled": false
+  },
+  {
+    "at_ms": 80000,
+    "action": "capture",
+    "label": "control1"
+  },
+  {
+    "at_ms": 125000,
+    "action": "compact_image_readback",
+    "enabled": true
+  },
+  {
+    "at_ms": 130000,
+    "action": "capture",
+    "label": "candidate1"
+  },
+  {
+    "at_ms": 175000,
+    "action": "capture",
+    "label": "candidate2"
+  },
+  {
+    "at_ms": 220000,
+    "action": "compact_image_readback",
+    "enabled": false
+  },
+  {
+    "at_ms": 225000,
+    "action": "capture",
+    "label": "control2"
+  },
+  {
+    "at_ms": 270000,
+    "action": "quit"
+  }
+]

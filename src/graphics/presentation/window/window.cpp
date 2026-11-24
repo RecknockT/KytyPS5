@@ -18,6 +18,7 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/presentation/window/benchmarkReplay.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
@@ -765,7 +766,11 @@ void WindowContext::ProcessEvent(double time_s) {
 }
 
 void WindowContext::Run() {
-	Common::Timer timer;
+	struct StopLiveJournal {
+		~StopLiveJournal() { Common::AuditProfiler::StopLiveDiagnostics(); }
+	} stop_live_journal;
+	Common::Timer   timer;
+	BenchmarkReplay replay;
 
 	loop.event     = {};
 	loop.need_exit = false;
@@ -775,6 +780,10 @@ void WindowContext::Run() {
 	auto               title_frames      = loop.presented_frames.load(std::memory_order_relaxed);
 
 	while (!loop.need_exit) {
+		if (!replay.Update()) {
+			loop.need_exit = true;
+			break;
+		}
 		// Refresh the title on the main thread without making presentation wait for it.
 		const auto now     = SDL_GetTicks();
 		const auto elapsed = now - title_time;
@@ -788,7 +797,7 @@ void WindowContext::Run() {
 			title_frames = frames;
 		}
 		const auto wait_ms = static_cast<int>(title_interval_ms - (now - title_time));
-		if (!HostInputWaitEvent(&loop.event, wait_ms)) {
+		if (!HostInputWaitEvent(&loop.event, replay.WaitLimit(wait_ms))) {
 			continue;
 		}
 		ProcessEvent(timer.GetTimeS());

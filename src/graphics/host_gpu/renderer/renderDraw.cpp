@@ -902,7 +902,11 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 
 	m_context.GetImageHeap().BeginDraw();
 	const auto* prepared = TakePreparedDraw();
-	m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state, prepared);
+	{
+		EffectProfiler::SectionScope section(EffectProfiler::Section::Programs);
+		m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state, prepared);
+	}
+	EffectProfiler::SectionScope targets_section(EffectProfiler::Section::Targets);
 	// Vertex programs the host cannot run are not compiled.
 	if (state.vertex_info[0].stage.module == nullptr) {
 		return false;
@@ -1305,6 +1309,7 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	vk::DeviceAddress            mesh_indices = 0;
 	std::pair<Buffer*, uint64_t> args_buffer {};
 	{
+		EffectProfiler::SectionScope vertex_section(EffectProfiler::Section::VertexBuffers);
 		Common::AuditProfiler::ScopedStageTimer buf_timer(
 		    Common::AuditProfiler::PipelineStage::BufferPrep);
 		if (!mesh_active) {
@@ -1325,7 +1330,10 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 			EXIT_IF((args_buffer.second & 3u) != 0);
 		}
 	}
-	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	auto& pipeline = [&]() -> auto& {
+		EffectProfiler::SectionScope section(EffectProfiler::Section::Pipeline);
+		return m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	}();
 	using ShaderRecompiler::IR::PushData;
 	vk::ImageAspectFlags feedback_aspects;
 	RenderState          rendering;
@@ -1358,6 +1366,7 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	// memory.
 	auto vk_buffer = buffer.Handle();
 	{
+		EffectProfiler::SectionScope            emit_section(EffectProfiler::Section::Emit);
 		Common::AuditProfiler::ScopedStageTimer rec_timer(
 		    Common::AuditProfiler::PipelineStage::CommandRecording);
 		if (!mesh_active) {
@@ -1425,11 +1434,17 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		buffer.BeginRendering(rendering);
 	}
 	{
+		EffectProfiler::SectionScope            emit_section(EffectProfiler::Section::Emit);
 		Common::AuditProfiler::ScopedStageTimer rec_timer(
 		    Common::AuditProfiler::PipelineStage::CommandRecording);
 		buffer.BindGraphicsPipeline(pipeline.pipeline);
 		auto&         occlusion_queries = m_context.GetOcclusionQueries();
 		const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
+		auto&         effects           = m_context.GetCommandScheduler().GetEffectProfiler();
+		const auto    effect_sample     = effects.BeginSample(
+		    vk_buffer, {state.vertex_info[0].stage.module->info.shader_hash,
+		                state.ps_active ? state.ps_input_info.stage.module->info.shader_hash : 0, 0,
+		                state.mrt_mask});
 		if (mesh_task) {
 			vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
 		} else if (mesh_active) {
@@ -1454,6 +1469,7 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 			vk_buffer.drawIndirect(args_buffer.first->Handle(), args_buffer.second,
 			                       emit.indirect.count, emit.indirect.stride);
 		}
+		effects.EndSample(vk_buffer, effect_sample);
 		occlusion_queries.End(vk_buffer, occlusion_query);
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws);
@@ -1577,12 +1593,19 @@ bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args)
 		index_source.size      = expanded_indices.size() * sizeof(uint16_t);
 	}
 
-	const DrawCallInfo draw {true, args.index_count, args.instance_count};
+	if (auto& effects = m_context.GetCommandScheduler().GetEffectProfiler(); effects.Enabled())
+		effects.Frame(m_context.GetGpu().GetFrameNum());
+	EffectProfiler::CpuScope effect(m_context.GetCommandScheduler().GetEffectProfiler());
+	const DrawCallInfo       draw {true, args.index_count, args.instance_count};
 	if (!PrepareDrawRenderState(buffer, draw, state)) {
 		ResetBindings();
 		return true;
 	}
 
+	effect.Identify({state.vertex_info[0].stage.module->info.shader_hash,
+	                 state.ps_active ? state.ps_input_info.stage.module->info.shader_hash : 0, 0,
+	                 state.mrt_mask});
+	effect.Prepared();
 	LogDrawStateIfNeeded(buffer, draw, state, m_targets, args.index_type_and_size, args.index_addr);
 	const auto emit = ResolveDrawEmit(ucfg, state.vertex_info[0], args.offset_source,
 	                                  args.base_vertex, args.first_instance, args.indirect);
@@ -1634,7 +1657,10 @@ bool RenderExecutor::DrawAuto(CommandBuffer& buffer, const DrawAutoArgs& args) {
 
 	hw_check(buffer);
 
-	const DrawCallInfo draw {false, args.vertex_count, args.instance_count};
+	if (auto& effects = m_context.GetCommandScheduler().GetEffectProfiler(); effects.Enabled())
+		effects.Frame(m_context.GetGpu().GetFrameNum());
+	EffectProfiler::CpuScope effect(m_context.GetCommandScheduler().GetEffectProfiler());
+	const DrawCallInfo       draw {false, args.vertex_count, args.instance_count};
 
 	DrawRenderState state {.indirect_offsets = args.indirect.offsets,
 	                       .indirect_draw    = args.indirect.address != 0};
@@ -1663,6 +1689,10 @@ bool RenderExecutor::DrawAuto(CommandBuffer& buffer, const DrawAutoArgs& args) {
 		return true;
 	}
 
+	effect.Identify({state.vertex_info[0].stage.module->info.shader_hash,
+	                 state.ps_active ? state.ps_input_info.stage.module->info.shader_hash : 0, 0,
+	                 state.mrt_mask});
+	effect.Prepared();
 	LogDrawStateIfNeeded(buffer, draw, state, m_targets, 0, nullptr);
 	const auto emit = ResolveDrawEmit(ucfg, state.vertex_info[0], args.offset_source,
 	                                  static_cast<int32_t>(args.first_vertex), args.first_instance,

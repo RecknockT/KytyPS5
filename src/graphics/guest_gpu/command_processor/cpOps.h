@@ -47,6 +47,7 @@ enum class OpKind : uint16_t {
 	LockstepRead,
 	SkipSlots,
 	WriteBackImages,
+	Sync,
 	Count,
 };
 
@@ -92,8 +93,9 @@ struct OpHeader {
 	uint64_t              packet       = 0;
 	uint64_t              packets_hash = 0;
 	uint64_t              verify_hash  = 0;
+	uint64_t              emit_time_ns = 0;
 };
-static_assert(sizeof(OpHeader) == 48);
+static_assert(sizeof(OpHeader) == 56);
 
 // ---- Payloads ----
 
@@ -147,6 +149,10 @@ struct DrawIndirectOp {
 	uint32_t num_instances       = 0;
 	uint32_t snapshot            = 0;
 	uint32_t draw_index_sgpr     = 0;
+	uint32_t vertex_offset       = 0;
+	uint32_t instance_offset     = 0;
+	uint32_t index_offset        = 0;
+	uint32_t register_padding    = 0;
 	uint64_t window              = 0;
 };
 
@@ -200,6 +206,11 @@ struct EventWriteOp {
 	uint64_t address     = 0;
 	uint32_t event_type  = 0;
 	uint32_t event_index = 0;
+};
+
+struct SyncOp {
+	uint32_t action   = 0; // 1: flush, 2: finish, 3: promote guest writes.
+	uint32_t reserved = 0;
 };
 
 struct WriteDataOp {
@@ -373,6 +384,33 @@ struct OpView {
 	[[nodiscard]] uint32_t DataSize() const noexcept { return header->data_size; }
 };
 
+// The resolver and concurrency tests use the same interpretation of snapshot ownership.
+[[nodiscard]] inline uint32_t SnapshotIndex(const OpView& view) noexcept {
+	switch (view.Kind()) {
+		case OpKind::DrawIndex: {
+			const auto& op = view.As<DrawIndexOp>();
+			return (op.flags & DrawFlagSnapshot) ? op.snapshot : UINT32_MAX;
+		}
+		case OpKind::DrawAuto: {
+			const auto& op = view.As<DrawAutoOp>();
+			return (op.flags & DrawFlagSnapshot) ? op.snapshot : UINT32_MAX;
+		}
+		case OpKind::DrawIndirectMulti: {
+			const auto& op = view.As<DrawIndirectOp>();
+			return (op.flags & IndirectFlagSnapshot) ? op.snapshot : UINT32_MAX;
+		}
+		case OpKind::DispatchDirect: {
+			const auto& op = view.As<DispatchDirectOp>();
+			return (op.flags & DispatchFlagSnapshot) ? op.snapshot : UINT32_MAX;
+		}
+		case OpKind::DispatchIndirect: {
+			const auto& op = view.As<DispatchIndirectOp>();
+			return (op.flags & DispatchFlagSnapshot) ? op.snapshot : UINT32_MAX;
+		}
+		default: return UINT32_MAX;
+	}
+}
+
 class OpStream {
 public:
 	explicit OpStream(uint64_t capacity);
@@ -399,9 +437,9 @@ private:
 	CommandStream::WaitPolicy m_policy;
 	CommandStream::WaitStats  m_producer_stats;
 	CommandStream::WaitStats  m_consumer_stats;
-	uint64_t                  m_next_sequence = 0;
-	uint64_t                  m_bytes         = 0;
-	uint32_t                  m_peeked_size   = 0;
+	std::atomic<uint64_t>     m_next_sequence {0};
+	std::atomic<uint64_t>     m_bytes {0};
+	uint32_t                  m_peeked_size = 0;
 };
 
 struct VerifyTotals {

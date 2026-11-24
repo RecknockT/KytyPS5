@@ -41,8 +41,9 @@ struct ControllerSettings {
 	QString color;
 	int     speaker_volume      = 50;
 	int     vibration_intensity = 100;
-	// 0 shares player 1 with the first gamepad; 1..MAX_PLAYERS dedicates that player to the keyboard.
-	int     keyboard_player     = 0;
+	// 0 shares player 1 with the first gamepad; 1..MAX_PLAYERS dedicates that player to the
+	// keyboard.
+	int keyboard_player = 0;
 
 	void WriteSettings(QSettings* s) const {
 		s->setValue("controller_color", color);
@@ -61,8 +62,8 @@ struct ControllerSettings {
 		};
 		speaker_volume      = read_percent("controller_speaker_volume", 50);
 		vibration_intensity = read_percent("controller_vibration_intensity", 100);
-		keyboard_player = qBound(0, s->value("controller_keyboard_player", 0).toInt(),
-		                         Config::MAX_PLAYERS);
+		keyboard_player =
+		    qBound(0, s->value("controller_keyboard_player", 0).toInt(), Config::MAX_PLAYERS);
 	}
 };
 
@@ -111,50 +112,51 @@ public:
 	// Controller preferences always come from the global configuration.
 	ControllerSettings controller;
 
-	QString                screen_resolution           = QStringLiteral("1280x720");
-	QString                user_name                   = "Kyty";
-	int                    user_id                     = Config::DEFAULT_USER_ID;
-	QString                audio_input_device;
-	PresentMode            present_mode                = PresentMode::Mailbox;
-	int                    gpu_index                   = -1;
-	bool                   fullscreen_enabled          = false;
-	bool                   hdr_enabled                 = false;
-	bool                   hide_cursor_enabled         = false;
-	bool                   stretch_enabled             = false;
-	bool                   readback_linear_images      = false;
-	bool                   readback_tiled_images       = false;
-	bool                   readback_storage_images     = false;
-	bool                   sync_raw_image_buffers      = false;
-	int                    flush_draws                 = 0;
-	bool                   tessellation_enabled        = false;
-	bool                   occlusion_queries_enabled   = false;
-	bool                   relaxed_shader_float        = false;
-	bool                   native_rt                   = false;
-	bool                   shader_cache_enabled        = true;
-	bool                   trophy_enabled              = true;
-	int                    trophy_duration_seconds     = 6;
-	bool                   perf_overlay_enabled        = false;
-	bool                   skip_notice_screen          = false;
-	bool                   network_connected           = false;
-	bool                   psn_emulation_enabled       = false;
-	int                    vblank_frequency            = 60;
-	int                    console_language            = DEFAULT_CONSOLE_LANGUAGE;
-	bool                   vulkan_validation_enabled   = false;
-	bool                   shader_validation_enabled   = false;
-	LogDirection           shader_log_direction        = LogDirection::Silent;
-	QString                shader_log_folder           = "_Shaders";
-	bool                   command_buffer_dump_enabled = false;
-	QString                command_buffer_dump_folder  = "_Buffers";
-	LogDirection           printf_direction            = LogDirection::Silent;
-	QString                printf_output_file          = "_kyty.txt";
-	bool                   profiler_enabled            = false;
-	bool                   renderdoc_enabled           = false;
-	bool                   pro_enabled                 = false;
-	PssrUpscaler           pssr_upscaler               = PssrUpscaler::Linear;
-	QString                dlss_folder;
-	QString                fsr_folder;
-	bool                   amd_cpu_enabled             = false;
-	bool                   guest_tsc_enabled           = false;
+	QString      screen_resolution = QStringLiteral("1280x720");
+	QString      user_name         = "Kyty";
+	int          user_id           = Config::DEFAULT_USER_ID;
+	QString      audio_input_device;
+	PresentMode  present_mode                = PresentMode::Mailbox;
+	int          gpu_index                   = -1;
+	bool         fullscreen_enabled          = false;
+	bool         hdr_enabled                 = false;
+	bool         hide_cursor_enabled         = false;
+	bool         stretch_enabled             = false;
+	bool         readback_linear_images      = false;
+	bool         readback_tiled_images       = false;
+	bool         readback_storage_images     = false;
+	bool         sync_raw_image_buffers      = false;
+	int          flush_draws                 = 0;
+	bool         tessellation_enabled        = false;
+	bool         occlusion_queries_enabled   = false;
+	bool         relaxed_shader_float        = false;
+	bool         native_rt                   = false;
+	bool         shader_cache_enabled        = true;
+	bool         gpu_submit_cadence_enabled  = false;
+	bool         trophy_enabled              = true;
+	int          trophy_duration_seconds     = 6;
+	bool         perf_overlay_enabled        = false;
+	bool         skip_notice_screen          = false;
+	bool         network_connected           = false;
+	bool         psn_emulation_enabled       = false;
+	int          vblank_frequency            = 60;
+	int          console_language            = DEFAULT_CONSOLE_LANGUAGE;
+	bool         vulkan_validation_enabled   = false;
+	bool         shader_validation_enabled   = false;
+	LogDirection shader_log_direction        = LogDirection::Silent;
+	QString      shader_log_folder           = "_Shaders";
+	bool         command_buffer_dump_enabled = false;
+	QString      command_buffer_dump_folder  = "_Buffers";
+	LogDirection printf_direction            = LogDirection::Silent;
+	QString      printf_output_file          = "_kyty.txt";
+	bool         profiler_enabled            = false;
+	bool         renderdoc_enabled           = false;
+	bool         pro_enabled                 = false;
+	PssrUpscaler pssr_upscaler               = PssrUpscaler::Linear;
+	QString      dlss_folder;
+	QString      fsr_folder;
+	bool         amd_cpu_enabled   = false;
+	bool         guest_tsc_enabled = false;
 #if defined(_WIN32)
 	bool red_zone_protection_enabled = false;
 #endif
@@ -183,6 +185,7 @@ public:
 		relaxed_shader_float        = other.relaxed_shader_float;
 		native_rt                   = other.native_rt;
 		shader_cache_enabled        = other.shader_cache_enabled;
+		gpu_submit_cadence_enabled  = other.gpu_submit_cadence_enabled;
 		trophy_enabled              = other.trophy_enabled;
 		trophy_duration_seconds     = other.trophy_duration_seconds;
 		perf_overlay_enabled        = other.perf_overlay_enabled;

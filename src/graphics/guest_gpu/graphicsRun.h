@@ -69,6 +69,7 @@ private:
 		bool                      blocked         = false;
 		uint64_t                  flip_request_id = 0;
 		uint64_t                  sequence        = 0; // admission order (m_queue_mutex)
+		uint64_t                  enqueue_time_ns = 0;
 	};
 
 	void              Enqueue(Submission submission);
@@ -97,6 +98,7 @@ private:
 	bool                    m_accepting         = true;
 	bool                    m_stopping          = false;
 	bool                    m_shutdown_complete = false;
+	bool                    m_sequence_reset    = false;
 	// Completion callbacks can outlive GuestGpu during renderer shutdown.
 	std::shared_ptr<std::binary_semaphore> m_suspend_point_ready =
 	    std::make_shared<std::binary_semaphore>(1);

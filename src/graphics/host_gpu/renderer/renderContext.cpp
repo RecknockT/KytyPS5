@@ -72,10 +72,10 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	}
 	if (access == PageFaultAccess::Write) {
 		// For writes into registered GPU buffers (e.g. vertex/uniform staging), coalesce
-		// unprotection forward across contiguous pages of the buffer up to 64 KB.
-		// This drastically reduces hardware page faults and Windows VirtualProtect syscall storms.
-		constexpr uint64_t MaxCoalesceBytes = 64 * 1024;
-		const uint64_t     extent =
+		// unprotection forward within the registered buffer and tracker region. The optional
+		// larger window trades extra dirty/upload work for fewer fault/protection round trips.
+		const uint64_t MaxCoalesceBytes = (Config::FaultAheadEnabled() ? 256 : 64) * 1024;
+		const uint64_t extent =
 		    m_buffer_cache.CoalesceWriteFaultRange(fault_vaddr, MaxCoalesceBytes);
 		const uint64_t fault_size = (extent > 1 && IsMapped(fault_vaddr, extent)) ? extent : 1;
 

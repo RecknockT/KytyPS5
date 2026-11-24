@@ -94,12 +94,12 @@ private:
 		QApplication::styleHints()->setColorScheme(scheme);
 	}
 
-	Ui::MainDialog* m_ui             = {nullptr};
-	MainDialog*     m_main_dialog    = nullptr;
-	UpdateChecker*  m_update_checker = nullptr;
+	Ui::MainDialog*   m_ui             = {nullptr};
+	MainDialog*       m_main_dialog    = nullptr;
+	UpdateChecker*    m_update_checker = nullptr;
 	ControllerPreview m_controller_preview;
-	TitleSound      m_title_sound;
-	QString         m_interpreter;
+	TitleSound        m_title_sound;
+	QString           m_interpreter;
 
 	int m_running_games = 0;
 };
@@ -122,7 +122,7 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	m_ui->setupUi(main_dialog);
 	m_ui->widget->SetControllerPreview(&m_controller_preview);
 
-	m_main_dialog = main_dialog;
+	m_main_dialog    = main_dialog;
 	m_update_checker = new UpdateChecker(main_dialog);
 	m_ui->check_updates_on_startup->setChecked(g_check_updates_on_startup);
 	m_ui->close_terminal->setChecked(g_close_terminal);
@@ -287,6 +287,8 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	AddFlag(args, info.relaxed_shader_float, "--relaxed-shader-float");
 	AddFlag(args, info.native_rt, "--native-rt");
 	AddFlag(args, info.shader_cache_enabled, "--shader-cache");
+	args.append(info.gpu_submit_cadence_enabled ? QStringLiteral("--gpu-submit-cadence")
+	                                            : QStringLiteral("--no-gpu-submit-cadence"));
 	args << "--vblank-frequency" << QString::number(info.vblank_frequency);
 	args << "--console-language" << QString::number(info.console_language);
 	AddFlag(args, info.vulkan_validation_enabled, "--vulkan-validation");

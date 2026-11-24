@@ -238,10 +238,11 @@ private:
 	friend struct PipelineCacheTestAccess;
 
 	struct Program {
-		std::unique_ptr<ShaderRecompiler::ShaderSource> call_source;
-		ShaderRecompiler::IR::ResourcePlan              resource_plan;
-		ShaderRecompiler::IR::ResourceSnapshot          resources;
-		ShaderRecompiler::IR::ResourceSpecialization    specialization;
+		std::unique_ptr<ShaderRecompiler::ShaderSource>    call_source;
+		ShaderRecompiler::IR::ResourcePlan                 resource_plan;
+		ShaderRecompiler::IR::ResourceSnapshot             resources;
+		ShaderRecompiler::IR::ResourceSpecialization       specialization;
+		ShaderRecompiler::IR::ResourceMaterializationCache preparation_cache;
 		// A deque, so pipelines being made on workers keep valid pointers to their modules.
 		std::deque<ShaderModule> modules;
 		bool                     skip_dispatch = false;

@@ -7,6 +7,8 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <chrono>
+#include <future>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -389,6 +391,236 @@ void TestCommandOrderingAndIndirect() {
 	Check(!stream.Peek(v0), "stream is empty after pop");
 }
 
+void TestCpSequencerWithoutDrawPrep() {
+  std::printf("Running TestCpSequencerWithoutDrawPrep...\n");
+  SnapshotRing ring(
+      4); // Intentionally small: correctness must not depend on 256 slots.
+  OpStream stream(64u << 10u);
+  constexpr uint32_t count = 10000;
+  std::atomic<bool> cancel{false};
+  std::atomic<bool> producer_done{false};
+  std::thread producer([&] {
+    RegisterState registers{};
+    for (uint32_t i = 0; i < count; ++i) {
+      auto index = ring.AcquireBlocking([&] { return cancel.load(); });
+      if (index == SnapshotRing::Invalid)
+        break;
+      registers.context.SetPsInControl(i);
+      registers.user_config.SetPrimitiveType((i & 1) ? Prospero::PrimitiveType::kTriList : Prospero::PrimitiveType::kTriStrip);
+      registers.shaders.SetCsUserSgpr(0, i ^ 0x5555);
+      registers.indirect_instance_address = uint64_t{i} * 8;
+      ring.Entry(index) = registers;
+      switch (i % 5) {
+      case 0: {
+        DrawIndexOp op{};
+        op.flags = DrawFlagSnapshot;
+        op.snapshot = index;
+        stream.Emit(OpKind::DrawIndex, &op, sizeof(op), nullptr, 0, 0, 0,
+                    false);
+        break;
+      }
+      case 1: {
+        DrawAutoOp op{};
+        op.flags = DrawFlagSnapshot;
+        op.snapshot = index;
+        stream.Emit(OpKind::DrawAuto, &op, sizeof(op), nullptr, 0, 0, 0, false);
+        break;
+      }
+      case 2: {
+        DrawIndirectOp op{};
+        op.flags = IndirectFlagSnapshot;
+        op.snapshot = index;
+        op.vertex_offset = i;
+        op.instance_offset = i + 1;
+        stream.Emit(OpKind::DrawIndirectMulti, &op, sizeof(op), nullptr, 0, 0,
+                    0, false);
+        break;
+      }
+      case 3: {
+        DispatchDirectOp op{};
+        op.flags = DispatchFlagSnapshot;
+        op.snapshot = index;
+        stream.Emit(OpKind::DispatchDirect, &op, sizeof(op), nullptr, 0, 0, 0,
+                    false);
+        break;
+      }
+      case 4: {
+        DispatchIndirectOp op{};
+        op.flags = DispatchFlagSnapshot;
+        op.snapshot = index;
+        stream.Emit(OpKind::DispatchIndirect, &op, sizeof(op), nullptr, 0, 0, 0,
+                    false);
+        break;
+      }
+      }
+      registers.context.SetPsInControl(
+          UINT32_MAX); // Producer immediately changes state.
+    }
+    producer_done = true;
+  });
+  uint32_t consumed = 0;
+  bool intact = true;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (consumed < count && std::chrono::steady_clock::now() < deadline) {
+    OpView view;
+    if (!stream.Peek(view)) {
+      std::this_thread::yield();
+      continue;
+    }
+    auto index = SnapshotIndex(view);
+    intact &= index < ring.Capacity() &&
+              ring.Entry(index).context.GetShaderRegisters().ps_in_control ==
+                  consumed;
+    if (index < ring.Capacity()) {
+      const auto& registers = ring.Entry(index);
+      intact &= registers.indirect_instance_address == uint64_t{consumed} * 8;
+      intact &= registers.shaders.GetCs().cs_user_sgpr.value[0] == (consumed ^ 0x5555);
+      intact &= registers.user_config.GetPrimType() == ((consumed & 1) ? Prospero::PrimitiveType::kTriList : Prospero::PrimitiveType::kTriStrip);
+    }
+    if (view.Kind() == OpKind::DrawIndirectMulti) {
+      intact &= view.As<DrawIndirectOp>().vertex_offset == consumed &&
+                view.As<DrawIndirectOp>().instance_offset == consumed + 1;
+    }
+    if ((consumed % 31) == 0)
+      std::this_thread::yield();
+    stream.Pop();
+    ring.Release();
+    ++consumed;
+  }
+  cancel = true;
+  producer.join();
+  Check(consumed == count && producer_done && intact,
+        "all five sequenced operations preserve snapshots without DrawPrep");
+  Check(ring.Released() == count, "every snapshot is released exactly once");
+}
+
+void TestSnapshotRingSaturationAndShutdown() {
+  std::printf("Running TestSnapshotRingSaturationAndShutdown...\n");
+  SnapshotRing ring(4);
+  for (uint32_t i = 0; i < 4; ++i)
+    (void)ring.Acquire();
+  std::atomic<bool> stop{false}, entered{false};
+  auto blocked = std::async(std::launch::async, [&] {
+    entered = true;
+    return ring.AcquireBlocking([&] { return stop.load(); });
+  });
+  while (!entered)
+    std::this_thread::yield();
+  Check(
+      blocked.wait_for(std::chrono::milliseconds(10)) ==
+          std::future_status::timeout,
+      "a saturated ring applies backpressure without reusing a live snapshot");
+  ring.Release();
+  Check(blocked.get() == 0,
+        "the next acquisition proceeds after the consumer releases");
+  auto cancelled = std::async(std::launch::async, [&] {
+    return ring.AcquireBlocking([&] { return stop.load(); });
+  });
+  stop = true;
+  Check(cancelled.get() == SnapshotRing::Invalid,
+        "shutdown cancels a saturated acquisition");
+}
+
+void TestStopWhileAwaitingGpuAnswer() {
+  struct Processor : ISubmissionSequencer {
+    Sequencer *sequencer = nullptr;
+    std::atomic<bool> entered{false}, exited{false};
+    bool SequenceSubmission(const Intake &) override {
+      entered = true;
+      (void)sequencer->AwaitAnswer(123);
+      exited = true;
+      return false;
+    }
+  } processor;
+  Sequencer sequencer(processor);
+  processor.sequencer = &sequencer;
+  sequencer.Start();
+  sequencer.Admit(Intake{});
+  while (!processor.entered)
+    std::this_thread::yield();
+  sequencer.Stop();
+  Check(
+      processor.exited,
+      "shutdown wakes a real sequencer awaiting a never-published GPU answer");
+}
+
+void TestInterleavedPm4Ordering() {
+  std::printf("Running TestInterleavedPm4Ordering...\n");
+  // Exercise actual stream, sequencer answer/wakeup and backpressure across
+  // threads.
+  struct Processor : ISubmissionSequencer {
+    OpStream stream{64u << 10u};
+    Sequencer *sequencer = nullptr;
+    std::atomic<bool> done{false};
+    bool SequenceSubmission(const Intake &) override {
+      for (uint32_t i = 0; i < 1000 && !sequencer->Stopping(); ++i) {
+        ReleaseMemOp release{};
+        release.data = i;
+        stream.Emit(OpKind::ReleaseMem, &release, sizeof(release), nullptr, 0,
+                    0, 0, false);
+        DmaDataOp dma{};
+        dma.src = i;
+        stream.Emit(OpKind::DmaData, &dma, sizeof(dma), nullptr, 0, 0, 0,
+                    false);
+        WaitRegMemOp wait{};
+        wait.ref = i;
+        wait.size = 4;
+        auto seq = stream.Emit(OpKind::WaitRegMem, &wait, sizeof(wait), nullptr,
+                               0, 0, 0, false);
+        if (sequencer->AwaitAnswer(seq) != i)
+          return false;
+        FlipOp flip{};
+        flip.index = i;
+        stream.Emit(OpKind::Flip, &flip, sizeof(flip), nullptr, 0, 0, 0, false);
+        WaitFlipDoneOp flip_wait{};
+        flip_wait.label_addr = i;
+        stream.Emit(OpKind::WaitFlipDone, &flip_wait, sizeof(flip_wait),
+                    nullptr, 0, 0, 0, false);
+        DispatchDirectOp compute{};
+        compute.x = i;
+        stream.Emit(OpKind::DispatchDirect, &compute, sizeof(compute), nullptr,
+                    0, 0, 0, false);
+        WriteBackImagesOp barrier{};
+        stream.Emit(OpKind::WriteBackImages, &barrier, sizeof(barrier), nullptr,
+                    0, 0, 0, false);
+      }
+      done = true;
+      return true;
+    }
+  } processor;
+  Sequencer sequencer(processor);
+  processor.sequencer = &sequencer;
+  sequencer.Start();
+  sequencer.Admit(Intake{});
+  uint64_t consumed = 0;
+  bool ordered = true;
+  constexpr std::array kinds{OpKind::ReleaseMem,     OpKind::DmaData,
+                             OpKind::WaitRegMem,     OpKind::Flip,
+                             OpKind::WaitFlipDone,   OpKind::DispatchDirect,
+                             OpKind::WriteBackImages};
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (consumed < 7000 && std::chrono::steady_clock::now() < deadline) {
+    OpView view;
+    if (!processor.stream.Peek(view)) {
+      std::this_thread::yield();
+      continue;
+    }
+    ordered &= view.Kind() == kinds[consumed % kinds.size()] &&
+               view.header->sequence == consumed;
+    if (view.Kind() == OpKind::WaitRegMem) {
+      sequencer.Answer(view.header->sequence, view.As<WaitRegMemOp>().ref);
+    }
+    processor.stream.Pop();
+    sequencer.NoteExecuted(++consumed);
+  }
+  sequencer.Stop();
+  Check(ordered && consumed == 7000 && processor.done,
+        "interleaved release, DMA, wait, flip, compute and barrier sustain "
+        "progress");
+}
+
 } // namespace
 
 int main() {
@@ -399,6 +631,10 @@ int main() {
 	TestTouchedPages();
 	TestSnapshotRing();
 	TestCommandOrderingAndIndirect();
+	TestCpSequencerWithoutDrawPrep();
+	TestSnapshotRingSaturationAndShutdown();
+	TestInterleavedPm4Ordering();
+	TestStopWhileAwaitingGpuAnswer();
 	if (g_failures != 0) {
 		std::printf("cp sequencer tests: %d failure(s)\n", g_failures);
 		return EXIT_FAILURE;

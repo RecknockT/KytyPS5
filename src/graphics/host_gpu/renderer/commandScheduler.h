@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "common/uniqueFunction.h"
 #include "graphics/host_gpu/renderer/dynamicState.h"
+#include "graphics/host_gpu/renderer/effectProfiler.h"
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/submitCadence.h"
@@ -102,6 +103,7 @@ public:
 	[[nodiscard]] uint64_t CurrentTick() const noexcept { return m_master.CurrentTick(); }
 	[[nodiscard]] bool     IsFree(uint64_t tick);
 	[[nodiscard]] MasterSemaphore& GetMasterSemaphore() noexcept { return m_master; }
+	[[nodiscard]] EffectProfiler&  GetEffectProfiler() noexcept { return m_effect_profiler; }
 	[[nodiscard]] DynamicState&    GetDynamicState() noexcept { return m_dynamic_state; }
 	[[nodiscard]] RenderContext&   Context() const noexcept { return m_context; }
 	[[nodiscard]] GraphicContext&  Graphics() const noexcept { return m_graphics; }
@@ -158,6 +160,7 @@ private:
 	CommandPool                               m_command_pool;
 	CommandBuffer                             m_command;
 	DynamicState                              m_dynamic_state;
+	EffectProfiler                            m_effect_profiler;
 	std::queue<PendingOperation>              m_pending_operations;
 	std::atomic<uint64_t>                     m_pending_front_tick {UINT64_MAX};
 	std::queue<PendingOperation>              m_priority_operations;

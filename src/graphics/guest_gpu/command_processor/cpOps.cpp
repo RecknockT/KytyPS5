@@ -1,5 +1,9 @@
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 
+#include "common/auditProfiler.h"
+
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <xxhash.h>
@@ -56,6 +60,7 @@ VerifyTotals& GetVerifyTotals() {
 
 const char* OpKindName(OpKind kind) noexcept {
 	switch (kind) {
+		case OpKind::Sync: return "Sync";
 		case OpKind::DrawIndex: return "DrawIndex";
 		case OpKind::DrawAuto: return "DrawAuto";
 		case OpKind::DrawIndirect: return "DrawIndirect";
@@ -91,6 +96,7 @@ const char* OpKindName(OpKind kind) noexcept {
 
 uint32_t PayloadSize(OpKind kind) noexcept {
 	switch (kind) {
+		case OpKind::Sync: return sizeof(SyncOp);
 		case OpKind::DrawIndex: return sizeof(DrawIndexOp);
 		case OpKind::DrawAuto: return sizeof(DrawAutoOp);
 		case OpKind::DrawIndirect:
@@ -166,6 +172,25 @@ void NormalizeForCompare(OpKind kind, void* payload) noexcept {
 	}
 }
 
+static void TraceOperation(const char* phase, const OpHeader& op) {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CP_SEQ_TRACE_OPS");
+		return value && std::strcmp(value, "1") == 0;
+	}();
+	if (!enabled) return;
+	const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                    std::chrono::steady_clock::now().time_since_epoch())
+	                    .count();
+	std::fprintf(
+	    stderr,
+	    R"({"type":"cp_op","ns":%lld,"phase":"%s","kind":"%s","sequence":%llu,"packet":%llu,"bytes":%u})"
+	    "\n",
+	    static_cast<long long>(ns), phase, OpKindName(op.kind),
+	    static_cast<unsigned long long>(op.sequence), static_cast<unsigned long long>(op.packet),
+	    op.ring.size);
+	std::fflush(stderr);
+}
+
 uint64_t HashOp(OpKind kind, const void* payload, uint32_t payload_size, const void* data,
                 uint32_t data_size) noexcept {
 	const auto hash = XXH3_64bits_withSeed(payload, payload_size, static_cast<uint64_t>(kind) + 1u);
@@ -188,7 +213,13 @@ uint64_t OpStream::Emit(OpKind kind, const void* payload, uint32_t payload_size,
 		EXIT("CpSeq: %s op of %u bytes exceeds the op ring's record limit %u\n", OpKindName(kind),
 		     bytes, m_ring.MaxPacket());
 	}
-	auto* base   = m_ring.Reserve(bytes, m_policy, m_producer_stats);
+	const auto prev_bp_ns = m_producer_stats.wait_ns + m_producer_stats.spin_ns;
+	auto*      base       = m_ring.Reserve(bytes, m_policy, m_producer_stats);
+	const auto cur_bp_ns  = m_producer_stats.wait_ns + m_producer_stats.spin_ns;
+	if (cur_bp_ns > prev_bp_ns) {
+		Common::AuditProfiler::RecordQueueLatency(
+		    Common::AuditProfiler::QueueLatencyType::Backpressure, cur_bp_ns - prev_bp_ns);
+	}
 	auto* header = reinterpret_cast<OpHeader*>(base);
 	std::memset(header, 0, sizeof(OpHeader));
 	header->ring.op      = CommandStream::Op::Count;
@@ -200,7 +231,9 @@ uint64_t OpStream::Emit(OpKind kind, const void* payload, uint32_t payload_size,
 	header->sequence     = m_next_sequence;
 	header->packet       = packet;
 	header->packets_hash = packets_hash;
-	auto* out            = base + sizeof(OpHeader);
+	header->emit_time_ns =
+	    Common::AuditProfiler::IsCaptureRunning() ? Common::AuditProfiler::NowNs() : 0;
+	auto* out = base + sizeof(OpHeader);
 	std::memcpy(out, payload, payload_size);
 	if (data_size != 0) {
 		std::memcpy(out + payload_size, data, data_size);
@@ -212,9 +245,11 @@ uint64_t OpStream::Emit(OpKind kind, const void* payload, uint32_t payload_size,
 	if (verify) {
 		header->verify_hash = HashOp(kind, payload, payload_size, data, data_size);
 	}
+	TraceOperation("emit", *header);
 	m_ring.Commit(bytes);
 	m_ring.Publish();
 	m_bytes += bytes;
+	Common::AuditProfiler::RecordCpSequencerOpEmitted();
 	return m_next_sequence++;
 }
 
@@ -230,16 +265,18 @@ bool OpStream::Peek(OpView& view) {
 		}
 		EXIT_IF(header->op != CommandStream::Op::Count);
 		const auto* op = reinterpret_cast<const OpHeader*>(header);
-		view.header    = op;
-		view.payload   = reinterpret_cast<const uint8_t*>(op) + sizeof(OpHeader);
-		view.data      = view.payload + PayloadSize(op->kind);
-		m_peeked_size  = header->size;
+		TraceOperation("peek", *op);
+		view.header   = op;
+		view.payload  = reinterpret_cast<const uint8_t*>(op) + sizeof(OpHeader);
+		view.data     = view.payload + PayloadSize(op->kind);
+		m_peeked_size = header->size;
 		return true;
 	}
 }
 
 void OpStream::Pop() {
 	EXIT_IF(m_peeked_size == 0);
+	TraceOperation("consume", *reinterpret_cast<const OpHeader*>(m_ring.Peek()));
 	m_ring.Advance(m_peeked_size);
 	m_peeked_size = 0;
 	m_ring.Release(m_consumer_stats);

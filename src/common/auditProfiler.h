@@ -188,6 +188,72 @@ struct PipelineStageMetrics {
 	double   pct_thread_time = 0.0;
 };
 
+/// Classification of internal queue & buffering latency sources.
+enum class QueueLatencyType : uint32_t {
+	Submission = 0, ///< GuestGpu::Enqueue -> GuestGpu::ThreadRun
+	Intake,         ///< GuestGpu::Enqueue -> Sequencer::Run
+	OpStream,       ///< OpStream::Emit -> ResolveSubmission (OpStream::Peek)
+	Backpressure,   ///< Producer wait / blocking on ring slot / progress
+	Count
+};
+
+/// Tripartite workload time distribution: Queue vs CPU Active vs GPU Hardware Wait.
+struct WorkloadTimeDistribution {
+	// 1. Queue & Buffering Latency (Organización del trabajo)
+	uint64_t queue_submission_count   = 0;
+	double   queue_submission_ms      = 0.0;
+	uint64_t queue_intake_count       = 0;
+	double   queue_intake_ms          = 0.0;
+	uint64_t queue_opstream_count     = 0;
+	double   queue_opstream_ms        = 0.0;
+	uint64_t queue_backpressure_count = 0;
+	double   queue_backpressure_ms    = 0.0;
+	double   total_queue_ms           = 0.0;
+	double   queue_pct                = 0.0;
+
+	// 2. CPU Active Execution (Traducción y Driver)
+	double cpu_pm4_decode_ms       = 0.0;
+	double cpu_pm4_dispatch_ms     = 0.0;
+	double cpu_render_state_ms     = 0.0;
+	double cpu_pipeline_keys_ms    = 0.0;
+	double cpu_descriptors_ms      = 0.0;
+	double cpu_buffers_ms          = 0.0;
+	double cpu_command_record_ms   = 0.0;
+	double cpu_submit_overhead_ms  = 0.0;
+	double cpu_draw_prep_worker_ms = 0.0;
+	double total_cpu_active_ms     = 0.0;
+	double cpu_active_pct          = 0.0;
+
+	// 3. GPU Hardware Wait (Sincronización y Espera de GPU)
+	double gpu_timeline_wait_ms     = 0.0;
+	double gpu_streambuffer_wait_ms = 0.0;
+	double gpu_swapchain_wait_ms    = 0.0;
+	double gpu_readback_wait_ms     = 0.0;
+	double gpu_other_wait_ms        = 0.0;
+	double total_gpu_wait_ms        = 0.0;
+	double gpu_wait_pct             = 0.0;
+
+	// Combined measured workload
+	double total_workload_ms = 0.0;
+
+	enum class Bottleneck : uint32_t {
+		Undetermined = 0,
+		GpuBound,
+		CpuBound,
+		QueueSyncBound
+	} bottleneck = Bottleneck::Undetermined;
+
+	[[nodiscard]] const char* BottleneckString() const noexcept {
+		switch (bottleneck) {
+			case Bottleneck::GpuBound: return "GPU_BOUND (Hardware/Vulkan Sync)";
+			case Bottleneck::CpuBound: return "CPU_BOUND (Translation/Driver Overhead)";
+			case Bottleneck::QueueSyncBound:
+				return "QUEUE_SYNC_BOUND (Buffering/Backpressure Stalls)";
+			default: return "UNDETERMINED";
+		}
+	}
+};
+
 struct DetailedHitchInfo {
 	uint64_t    frame_index  = 0;
 	double      frame_ms     = 0.0;
@@ -259,6 +325,15 @@ struct ProfileSnapshot {
 	uint64_t cadence_interval_us            = 1000;
 	bool     partial_refresh_enabled        = false;
 	bool     batch_hot_readbacks_enabled    = false;
+	bool     readback_neighbours_enabled    = false;
+	bool     wide_readback_window_enabled   = false;
+	bool     fault_ahead_enabled            = false;
+	bool     tile_layout_cache_enabled      = false;
+	bool     binding_reuse_enabled          = false;
+	bool     trim_scratch_memory_enabled    = false;
+	bool     compact_image_readback_enabled = false;
+	bool     read_buffer_reuse_enabled      = false;
+	bool     resource_prep_reuse_enabled    = false;
 	bool     extended_stream_buffer_enabled = false;
 	bool     redundant_bind_elision_enabled = true;
 	bool     pipeline_cache_mru_enabled     = true;
@@ -311,6 +386,19 @@ struct ProfileSnapshot {
 	uint64_t cpu_to_gpu_upload_bytes     = 0;
 	uint64_t gpu_to_cpu_readback_bytes   = 0;
 	uint64_t internal_gpu_transfer_bytes = 0;
+	uint64_t neighbour_readback_count    = 0;
+	uint64_t neighbour_readback_bytes    = 0;
+	uint64_t binding_range_reuses        = 0;
+	uint64_t binding_lookup_reuses       = 0;
+	uint64_t tile_layout_hits = 0, tile_layout_misses = 0;
+	uint64_t read_buffer_hits = 0, read_buffer_misses = 0;
+	uint64_t scratch_freed_bytes = 0, scratch_retirements = 0, scratch_allocations = 0;
+	uint64_t compact_readback_copies = 0, compact_readback_fallbacks = 0;
+	uint64_t readback_prefill_avoided_bytes = 0, readback_staging_saved_bytes = 0;
+	uint64_t resource_prep_hits = 0, resource_prep_misses = 0;
+	uint64_t binding_sampler_reuses     = 0;
+	uint64_t binding_upload_reuses      = 0;
+	uint64_t binding_upload_reuse_bytes = 0;
 
 	// Optimization instrumentation metrics (over the captured interval)
 	uint64_t texture_partial_refreshes    = 0;
@@ -429,12 +517,20 @@ struct ProfileSnapshot {
 	                                  buffer_readback_callers {};
 	std::vector<SignificantWaitEvent> significant_waits;
 	uint64_t                          water_draws_estimated = 0;
+
+	// Tripartite workload distribution (Queue vs CPU vs GPU Wait)
+	WorkloadTimeDistribution time_distribution {};
 };
 
 [[nodiscard]] bool               IsEnabled() noexcept;
 void                             SetEnabled(bool enabled) noexcept;
 void                             SetExportPath(std::string_view path);
 [[nodiscard]] const std::string& GetExportPath();
+
+// Independent one-second journal; survives stalled presentation and capture restarts.
+// No inference of physics/simulation speed from flips, audio or virtual clocks.
+bool StartLiveDiagnostics(const std::string& path);
+void StopLiveDiagnostics();
 
 /// Initializes capture parameters from config (delay, duration, export path, manual trigger).
 void InitCapture(uint32_t delay_sec, uint32_t duration_sec, std::string_view export_path,
@@ -578,6 +674,15 @@ void RecordDrawPrepPrepared() noexcept;
 void RecordDrawPrepCommitted() noexcept;
 void RecordDrawPrepFallback() noexcept;
 void RecordDrawPrepAvoided(uint64_t ns = 0) noexcept;
+
+/// Tripartite workload time distribution helpers
+[[nodiscard]] inline uint64_t NowNs() noexcept {
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                                 std::chrono::steady_clock::now().time_since_epoch())
+	                                 .count());
+}
+void                      RecordQueueLatency(QueueLatencyType type, uint64_t latency_ns) noexcept;
+[[nodiscard]] const char* GetQueueLatencyTypeName(QueueLatencyType type) noexcept;
 
 /// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
 class ScopedStageTimer {

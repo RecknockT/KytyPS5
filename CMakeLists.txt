@@ -469,6 +469,9 @@ add_executable(common_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CommonTests.cpp"
 target_link_libraries(common_tests common kyty_test_gtest)
 
 add_executable(audit_profiler_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AuditProfilerTests.cpp")
+add_executable(host_frame_limiter_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostFrameLimiterTests.cpp")
+target_link_libraries(host_frame_limiter_tests kyty_test_gtest)
+target_include_directories(host_frame_limiter_tests PRIVATE ${inc_headers})
 target_link_libraries(audit_profiler_tests common kyty_test_gtest nlohmann_json)
 target_include_directories(audit_profiler_tests PRIVATE ${inc_headers})
 
@@ -768,6 +771,11 @@ else()
 endif()
 
 if(BUILD_TESTING)
+	add_test(NAME host_frame_limiter COMMAND $<TARGET_FILE:host_frame_limiter_tests>)
+	add_test(NAME emulator_fps_limit_cli COMMAND $<TARGET_FILE:kyty_emulator> --help --fps-limit 30)
+	add_test(NAME emulator_fps_limit_off COMMAND $<TARGET_FILE:kyty_emulator> --help --fps-limit 30 --no-fps-limit)
+	add_test(NAME emulator_fps_limit_invalid COMMAND $<TARGET_FILE:kyty_emulator> --help --fps-limit 361)
+	set_tests_properties(emulator_fps_limit_invalid PROPERTIES WILL_FAIL TRUE)
 	add_test(NAME emulator_user_name_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --user-name 1234567890123456)
 	add_test(NAME emulator_user_name_too_long
@@ -790,6 +798,24 @@ if(BUILD_TESTING)
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --gpu-submit-cadence)
 	add_test(NAME emulator_batch_hot_readbacks_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --batch-hot-readbacks)
+	add_test(NAME transfer_prefetch
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --transfer-prefetch-only)
+	add_test(NAME cadence_runtime
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --cadence-runtime-only)
+	add_test(NAME tile_layout_cache
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --tile-layout-cache-only)
+	add_test(NAME resource_prep_reuse
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --resource-prep-reuse-only)
+	add_test(NAME effect_profile
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --effect-profile-only)
+	add_test(NAME scratch_memory_trim
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --scratch-memory-trim-only)
+	add_test(NAME compact_image_readback
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --compact-image-readback-only)
+	add_test(NAME read_buffer_reuse
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --read-buffer-reuse-only)
+	add_test(NAME binding_reuse
+	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --binding-reuse-only)
 	add_test(NAME emulator_audit_faults_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --audit-faults)
 	add_test(NAME audit_profiler COMMAND $<TARGET_FILE:audit_profiler_tests>)

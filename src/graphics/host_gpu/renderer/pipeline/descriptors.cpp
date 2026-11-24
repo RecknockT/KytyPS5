@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -18,6 +19,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/effectProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -630,12 +632,32 @@ static vk::Sampler NativeSampler(RenderContext&                                 
 	return context.GetSamplerCache().GetSampler(descriptor, sampler.integer_border);
 }
 
-static vk::DescriptorBufferInfo NativeUpload(RenderContext&            context,
-                                             std::span<const uint32_t> data) {
+static vk::DescriptorBufferInfo NativeUpload(RenderContext& context, std::span<const uint32_t> data,
+                                             PreparedBindings::UploadMemo* memo = nullptr) {
 	EXIT_IF(data.empty());
+	// Upload memory may be write-combined: reading it on the CPU is extremely slow. Keep
+	// a bounded key in ordinary RAM instead, and leave large one-off tables uncached.
+	if (data.size_bytes() > 64 * 1024) memo = nullptr;
 	auto&      buffer = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Stream);
-	const auto offset = buffer.Copy(data.data(), data.size_bytes(), 256);
-	return {buffer.Handle(), offset, data.size_bytes()};
+	const auto tick   = context.GetCommandScheduler().CurrentTick();
+	if (memo != nullptr && memo->epoch == buffer.ReuseEpoch() && memo->tick == tick &&
+	    memo->info.buffer == buffer.Handle() && memo->info.range == data.size_bytes() &&
+	    memo->words.size() == data.size() &&
+	    std::memcmp(memo->words.data(), data.data(), data.size_bytes()) == 0) {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BindingUploadReuses);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BindingUploadReuseBytes,
+		                           data.size_bytes());
+		return memo->info;
+	}
+	const auto                     offset = buffer.Copy(data.data(), data.size_bytes(), 256);
+	const vk::DescriptorBufferInfo info {buffer.Handle(), offset, data.size_bytes()};
+	if (memo != nullptr) {
+		memo->info  = info;
+		memo->epoch = buffer.ReuseEpoch();
+		memo->tick  = context.GetCommandScheduler().CurrentTick();
+		memo->words.assign(data.begin(), data.end());
+	}
+	return info;
 }
 
 void RenderExecutor::BindImage(ImageId id, bool storage) {
@@ -677,10 +699,19 @@ void RenderExecutor::ResetBindings() {
 
 void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
                                      PreparedBindings&         prepared) {
+	EffectProfiler::SectionScope effect_section(EffectProfiler::Section::DescriptorDecode);
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(!runtime);
 	const auto& program  = runtime.module->info;
 	const auto& snapshot = *runtime.resources;
+	// These are per-operation scratch, even when immutable descriptor discovery is reused.
+	prepared.gds                = {nullptr, 0, VK_WHOLE_SIZE};
+	prepared.flattened_srt      = {};
+	prepared.shader_data_buffer = {};
+	prepared.shared_memory      = {};
+	if (program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::Gds)] != 0) {
+		prepared.gds.buffer = m_context.GetBufferCache().GetGdsBuffer()->Handle();
+	}
 
 	if (Config::DescriptorCacheEnabled() && prepared.cached_module == runtime.module &&
 	    prepared.cached_resources == runtime.resources &&
@@ -696,13 +727,9 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		return;
 	}
 
-	prepared.runtime            = &runtime;
-	prepared.cached_module      = runtime.module;
-	prepared.cached_resources   = runtime.resources;
-	prepared.gds                = {nullptr, 0, VK_WHOLE_SIZE};
-	prepared.flattened_srt      = {};
-	prepared.shader_data_buffer = {};
-	prepared.shared_memory      = {};
+	prepared.runtime          = &runtime;
+	prepared.cached_module    = runtime.module;
+	prepared.cached_resources = runtime.resources;
 	prepared.images.resize(program.info.images.size());
 	prepared.samplers.clear();
 	prepared.shader_data.clear();
@@ -718,23 +745,43 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		prepared.images[i] = std::move(binding);
 	}
 	prepared.samplers.reserve(program.info.samplers.size());
+	const bool reuse          = Config::BindingReuseEnabled();
+	uint64_t   sampler_reuses = 0;
+	if (reuse) prepared.sampler_memos.resize(program.info.samplers.size());
 	for (uint32_t i = 0; i < program.info.samplers.size(); i++) {
-		prepared.samplers.push_back(NativeSampler(
-		    m_context, program, i, snapshot.samplers[program.info.samplers[i].snapshot_index]));
+		const auto&    resource = program.info.samplers[i];
+		const auto&    value    = snapshot.samplers[resource.snapshot_index];
+		const uint32_t policy   = uint32_t(resource.depth_compare) |
+		                          (uint32_t(resource.force_point_filtering) << 1u) |
+		                          (uint32_t(resource.integer_border) << 2u);
+		if (reuse && prepared.sampler_memos[i].valid &&
+		    prepared.sampler_memos[i].descriptor == value &&
+		    prepared.sampler_memos[i].policy == policy) {
+			prepared.samplers.push_back(prepared.sampler_memos[i].sampler);
+			++sampler_reuses;
+		} else {
+			const auto sampler = NativeSampler(m_context, program, i, value);
+			prepared.samplers.push_back(sampler);
+			if (reuse) prepared.sampler_memos[i] = {value, sampler, policy, true};
+		}
 	}
+	if (sampler_reuses != 0)
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BindingSamplerReuses,
+		                           sampler_reuses);
 	prepared.shader_data.reserve(program.bindings.ShaderDataDwords());
 	for (const auto reg: program.info.user_data_registers) {
 		prepared.shader_data.push_back(snapshot.user_data[reg - program.user_data_base]);
 	}
 	prepared.shader_data.resize(program.bindings.ShaderDataDwords());
-	if (program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::Gds)] != 0) {
-		prepared.gds.buffer = m_context.GetBufferCache().GetGdsBuffer()->Handle();
-	}
 }
 
 void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
+	EffectProfiler::SectionScope effect_section(EffectProfiler::Section::BufferLookup);
 	KYTY_PROFILER_FUNCTION();
-	auto& cache = m_context.GetBufferCache();
+	auto&      cache         = m_context.GetBufferCache();
+	const bool reuse         = Config::BindingReuseEnabled();
+	uint64_t   range_reuses  = 0;
+	uint64_t   lookup_reuses = 0;
 	for (auto* stage: stages) {
 		auto&       prepared = *stage;
 		const auto& program  = prepared.runtime->module->info;
@@ -745,10 +792,27 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		if (layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)] == 0) {
 			continue;
 		}
+		if (reuse) prepared.buffer_memos.resize(program.info.buffers.size());
 		for (uint32_t resource = 0; resource < program.info.buffers.size(); ++resource) {
 			const auto& metadata = program.info.buffers[resource];
 			if (metadata.descriptor_index == UINT32_MAX) continue;
-			auto&      source = prepared.buffer_sources[metadata.descriptor_index];
+			auto& source = prepared.buffer_sources[metadata.descriptor_index];
+			auto* memo   = reuse ? &prepared.buffer_memos[resource] : nullptr;
+			if (memo != nullptr && memo->valid && memo->descriptor == snapshot.buffers[resource] &&
+			    memo->scalar == metadata.scalar &&
+			    memo->max_byte_extent == metadata.max_byte_extent) {
+				source = memo->source;
+				++range_reuses;
+				if (memo->epoch == cache.RegistrationEpoch()) {
+					++lookup_reuses;
+				} else {
+					source.id    = cache.FindBuffer(source.address, source.size);
+					memo->source = source;
+					memo->epoch  = cache.RegistrationEpoch();
+				}
+				continue;
+			}
+			if (memo != nullptr) memo->valid = false;
 			const auto descriptor =
 			    DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[resource]);
 			const auto address = descriptor.Base48();
@@ -787,15 +851,30 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			}
 			// Finite GPU descriptors can span sparse PRT holes; clamp only oversized/sentinel
 			// ranges.
-			if (size >= (uint64_t {1} << 30u) || descriptor.NumRecords() == UINT32_MAX) {
+			const bool dynamic_range =
+			    size >= (uint64_t {1} << 30u) || descriptor.NumRecords() == UINT32_MAX;
+			if (dynamic_range) {
 				size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
 			}
 			source = {address, size, cache.FindBuffer(address, size)};
+			// Sentinel/oversized ranges depend on live mappings and all stages' scalar reads.
+			// Resolve those through the original path on every draw, even if the V# is identical.
+			if (memo != nullptr && !dynamic_range) {
+				*memo = {snapshot.buffers[resource], source,          cache.RegistrationEpoch(),
+				         metadata.max_byte_extent,   metadata.scalar, true};
+			}
 		}
 	}
+	if (range_reuses != 0)
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BindingRangeReuses,
+		                           range_reuses);
+	if (lookup_reuses != 0)
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::BindingLookupReuses,
+		                           lookup_reuses);
 }
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+	EffectProfiler::SectionScope effect_section(EffectProfiler::Section::BufferRebind);
 	KYTY_PROFILER_FUNCTION();
 	const auto& program  = prepared.runtime->module->info;
 	const auto& snapshot = *prepared.runtime->resources;
@@ -821,14 +900,19 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		    static_cast<uint32_t>(prepared.buffer_sources[index].size + buffer_offset);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
-		prepared.flattened_srt = NativeUpload(m_context, snapshot.flattened_srt);
+		prepared.flattened_srt =
+		    NativeUpload(m_context, snapshot.flattened_srt,
+		                 Config::BindingReuseEnabled() ? &prepared.flattened_srt_memo : nullptr);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::ShaderData)] != 0) {
-		prepared.shader_data_buffer = NativeUpload(m_context, prepared.shader_data);
+		prepared.shader_data_buffer =
+		    NativeUpload(m_context, prepared.shader_data,
+		                 Config::BindingReuseEnabled() ? &prepared.shader_data_memo : nullptr);
 	}
 }
 
 void RenderExecutor::RebindImages(PreparedBindings& prepared) {
+	EffectProfiler::SectionScope effect_section(EffectProfiler::Section::ImageViews);
 	KYTY_PROFILER_FUNCTION();
 	const auto& program       = prepared.runtime->module->info;
 	const auto& snapshot      = *prepared.runtime->resources;
@@ -908,6 +992,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
                                     const PipelineCache::Pipeline&     pipeline,
                                     std::span<PreparedBindings* const> prepared_bindings) {
+	EffectProfiler::SectionScope effect_section(EffectProfiler::Section::Commit);
 	KYTY_PROFILER_FUNCTION();
 	auto                           vk_buffer              = buffer.Handle();
 	size_t                         image_descriptor_count = 0;

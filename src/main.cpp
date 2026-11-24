@@ -4,6 +4,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "emulator.h"
+#include "graphics/presentation/hostFrameLimiter.h"
 #include "kytyGitVersion.h"
 
 #include <algorithm>
@@ -25,6 +26,9 @@ static void PrintUsage() {
 	::printf("Options:\n");
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
+	::printf(
+	    "  --fps-limit <0-360>                  Host presentation cap; 0 disables (default).\n");
+	::printf("  --no-fps-limit                       Disable the host presentation cap.\n");
 	::printf("  --addcont-dir <dir>                  Add-ons (DLC) folder (default: none).\n");
 	::printf("  --addcont <label>[=<dir>]            Add-on (DLC) by entitlement label with its "
 	         "data in\n"
@@ -130,6 +134,21 @@ static void PrintUsage() {
 	::printf("  --descriptor-cache                   Fast-path descriptor binding caching across "
 	         "draws (default: on).\n");
 	::printf("  --no-descriptor-cache                Disable descriptor binding caching.\n");
+	::printf(
+	    "  --no-gpu-submit-cadence              Disable periodic GPU submissions (default).\n");
+	::printf("  --effect-profile / --no-effect-profile  Diagnostic shader CPU/GPU ranking "
+	         "(default: off).\n");
+	::printf("  --live-diagnostics / --no-live-diagnostics  Flush a one-second live journal "
+	         "(default: off).\n");
+	::printf("  --resource-prep-reuse / --no-resource-prep-reuse  Reuse validated resource "
+	         "preparation (default: off).\n");
+	::printf("  --gpu-timestamps / --no-gpu-timestamps  Enable/disable diagnostic GPU queries.\n");
+	::printf("  --tile-layout-cache / --no-tile-layout-cache  Reuse pure tiled texture layouts "
+	         "(default: off).\n");
+	::printf("  --binding-reuse                      Reuse unchanged buffer/sampler plans "
+	         "(experimental).\n");
+	::printf(
+	    "  --no-binding-reuse                   Disable buffer/sampler plan reuse (default).\n");
 	::printf("  --fast-pending-ops                   Lock-free fast check for pending operations "
 	         "(default: on).\n");
 	::printf(
@@ -157,11 +176,28 @@ static void PrintUsage() {
 	    "read\n"
 	    "                                       back recently faulted buffers and finished small\n"
 	    "                                       GPU writes.\n");
+	::printf("  --no-batch-hot-readbacks             Disable hot-buffer readback batching.\n");
+	::printf("  --readback-neighbours                Download nearby buffers in the same wait "
+	         "(experimental, off).\n");
+	::printf("  --no-readback-neighbours             Disable neighbouring-buffer readbacks.\n");
+	::printf("  --wide-readback-window               Use a 4 MiB readback window (experimental, "
+	         "off).\n");
+	::printf("  --no-wide-readback-window            Restore the 512 KiB readback window.\n");
+	::printf("  --fault-ahead                        Use a 256 KiB write-fault window "
+	         "(experimental, off).\n");
+	::printf("  --no-fault-ahead                     Restore the 64 KiB write-fault window.\n");
 	::printf(
 	    "  --flush-draws <num>                  Submit GPU work every <num> draws; 0 is off.\n");
 	::printf(
 	    "  --no-trophy-notifications            Disable trophy unlock toasts and their sound.\n");
 	::printf("  --trophy-duration <seconds>          Trophy toast duration, 5-10. Default: 6.\n");
+	::printf("  --trim-scratch-memory                Release idle or oversized tiling scratch "
+	         "buffers.\n");
+	::printf("  --no-trim-scratch-memory             Keep scratch allocations (default).\n");
+	::printf("  --compact-image-readback             Avoid preserving padding for fully packed "
+	         "linear image readbacks.\n");
+	::printf(
+	    "  --no-compact-image-readback          Use full preserving image readbacks (default).\n");
 	::printf("  --perf-overlay                       Show the performance panel (F2 or Cmd+P).\n");
 	::printf("  --playgo-hack                        Report 1000 PlayGo chunks without chunk "
 	         "metadata.\n");
@@ -345,6 +381,13 @@ static constexpr Flag FLAGS[] = {
     {"--skip-redundant-unmap-drains", &ConfigOptions::skip_redundant_unmap_drains},
     {"--partial-buffer-refresh", &ConfigOptions::partial_buffer_refresh_enabled},
     {"--batch-hot-readbacks", &ConfigOptions::batch_hot_readbacks},
+    {"--no-batch-hot-readbacks", &ConfigOptions::batch_hot_readbacks, false},
+    {"--readback-neighbours", &ConfigOptions::readback_neighbours},
+    {"--no-readback-neighbours", &ConfigOptions::readback_neighbours, false},
+    {"--wide-readback-window", &ConfigOptions::wide_readback_window},
+    {"--no-wide-readback-window", &ConfigOptions::wide_readback_window, false},
+    {"--fault-ahead", &ConfigOptions::fault_ahead},
+    {"--no-fault-ahead", &ConfigOptions::fault_ahead, false},
     {"--no-trophy-notifications", &ConfigOptions::trophy_enabled, false},
     {"--perf-overlay", &ConfigOptions::perf_overlay_enabled},
     {"--playgo-hack", &ConfigOptions::playgo_hack_enabled},
@@ -352,6 +395,16 @@ static constexpr Flag FLAGS[] = {
     {"--no-poll-backoff", &ConfigOptions::poll_backoff_enabled, false},
     {"--keep-gpu-cache-on-reuse", &ConfigOptions::keep_gpu_cache_on_reuse},
     {"--audit-faults", &ConfigOptions::audit_faults_enabled},
+    {"--trim-scratch-memory", &ConfigOptions::trim_scratch_memory_enabled},
+    {"--no-trim-scratch-memory", &ConfigOptions::trim_scratch_memory_enabled, false},
+    {"--compact-image-readback", &ConfigOptions::compact_image_readback_enabled},
+    {"--no-compact-image-readback", &ConfigOptions::compact_image_readback_enabled, false},
+    {"--read-buffer-reuse", &ConfigOptions::read_buffer_reuse_enabled},
+    {"--no-read-buffer-reuse", &ConfigOptions::read_buffer_reuse_enabled, false},
+    {"--resource-prep-reuse", &ConfigOptions::resource_prep_reuse_enabled},
+    {"--no-resource-prep-reuse", &ConfigOptions::resource_prep_reuse_enabled, false},
+    {"--live-diagnostics", &ConfigOptions::live_diagnostics_enabled},
+    {"--no-live-diagnostics", &ConfigOptions::live_diagnostics_enabled, false},
     {"--audit-manual-trigger", &ConfigOptions::audit_manual_trigger},
     {"--audit-wait-for-hotkey", &ConfigOptions::audit_manual_trigger},
     {"--extended-stream-buffer", &ConfigOptions::extended_stream_buffer_enabled},
@@ -367,6 +420,15 @@ static constexpr Flag FLAGS[] = {
     {"--no-ensure-pipeline-cache", &ConfigOptions::ensure_pipeline_cache_enabled, false},
     {"--descriptor-cache", &ConfigOptions::descriptor_cache_enabled, true},
     {"--no-descriptor-cache", &ConfigOptions::descriptor_cache_enabled, false},
+    {"--effect-profile", &ConfigOptions::effect_profile_enabled, true},
+    {"--no-effect-profile", &ConfigOptions::effect_profile_enabled, false},
+    {"--gpu-timestamps", &ConfigOptions::gpu_timestamps_enabled, true},
+    {"--no-gpu-timestamps", &ConfigOptions::gpu_timestamps_enabled, false},
+    {"--no-gpu-submit-cadence", &ConfigOptions::gpu_submit_cadence_enabled, false},
+    {"--tile-layout-cache", &ConfigOptions::tile_layout_cache_enabled, true},
+    {"--no-tile-layout-cache", &ConfigOptions::tile_layout_cache_enabled, false},
+    {"--binding-reuse", &ConfigOptions::binding_reuse_enabled, true},
+    {"--no-binding-reuse", &ConfigOptions::binding_reuse_enabled, false},
     {"--fast-pending-ops", &ConfigOptions::fast_pending_ops_enabled, true},
     {"--no-fast-pending-ops", &ConfigOptions::fast_pending_ops_enabled, false},
     {"--priority-spin-wait", &ConfigOptions::priority_spin_wait_enabled, true},
@@ -389,6 +451,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--help" || arg == "-h") {
 			show_help = true;
+			continue;
+		}
+		if (arg == "--no-fps-limit") {
+			Libs::Graphics::g_host_fps_limit.store(0, std::memory_order_relaxed);
 			continue;
 		}
 
@@ -530,6 +596,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid keyboard player: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--fps-limit") {
+			uint32_t fps = 0;
+			if (!ParseUint32(value, fps) || fps > 360) {
+				::printf("invalid host FPS limit: %s\n", value.c_str());
+				return false;
+			}
+			Libs::Graphics::g_host_fps_limit.store(fps, std::memory_order_relaxed);
 		} else if (arg == "--present-mode") {
 			if (!ParseEnum(value, options.config.present_mode)) {
 				::printf("invalid present mode: %s\n", value.c_str());
@@ -674,6 +747,10 @@ static int Main(int argc, char* argv[]) {
 		return 0;
 	}
 
+	const auto fps_limit = Libs::Graphics::g_host_fps_limit.load(std::memory_order_relaxed);
+	if (fps_limit != 0) {
+		::printf("Host presentation limit: %u FPS (guest clocks unchanged)\n", fps_limit);
+	}
 	Run(options);
 
 	return 0;

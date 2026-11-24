@@ -474,6 +474,48 @@ void TestRepeatedUploadSkip() {
   Release(memory);
 }
 
+void TestReadCleanProof() {
+  TrackerHarness harness;
+  auto &tracker = harness.tracker;
+  constexpr auto page = Libs::Graphics::TRACKER_PAGE_SIZE;
+  constexpr auto region = Libs::Graphics::TRACKER_REGION_SIZE;
+  auto *memory = AllocateFixedGuestRange(2 * region, region);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  Check(tracker.ReadCleanGeneration(address, page) == 0,
+        "untracked memory received a clean proof");
+  tracker.IsRegionCpuModified(address, page);
+  Check(tracker.ReadCleanGeneration(address, page) == 0,
+        "dirty memory received a clean proof");
+  const auto upload = [&] {
+    tracker.ForEachUploadRange(address, page, false,
+        [](uint64_t, uint64_t) noexcept {}, []() noexcept {});
+  };
+  upload();
+  auto proof = tracker.ReadCleanGeneration(address, page);
+  Check(proof != 0 && tracker.MatchesReadGeneration(address, page, proof),
+        "clean proof did not survive unchanged memory");
+  tracker.InvalidateRegion(address, page, [] {});
+  Check(!tracker.MatchesReadGeneration(address, page, proof) &&
+            tracker.ReadCleanGeneration(address, page) == 0,
+        "CPU invalidation retained a clean proof");
+  memory[0] = 42;
+  upload();
+  proof = tracker.ReadCleanGeneration(address, page);
+  MarkGpuModified(tracker, address, page);
+  Check(!tracker.MatchesReadGeneration(address, page, proof),
+        "GPU acquisition retained a previous proof");
+  proof = tracker.ReadCleanGeneration(address, page);
+  Check(proof != 0, "GPU-owned CPU-clean data should be readable from its buffer");
+  tracker.UnmarkRegionAsGpuModified(address, page);
+  Check(!tracker.MatchesReadGeneration(address, page, proof),
+        "GPU release retained a previous proof");
+  Check(tracker.ReadCleanGeneration(address + region - page, 2 * page) == 0 &&
+            !tracker.MatchesReadGeneration(address + region - page, 2 * page, proof),
+        "cross-region range did not fall back");
+  tracker.MarkRegionAsCpuModified(address, 2 * region);
+  Release(memory);
+}
+
 void TestCleanUploadPreservesOwnership() {
   constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
   constexpr auto region_size = Libs::Graphics::TRACKER_REGION_SIZE;
@@ -1302,6 +1344,7 @@ int main(int argc, char **argv) {
   TestConcurrentRegionPublication();
   TestCpuDirtyUpload();
   TestRepeatedUploadSkip();
+  TestReadCleanProof();
   TestCleanUploadPreservesOwnership();
   TestRangeInvalidation();
   TestGpuReacquisitionAfterInvalidation();

@@ -332,7 +332,10 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 
 	const auto& cs_regs = sh_ctx.GetCs();
 
-	ShaderComputeInputInfo input_info {};
+	if (auto& effects = m_context.GetCommandScheduler().GetEffectProfiler(); effects.Enabled())
+		effects.Frame(m_context.GetGpu().GetFrameNum());
+	EffectProfiler::CpuScope effect(m_context.GetCommandScheduler().GetEffectProfiler());
+	ShaderComputeInputInfo   input_info {};
 	input_info.async_compute = async_compute;
 	const bool use_thread_dimensions =
 	    (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
@@ -357,7 +360,8 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		input_info.dispatch_threads_num[2] = thread_group_z;
 	}
 
-	const auto& program   = input_info.stage.module->info;
+	const auto& program = input_info.stage.module->info;
+	effect.Identify({program.shader_hash, 0, 1, 0});
 	const auto& resources = *input_info.stage.resources;
 	if (resources.specialization_reads.empty() &&
 	    (TryConsumeComputeMetaClear(input_info, buffer) ||
@@ -468,6 +472,9 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		}
 	}
 
+	effect.Prepared();
+	auto&      effects       = m_context.GetCommandScheduler().GetEffectProfiler();
+	const auto effect_sample = effects.BeginSample(vk_buffer, {program.shader_hash, 0, 1, 0});
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DISPATCH_INITIATOR_ORDERED_APPEND_ENABLE = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
@@ -490,6 +497,7 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 	} else {
 		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
 	}
+	effects.EndSample(vk_buffer, effect_sample);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteRecordedWork();
 
@@ -521,7 +529,10 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	if (cs_regs.cs_regs.data_addr == 0) {
 		return;
 	}
-	ShaderComputeInputInfo input_info {};
+	if (auto& effects = m_context.GetCommandScheduler().GetEffectProfiler(); effects.Enabled())
+		effects.Frame(m_context.GetGpu().GetFrameNum());
+	EffectProfiler::CpuScope effect(m_context.GetCommandScheduler().GetEffectProfiler());
+	ShaderComputeInputInfo   input_info {};
 	input_info.async_compute         = async_compute;
 	input_info.indirect_args_address = args_addr;
 	m_context.GetImageHeap().BeginDraw();
@@ -534,6 +545,7 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	CacheDmaBases(m_context, input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = input_info.stage.module->info;
+	effect.Identify({program.shader_hash, 0, 2, 0});
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
 	}
@@ -557,8 +569,12 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	if (HasStorageWrites(input_info, bindings)) {
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
+	effect.Prepared();
+	auto&      effects       = m_context.GetCommandScheduler().GetEffectProfiler();
+	const auto effect_sample = effects.BeginSample(vk_buffer, {program.shader_hash, 0, 2, 0});
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+	effects.EndSample(vk_buffer, effect_sample);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteRecordedWork();
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);

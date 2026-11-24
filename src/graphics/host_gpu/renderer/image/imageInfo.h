@@ -12,6 +12,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -142,6 +143,10 @@ struct ImageInfo {
 	}
 	[[nodiscard]] int32_t SliceOf(const ImageInfo& container, int32_t mip) const noexcept;
 };
+
+// Exact contiguous prefix written by a single-mip packed linear color readback.
+// Other layouts keep the preserving full-reservation path.
+[[nodiscard]] std::optional<uint64_t> CompactLinearReadbackSize(const ImageInfo& info);
 
 struct ImageViewInfo {
 	vk::Format           format      = vk::Format::eUndefined;

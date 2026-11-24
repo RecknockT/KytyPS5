@@ -3,7 +3,6 @@
 #include "common/emulatorConfig.h"
 #include "configuration.h"
 #include "mandatoryLineEdit.h"
-#include <SDL3/SDL.h>
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -34,6 +33,8 @@
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QtAlgorithms>
+
+#include <SDL3/SDL.h>
 
 #if QT_CONFIG(vulkan)
 #include <QVulkanInstance>
@@ -159,8 +160,8 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 	connect(m_ui->comboBox_shader_log_direction, &QComboBox::currentTextChanged, this,
 	        [this](const QString& text) {
 		        auto log = TextToEnum<Configuration::LogDirection>(text);
-		        m_ui->lineEdit_shader_log_folder->setEnabled(
-		            log == Configuration::LogDirection::File);
+		        m_ui->lineEdit_shader_log_folder->setEnabled(log ==
+		                                                     Configuration::LogDirection::File);
 	        });
 	// Pro mode shows the upscaler and its folder.
 	const auto show_pssr = [this] {
@@ -255,8 +256,8 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 		SDL_free(devices);
 		SDL_QuitSubSystem(SDL_INIT_AUDIO);
 	} else {
-		microphone->setToolTip(tr("Microphones could not be listed: %1")
-		                           .arg(QString::fromUtf8(SDL_GetError())));
+		microphone->setToolTip(
+		    tr("Microphones could not be listed: %1").arg(QString::fromUtf8(SDL_GetError())));
 	}
 	if (microphone->findData(info.audio_input_device) < 0) {
 		microphone->addItem(tr("%1 (unavailable)").arg(info.audio_input_device),
@@ -311,6 +312,7 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->checkBox_relaxed_shader_float->setChecked(info.relaxed_shader_float);
 	m_ui->checkBox_native_rt->setChecked(info.native_rt);
 	m_ui->checkBox_shader_cache->setChecked(info.shader_cache_enabled);
+	m_ui->checkBox_gpu_submit_cadence->setChecked(info.gpu_submit_cadence_enabled);
 	m_ui->checkBox_skip_notice_screen->setChecked(info.skip_notice_screen);
 	m_ui->checkBox_network_connected->setChecked(info.network_connected);
 	m_ui->checkBox_psn_emulation->setChecked(info.psn_emulation_enabled);
@@ -429,7 +431,8 @@ void ConfigurationEditDialog::InitGameDirectories() {
 	update_game_directory_buttons();
 }
 
-void ConfigurationEditDialog::SetGlobalSettings(const QStringList& dirs, const QString& addons_dir) {
+void ConfigurationEditDialog::SetGlobalSettings(const QStringList& dirs,
+                                                const QString&     addons_dir) {
 	m_global_settings = true;
 	m_addons_dir_edit->setText(QDir::toNativeSeparators(addons_dir));
 	auto* menu = new QMenu(m_ui->settings_button);
@@ -536,8 +539,8 @@ void ConfigurationEditDialog::resizeEvent(QResizeEvent* event) {
 }
 
 static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, bool global_settings) {
-	info.user_name = ui.lineEdit_user_name->text().trimmed();
-	info.user_id   = ui.spinBox_user_id->value();
+	info.user_name          = ui.lineEdit_user_name->text().trimmed();
+	info.user_id            = ui.spinBox_user_id->value();
 	info.audio_input_device = ui.comboBox_audio_input_device->currentData().toString();
 	if (global_settings) {
 		info.controller.color = ui.button_controller_color->property("controllerColor").toString();
@@ -549,51 +552,52 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 	    Configuration::NormalizeResolution(ui.comboBox_screen_resolution->currentText());
 	info.present_mode =
 	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
-	info.gpu_index                 = ui.comboBox_gpu->currentIndex() - 1;
-	info.fullscreen_enabled        = ui.checkBox_fullscreen->isChecked();
-	info.hdr_enabled               = ui.checkBox_hdr->isChecked();
-	info.hide_cursor_enabled       = ui.checkBox_hide_cursor->isChecked();
-	info.stretch_enabled           = ui.checkBox_stretch->isChecked();
-	info.readback_linear_images    = ui.checkBox_readback->isChecked();
-	info.readback_tiled_images     = ui.checkBox_readback_tiled->isChecked();
-	info.readback_storage_images   = ui.checkBox_readback_storage->isChecked();
-	info.sync_raw_image_buffers    = ui.checkBox_sync_raw_image_buffers->isChecked();
-	info.flush_draws               = ui.spinBox_flush_draws->value();
-	info.tessellation_enabled      = ui.checkBox_tessellation->isChecked();
-	info.occlusion_queries_enabled = ui.checkBox_occlusion_queries->isChecked();
-	info.relaxed_shader_float      = ui.checkBox_relaxed_shader_float->isChecked();
-	info.native_rt                 = ui.checkBox_native_rt->isChecked();
-	info.shader_cache_enabled      = ui.checkBox_shader_cache->isChecked();
-	info.skip_notice_screen        = ui.checkBox_skip_notice_screen->isChecked();
-	info.network_connected         = ui.checkBox_network_connected->isChecked();
-	info.psn_emulation_enabled     = ui.checkBox_psn_emulation->isChecked();
-	info.trophy_enabled            = ui.checkBox_trophy_notifications->isChecked();
-	info.trophy_duration_seconds   = ui.spinBox_trophy_duration->value();
-	info.perf_overlay_enabled      = ui.checkBox_perf_overlay->isChecked();
-	info.vblank_frequency          = ui.spinBox_vblank_frequency->value();
-	info.console_language          = ui.comboBox_console_language->currentIndex();
-	info.vulkan_validation_enabled = ui.checkBox_vulkan_validation->isChecked();
-	info.shader_validation_enabled = ui.checkBox_shader_validation->isChecked();
-	info.renderdoc_enabled         = ui.checkBox_renderdoc_capture->isChecked();
-	info.pro_enabled               = ui.checkBox_pro->isChecked();
+	info.gpu_index                  = ui.comboBox_gpu->currentIndex() - 1;
+	info.fullscreen_enabled         = ui.checkBox_fullscreen->isChecked();
+	info.hdr_enabled                = ui.checkBox_hdr->isChecked();
+	info.hide_cursor_enabled        = ui.checkBox_hide_cursor->isChecked();
+	info.stretch_enabled            = ui.checkBox_stretch->isChecked();
+	info.readback_linear_images     = ui.checkBox_readback->isChecked();
+	info.readback_tiled_images      = ui.checkBox_readback_tiled->isChecked();
+	info.readback_storage_images    = ui.checkBox_readback_storage->isChecked();
+	info.sync_raw_image_buffers     = ui.checkBox_sync_raw_image_buffers->isChecked();
+	info.flush_draws                = ui.spinBox_flush_draws->value();
+	info.tessellation_enabled       = ui.checkBox_tessellation->isChecked();
+	info.occlusion_queries_enabled  = ui.checkBox_occlusion_queries->isChecked();
+	info.relaxed_shader_float       = ui.checkBox_relaxed_shader_float->isChecked();
+	info.native_rt                  = ui.checkBox_native_rt->isChecked();
+	info.shader_cache_enabled       = ui.checkBox_shader_cache->isChecked();
+	info.gpu_submit_cadence_enabled = ui.checkBox_gpu_submit_cadence->isChecked();
+	info.skip_notice_screen         = ui.checkBox_skip_notice_screen->isChecked();
+	info.network_connected          = ui.checkBox_network_connected->isChecked();
+	info.psn_emulation_enabled      = ui.checkBox_psn_emulation->isChecked();
+	info.trophy_enabled             = ui.checkBox_trophy_notifications->isChecked();
+	info.trophy_duration_seconds    = ui.spinBox_trophy_duration->value();
+	info.perf_overlay_enabled       = ui.checkBox_perf_overlay->isChecked();
+	info.vblank_frequency           = ui.spinBox_vblank_frequency->value();
+	info.console_language           = ui.comboBox_console_language->currentIndex();
+	info.vulkan_validation_enabled  = ui.checkBox_vulkan_validation->isChecked();
+	info.shader_validation_enabled  = ui.checkBox_shader_validation->isChecked();
+	info.renderdoc_enabled          = ui.checkBox_renderdoc_capture->isChecked();
+	info.pro_enabled                = ui.checkBox_pro->isChecked();
 	info.pssr_upscaler =
 	    TextToEnum<Configuration::PssrUpscaler>(ui.comboBox_pssr_upscaler->currentText());
-	info.dlss_folder               = ui.lineEdit_dlss_folder->text();
-	info.fsr_folder                = ui.lineEdit_fsr_folder->text();
-	info.amd_cpu_enabled           = ui.checkBox_amd_cpu->isChecked();
-	info.guest_tsc_enabled         = ui.checkBox_guest_tsc->isChecked();
+	info.dlss_folder       = ui.lineEdit_dlss_folder->text();
+	info.fsr_folder        = ui.lineEdit_fsr_folder->text();
+	info.amd_cpu_enabled   = ui.checkBox_amd_cpu->isChecked();
+	info.guest_tsc_enabled = ui.checkBox_guest_tsc->isChecked();
 #if defined(_WIN32)
 	info.red_zone_protection_enabled = ui.checkBox_red_zone_protection->isChecked();
 #endif
-	info.shader_log_direction = TextToEnum<Configuration::LogDirection>(
-	    ui.comboBox_shader_log_direction->currentText());
+	info.shader_log_direction =
+	    TextToEnum<Configuration::LogDirection>(ui.comboBox_shader_log_direction->currentText());
 	info.shader_log_folder           = ui.lineEdit_shader_log_folder->text();
 	info.command_buffer_dump_enabled = ui.checkBox_cmd_dump->isChecked();
 	info.command_buffer_dump_folder  = ui.lineEdit_cmd_dump_folder->text();
 	info.printf_direction =
 	    TextToEnum<Configuration::LogDirection>(ui.comboBox_printf_direction->currentText());
 	info.printf_output_file = ui.lineEdit_printf_file->text();
-	info.profiler_enabled = ui.checkBox_profiler->isChecked();
+	info.profiler_enabled   = ui.checkBox_profiler->isChecked();
 }
 
 void ConfigurationEditDialog::save() {

@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
+#include <semaphore>
 #include <cstdint>
 #include <cstdio>
 #include <thread>
@@ -40,6 +42,9 @@ namespace Libs::Graphics {
 
 std::atomic<bool> g_mock_mapped_data{false};
 std::atomic<uint32_t> g_prepare_program_calls{0};
+std::atomic<bool> g_mock_gpu_readback{false};
+std::atomic<bool> g_mock_gpu_request{false};
+std::binary_semaphore g_mock_gpu_reply{0};
 
 bool ShaderHasMappedData(uint64_t addr) noexcept {
   return g_mock_mapped_data.load(std::memory_order_relaxed) && (addr != 0);
@@ -50,6 +55,12 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo & /*regs*/,
                             const HW::UserConfig & /*user_config*/,
                             ShaderVertexInputInfo &input_info) {
   g_prepare_program_calls.fetch_add(1, std::memory_order_relaxed);
+  if (g_mock_gpu_readback.load()) {
+    g_mock_gpu_request = true;
+    g_mock_gpu_reply.acquire();
+  }
+  ++input_info.resources_num;
+  ++input_info.buffers_num;
   input_info.stage.module = reinterpret_cast<ShaderModule *>(0x1234);
   ShaderParams params{};
   params.hash = 0xbeefcafe;
@@ -328,6 +339,8 @@ void TestSlotExhaustionUnderBurst() {
   // Background consumer thread drains the window to verify backpressure
   std::thread consumer([&] {
     for (uint32_t i = 0; i < BurstCount; ++i) {
+      // Consumers obtain tickets only after publication to OpStream.
+      while (engine.GetStats().published <= i) std::this_thread::yield();
       PreparedDraw prep;
       if (engine.CommitPublished(i, prep)) {
         committed_count.fetch_add(1, std::memory_order_relaxed);
@@ -763,6 +776,183 @@ void TestQueueDepthAndCapacityTracking() {
   Check(engine.GetQueueDepth() == 0, "Queue depth is 0 after drain");
 }
 
+void RunInterleavedSnapshotStress(uint32_t workers, uint32_t count) {
+  using namespace Libs::Graphics::CpSeq;
+  Engine engine(GetDummyRenderer(), workers);
+  engine.SetMode(DrawPrep::Mode::Parallel);
+  OpStream stream(64u << 10u);
+  std::atomic<bool> cancel{false}, producer_done{false};
+  std::thread producer([&] {
+    HW::Context ctx;
+    HW::UserConfig ucfg;
+    HW::Shader sh;
+    sh.SetEsShaderBase(0x40000000ull);
+    for (uint32_t i = 0; i < count && !cancel; ++i) {
+      ctx.SetPsInControl(i);
+      DrawAutoArgs args{.vertex_count = 3, .instance_count = 1};
+      auto pos = engine.Publish(nullptr, &args, ctx, ucfg, sh,
+                                [&] { return !cancel.load(); });
+      if (pos == UINT64_MAX)
+        break;
+      DrawAutoOp draw{};
+      draw.flags = DrawFlagPublished;
+      draw.window = pos;
+      draw.first_vertex = i;
+      stream.Emit(OpKind::DrawAuto, &draw, sizeof(draw), nullptr, 0, 0, 0,
+                  false);
+      if (i % 3 == 0) {
+        DispatchDirectOp compute{};
+        compute.x = i;
+        stream.Emit(OpKind::DispatchDirect, &compute, sizeof(compute), nullptr,
+                    0, 0, 0, false);
+        DmaDataOp dma{};
+        dma.src = i;
+        stream.Emit(OpKind::DmaData, &dma, sizeof(dma), nullptr, 0, 0, 0,
+                    false);
+        WriteBackImagesOp barrier{};
+        stream.Emit(OpKind::WriteBackImages, &barrier, sizeof(barrier), nullptr,
+                    0, 0, 0, false);
+      }
+      ctx.SetPsInControl(UINT32_MAX);
+    }
+    producer_done = true;
+  });
+  // Delay the consumer until the real preparation window saturates.
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (engine.WindowHasSpace() && !producer_done &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  Check(!engine.WindowHasSpace(),
+        "the test saturates the actual DrawPrep window");
+  uint32_t draws = 0;
+  bool intact = true;
+  uint64_t last_window = UINT64_MAX;
+  while ((!producer_done || draws < count) &&
+         std::chrono::steady_clock::now() < deadline) {
+    OpView view;
+    if (!stream.Peek(view)) {
+      std::this_thread::yield();
+      continue;
+    }
+    if (view.Kind() == OpKind::DrawAuto) {
+      const auto &op = view.As<DrawAutoOp>();
+      PreparedDraw prepared;
+      (void)engine.CommitPublished(op.window, prepared);
+      intact &= prepared.snapshot.context.GetShaderRegisters().ps_in_control ==
+                    draws &&
+                op.first_vertex == draws;
+      last_window = op.window;
+      ++draws;
+    } else {
+      // A barrier consumes only itself. Drain here would steal future queued
+      // snapshots.
+      if ((draws % 17) == 0)
+        std::this_thread::yield();
+    }
+    stream.Pop();
+  }
+  cancel = true;
+  producer.join();
+  Check(draws == count && intact, "queued draws retain their own snapshots "
+                                  "across compute, DMA and barriers");
+  engine.Drain(); // Legal cleanup: producer has finished and every draw was
+                  // consumed.
+  PreparedDraw stale;
+  Check(!engine.CommitPublished(last_window, stale),
+        "a stale DrawPrep ticket is rejected without consuming another slot");
+  Check(engine.GetQueueDepth() == 0, "all preparation slots are reclaimed");
+}
+
+void TestDrawPrepSaturationAndSnapshotIntegrity() {
+  std::printf("Running TestDrawPrepSaturationAndSnapshotIntegrity...\n");
+  RunInterleavedSnapshotStress(1, 2048);
+}
+
+void TestAdversarialInterleavedConcurrency() {
+  std::printf("Running TestAdversarialInterleavedConcurrency...\n");
+  RunInterleavedSnapshotStress(4, 8192);
+}
+
+void TestDrawPrepCancellationDuringSaturation() {
+  Engine engine(GetDummyRenderer(), 2);
+  engine.SetMode(DrawPrep::Mode::Parallel);
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader shaders;
+  shaders.SetEsShaderBase(0x40000000ull);
+  DrawAutoArgs args{.vertex_count=3,.instance_count=1};
+  for (uint32_t i=0; i<64; ++i)
+    (void)engine.Publish(nullptr,&args,ctx,ucfg,shaders,nullptr);
+  PreparedDraw ignored;
+  Check(!engine.CommitPublished(1,ignored), "a future ticket cannot steal the first published slot");
+  std::atomic<bool> entered{false};
+  auto blocked=std::async(std::launch::async,[&] {
+    entered=true;
+    return engine.Publish(nullptr,&args,ctx,ucfg,shaders,[] { return true; });
+  });
+  while (!entered) std::this_thread::yield();
+  engine.Stop();
+  Check(blocked.get()==UINT64_MAX, "stopping DrawPrep cancels a producer with no space");
+}
+
+void TestDrawPrepPreparedStateReset() {
+  std::printf("Running TestDrawPrepPreparedStateReset...\n");
+  Engine engine(GetDummyRenderer(), 2);
+  engine.SetMode(DrawPrep::Mode::Parallel);
+  g_mock_mapped_data = true;
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader shaders;
+  DrawAutoArgs args{.vertex_count=3,.instance_count=1};
+  for (uint32_t i=0; i<256; ++i) {
+    const bool active = ((i/64)%2)==0;
+    shaders.SetEsShaderBase(active ? 0x40000000ull : 0);
+    ctx.SetPsInControl(i);
+    auto ticket=engine.Publish(nullptr,&args,ctx,ucfg,shaders,nullptr);
+    PreparedDraw prepared;
+    (void)engine.CommitPublished(ticket,prepared);
+    Check(prepared.snapshot.context.GetShaderRegisters().ps_in_control==i,
+          "reset preserves this draw's snapshot");
+    Check(prepared.has_programs==active, "has_programs does not leak across reused slots");
+    if (active) {
+      Check(prepared.render_state.vertex_info[0].resources_num==1 &&
+            prepared.render_state.vertex_info[0].buffers_num==1,
+            "recycled shader input resource counts start from zero");
+    }
+  }
+  g_mock_mapped_data = false;
+}
+
+void TestWorkerReadbackMakesProgressWhileResolverWaits() {
+  std::printf("Running TestWorkerReadbackMakesProgressWhileResolverWaits...\n");
+  Engine engine(GetDummyRenderer(), 1);
+  engine.SetMode(DrawPrep::Mode::Parallel);
+  g_mock_mapped_data=true;
+  g_mock_gpu_readback=true;
+  HW::Context ctx;
+  HW::UserConfig ucfg;
+  HW::Shader shaders;
+  shaders.SetEsShaderBase(0x40000000ull);
+  DrawAutoArgs args{.vertex_count=3,.instance_count=1};
+  auto ticket=engine.Publish(nullptr,&args,ctx,ucfg,shaders,nullptr);
+  while (!g_mock_gpu_request.load()) std::this_thread::yield();
+  PreparedDraw prepared;
+  bool serviced=false;
+  Check(engine.CommitPublished(ticket,prepared,[&] {
+    if (g_mock_gpu_request.exchange(false)) {
+      serviced=true;
+      g_mock_gpu_reply.release();
+    }
+  }), "the resolver services a synchronous worker readback while waiting for readiness");
+  Check(serviced && prepared.has_programs, "readback completed and preparation resumed");
+  g_mock_gpu_readback=false;
+  g_mock_mapped_data=false;
+  engine.Stop();
+  Check(engine.Publish(nullptr,&args,ctx,ucfg,shaders,nullptr)==UINT64_MAX,
+        "a stopped empty engine rejects new reservations");
+}
+
 } // namespace
 
 int main() {
@@ -785,6 +975,11 @@ int main() {
   TestComputeDrawInterleavedBarrierSafety();
   TestDrawPrepWaitSpinVsCvBounded();
   TestQueueDepthAndCapacityTracking();
+  TestDrawPrepSaturationAndSnapshotIntegrity();
+  TestAdversarialInterleavedConcurrency();
+  TestDrawPrepCancellationDuringSaturation();
+  TestDrawPrepPreparedStateReset();
+  TestWorkerReadbackMakesProgressWhileResolverWaits();
 
   if (g_failures == 0) {
     std::printf("=== All DrawPrep Tests PASSED ===\n");

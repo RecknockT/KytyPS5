@@ -1,0 +1,23 @@
+# Diagnóstico de una partida interactiva
+
+`./stage8_live_play.ps1` abre Astro Bot con los ajustes guardados del launcher y diagnóstico continuo. `-Preview` muestra argumentos sin ejecutar. No mueve al personaje ni cierra el juego automáticamente. El script termina al abrirlo; no deja un monitor externo.
+
+`--live-diagnostics` / `--no-live-diagnostics` controlan el nuevo diario independiente, apagado por defecto. Requiere poder escribir junto al archivo de audit. Se guarda una línea JSON completa por segundo y al cerrar normalmente, incluso si no hay nuevos cuadros. El diario permanece independiente de los reinicios de captura F9 y sus contadores. Los registros completos se vacían al archivo; un cierre inesperado puede perder el último registro incompleto y la caché de escritura del sistema no equivale a persistencia ante pérdida eléctrica.
+
+Los resultados quedan en `_Build/windows/live_play/<fecha>/`: `run.json`, stdout/stderr, `audit.json.live.jsonl`, `effects.jsonl` y el informe final audit JSON/CSV al cierre normal. El diario contiene tasas de cuadros, flips completados/enviados y VBlank separadas, máximos y pausas, tiempo sin nuevo cuadro, audio enviado, trabajo gráfico, compilaciones, transferencias, esperas por causa y etapas del host. Las tasas usan la duración real de cada intervalo, no asumen que la muestra duró exactamente un segundo. Las etapas pueden anidarse y las esperas pueden sumar tiempos de varios hilos: no sumarlas como duración física de un cuadro. Los contadores de trabajo pueden faltar si el usuario oculta el overlay; se indica `debug_counters_enabled`.
+
+**No mide directamente el avance de la simulación del juego.** Ni un flip, ni un VBlank, ni audio enviado ni un reloj virtual que avanza prueban velocidad de físicas/animación. `simulation_speed_measured` permanece false. Para comprobar si 30 FPS representan velocidad completa hace falta observar un evento del juego con duración de referencia o identificar su contador de simulación. No se modifican relojes, audio, barreras, calidad ni temporización para mejorar cifras.
+
+El diagnóstico por shader añade coste y tiene sus propios límites documentados en effect_profile.md. Esta sesión sirve para investigar; no es un A/B limpio para acreditar mejoras. F10 marca fases y F9 permite capturas delimitadas. F2 oculta/muestra el panel: el diario continúa, pero las muestras de intervalo de cuadro y contadores del overlay dejan de actualizarse mientras está oculto. En ese caso `seconds_without_frame` no demuestra una presentación bloqueada. El analizador usa siempre flips completados para FPS y señala la disponibilidad de las métricas del overlay.
+
+Lectura durante la partida: `python tools/benchmarks/analyze_live_journal.py <directorio> --seconds 20`. Ignora la última línea aún incompleta; un registro completo corrupto produce un error. Usa duraciones reales e informa explícitamente que no se midió velocidad de simulación.
+
+## Primera partida observada, 23 de noviembre
+
+Directorio `_Build/windows/live_play/20261123_231049_663`, PID 11732. Binario SHA256 `6077630F8746D193758E42C1BEF69E4128007BBDAACACA493089F84666EEF7C9`. Cuatro CTest aprobados: audit_profiler (incluye dos pruebas nuevas del diario), cadence_runtime, tile_layout_cache y effect_profile. La sesión usa 2560×1440 y los ajustes guardados de Astro, con cadencia activada. No comparar sus FPS directamente con los ensayos anteriores de 1280×720.
+
+El arranque informa cero programas/módulos/pipelines recuperados para el entorno `2c4a952d03b776fd`; la caché previa `644c586c1224aab0` permanece en disco. El fingerprint incluye opciones de shaders y entorno: esta diferencia no demuestra un borrado o invalidación por fecha. El nuevo archivo de shaders y el driver cache se están guardando. La sesión de usuario usa relaxed_shader_float=true; los benchmarks anteriores omitían esa opción.
+
+El log confirma `StartLevel aerial_garden`. Una ventana de 20,113 s hasta elapsed=233,401 s registró 273 flips completados: **13,574 FPS**, 5059,85 draws/cuadro, **cero shaders compilados y cero pipelines creados**, peor intervalo de cuadro 84,176 ms y cero intervalos de 100 ms o más. Audio enviado: 0,9997 segundos de muestras por segundo real, lo que no demuestra velocidad de simulación. Captura resumida: `observation_latest.json`. No es una cámara fija A/B ni permite atribuir efectos visuales por nombre.
+
+Esta observación demuestra lentitud sostenida también sin compilación nueva en esa ventana. La preparación gráfica repetida y las esperas siguen siendo objetivos; no demuestra por sí sola que todo el límite sea CPU o que 30 FPS equivalgan a velocidad completa. La partida se deja abierta a pedido del usuario; el diario permanece activo dentro del emulador, sin un watcher externo.

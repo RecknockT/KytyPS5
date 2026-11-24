@@ -40,7 +40,8 @@ inline constexpr vk::BufferUsageFlags AllFlags =
 class Buffer {
 public:
 	Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-	       uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size);
+	       uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size,
+	       bool dedicated_allocation = false);
 	~Buffer();
 	KYTY_CLASS_NO_COPY(Buffer);
 
@@ -54,20 +55,20 @@ public:
 		EXIT_IF(m_device_address == 0);
 		return m_device_address;
 	}
-	[[nodiscard]] uint64_t           Offset(uint64_t address) const noexcept {
+	[[nodiscard]] uint64_t Offset(uint64_t address) const noexcept {
 		return address - m_cpu_address;
 	}
 	[[nodiscard]] bool IsInBounds(uint64_t address, uint64_t size) const noexcept {
 		return address >= m_cpu_address && size <= Size() &&
 		       address - m_cpu_address <= Size() - size;
 	}
-	void               IncreaseStreamScore(int score) noexcept { stream_score += score; }
-	[[nodiscard]] int  StreamScore() const noexcept { return stream_score; }
-	void               Flush(uint64_t offset, uint64_t size);
-	void               Invalidate(uint64_t offset, uint64_t size);
-	void CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
-	              uint64_t destination_offset, uint64_t size);
-	void Fill(uint64_t offset, uint64_t size, uint32_t value);
+	void              IncreaseStreamScore(int score) noexcept { stream_score += score; }
+	[[nodiscard]] int StreamScore() const noexcept { return stream_score; }
+	void              Flush(uint64_t offset, uint64_t size);
+	void              Invalidate(uint64_t offset, uint64_t size);
+	void              CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
+	                           uint64_t destination_offset, uint64_t size);
+	void              Fill(uint64_t offset, uint64_t size, uint32_t value);
 
 	// BufferCache state lives directly on the resource.
 	bool   is_deleted   = false;
@@ -83,16 +84,16 @@ private:
 	                                              vk::AccessFlags source,
 	                                              vk::AccessFlags destination) const;
 
-	GraphicContext*               m_graphics    = nullptr;
-	CommandScheduler*             m_scheduler   = nullptr;
-	MemoryUsage                   m_usage       = MemoryUsage::DeviceLocal;
-	uint64_t                      m_cpu_address = 0;
-	vk::DeviceAddress             m_device_address = 0;
-	vk::Buffer                    m_buffer     = nullptr;
-	VmaAllocation                 m_allocation = nullptr;
-	uint64_t                      m_size;
-	bool                          m_coherent = false;
-	std::span<uint8_t>            m_mapped;
+	GraphicContext*    m_graphics       = nullptr;
+	CommandScheduler*  m_scheduler      = nullptr;
+	MemoryUsage        m_usage          = MemoryUsage::DeviceLocal;
+	uint64_t           m_cpu_address    = 0;
+	vk::DeviceAddress  m_device_address = 0;
+	vk::Buffer         m_buffer         = nullptr;
+	VmaAllocation      m_allocation     = nullptr;
+	uint64_t           m_size;
+	bool               m_coherent = false;
+	std::span<uint8_t> m_mapped;
 };
 
 class StreamBuffer final: public Buffer {
@@ -114,6 +115,8 @@ public:
 	void                                        Commit();
 	[[nodiscard]] Download                      MapDownload(uint64_t size, uint64_t alignment);
 	[[nodiscard]] uint64_t Copy(const void* source, uint64_t size, uint64_t alignment = 0);
+	// All previous upload hints become invalid before a successful reservation wraps the ring.
+	[[nodiscard]] uint64_t ReuseEpoch() const noexcept { return m_reuse_epoch; }
 
 private:
 	friend struct StreamBufferTestAccess;
@@ -131,6 +134,7 @@ private:
 	                                                size_t& wait_cursor, uint64_t& wait_bound);
 
 	uint64_t              m_offset      = 0;
+	uint64_t              m_reuse_epoch = 1;
 	uint64_t              m_mapped_size = 0;
 	std::vector<Watch>    m_current_watches;
 	size_t                m_current_watch_cursor = 0;

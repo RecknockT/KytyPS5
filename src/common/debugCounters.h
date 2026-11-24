@@ -41,6 +41,8 @@ enum class Counter {
 	BufferDownloadBytes,
 	BufferCoDownloads, // Pieces of recent small GPU writes downloaded in another readback's wait.
 	BufferCoDownloadBytes,
+	BufferNeighbourDownloads,
+	BufferNeighbourDownloadBytes,
 	BufferEvictions,
 	BufferReleases,        // Clean buffers released after going unbound, without memory pressure.
 	BufferReleaseRefaults, // Released ranges a shader read again through BDA, now kept.
@@ -69,6 +71,24 @@ enum class Counter {
 	RedundantPipelineBinds,
 	RedundantVertexBinds,
 	RedundantIndexBinds,
+	BindingRangeReuses,
+	BindingLookupReuses,
+	BindingSamplerReuses,
+	TileLayoutHits,
+	ScratchFreedBytes,
+	ScratchRetirements,
+	ScratchAllocations,
+	CompactReadbackCopies,
+	CompactReadbackFallbacks,
+	ReadbackPrefillAvoidedBytes,
+	ReadbackStagingSavedBytes,
+	ReadBufferHits,
+	ReadBufferMisses,
+	ResourcePrepHits,
+	ResourcePrepMisses,
+	TileLayoutMisses,
+	BindingUploadReuses,
+	BindingUploadReuseBytes,
 	Count
 };
 

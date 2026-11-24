@@ -143,10 +143,15 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 	Config::Load(cfg);
 	subsystems.Initialize<Log::Lifecycle>();
 
-	if (cfg.audit_faults_enabled) {
+	if (cfg.audit_faults_enabled || cfg.live_diagnostics_enabled) {
 		Common::AuditProfiler::InitCapture(cfg.audit_capture_delay_sec,
 		                                   cfg.audit_capture_duration_sec, cfg.audit_export_path,
 		                                   cfg.audit_manual_trigger);
+		if (cfg.live_diagnostics_enabled &&
+		    !Common::AuditProfiler::StartLiveDiagnostics(Common::AuditProfiler::GetExportPath() +
+		                                                 ".live.jsonl")) {
+			Log::WriteToConsoleAndLog("Live diagnostics: could not open output journal.\n");
+		}
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "Audit profiler enabled (--audit-faults, delay={}s, duration={}s, manual_trigger={}, "
 		    "export={})\n",

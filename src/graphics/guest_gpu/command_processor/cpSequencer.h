@@ -5,13 +5,18 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <thread>
 #include <vector>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 namespace Libs::Graphics::CpSeq {
 
@@ -25,11 +30,12 @@ struct RegisterState {
 	HW::Context    context;
 	HW::UserConfig user_config;
 	HW::Shader     shaders;
+	uint64_t       indirect_instance_address = 0;
 };
 
 class SnapshotRing {
 public:
-	explicit SnapshotRing(uint32_t capacity): m_entries(capacity) {}
+	explicit SnapshotRing(uint32_t capacity): m_entries(capacity) { EXIT_IF(capacity == 0); }
 
 	[[nodiscard]] uint32_t Capacity() const noexcept {
 		return static_cast<uint32_t>(m_entries.size());
@@ -38,14 +44,41 @@ public:
 		return m_acquired - m_released.load(std::memory_order_seq_cst) < m_entries.size();
 	}
 	[[nodiscard]] uint32_t Acquire() noexcept {
+		EXIT_IF(!HasFree());
 		return static_cast<uint32_t>(m_acquired++ % m_entries.size());
+	}
+	static constexpr uint32_t Invalid = std::numeric_limits<uint32_t>::max();
+	// SPSC: all older acquired entries must already have been published to OpStream.
+	// Never called by the resolver that releases the entries.
+	template <typename Stop>
+	[[nodiscard]] uint32_t AcquireBlocking(Stop&& should_stop) {
+		for (uint32_t spins = 0; !should_stop(); ++spins) {
+			if (HasFree()) return Acquire();
+			if (spins < 64) {
+#if defined(_M_X64) || defined(__x86_64__)
+				_mm_pause();
+#else
+				std::this_thread::yield();
+#endif
+			} else {
+				std::this_thread::yield();
+			}
+		}
+		return Invalid;
 	}
 	[[nodiscard]] RegisterState& Entry(uint32_t index) noexcept { return m_entries[index]; }
 	void Release() noexcept { m_released.fetch_add(1, std::memory_order_seq_cst); }
+	[[nodiscard]] uint64_t Released() const noexcept { return m_released.load(); }
+	[[nodiscard]] uint64_t Acquired() const noexcept { return m_acquired.load(); }
+	void                   Release(uint32_t index) noexcept {
+		EXIT_IF(m_released.load() >= m_acquired.load() ||
+		        index != m_released.load() % m_entries.size());
+		Release();
+	}
 
 private:
 	std::vector<RegisterState> m_entries;
-	uint64_t                   m_acquired = 0;
+	std::atomic<uint64_t>      m_acquired {0};
 	alignas(64) std::atomic<uint64_t> m_released {0};
 };
 
@@ -57,6 +90,7 @@ struct Intake {
 	bool                      graphics        = true;
 	bool                      reset_processor = false;
 	uint64_t                  flip_watermark  = UINT64_MAX;
+	uint64_t                  admit_time_ns   = 0;
 };
 
 class Sequencer {
@@ -102,6 +136,8 @@ public:
 	[[nodiscard]] bool Stopping() const noexcept {
 		return m_stopping.load(std::memory_order_acquire);
 	}
+	static bool DiagnosticsEnabled();
+	void        Trace(const char* phase, uint64_t operation = UINT64_MAX) const;
 
 private:
 	class ReadyRef {
@@ -132,6 +168,7 @@ private:
 	bool                    m_stop = false;
 	std::atomic<bool>       m_stopping {false};
 	std::thread             m_thread;
+	std::jthread            m_diagnostic_thread;
 
 	alignas(64) std::atomic<uint64_t> m_progress {0};
 	std::atomic<uint32_t> m_parked {0};

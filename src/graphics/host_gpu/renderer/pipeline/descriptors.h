@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -37,6 +38,32 @@ struct PreparedBindings {
 		uint64_t size    = 0;
 		BufferId id;
 	};
+	struct BufferMemo {
+		ShaderRecompiler::IR::DescriptorValue descriptor;
+		BufferSource                          source;
+		uint64_t                              epoch           = 0;
+		uint32_t                              max_byte_extent = 0;
+		bool                                  scalar          = false;
+		bool                                  valid           = false;
+	};
+	struct SamplerMemo {
+		ShaderRecompiler::IR::DescriptorValue descriptor;
+		vk::Sampler                           sampler = nullptr;
+		uint32_t                              policy  = 0;
+		bool                                  valid   = false;
+	};
+	struct UploadMemo {
+		vk::DescriptorBufferInfo info;
+		uint64_t                 epoch = 0;
+		uint64_t                 tick  = 0;
+		std::vector<uint32_t>    words;
+	};
+	UploadMemo flattened_srt_memo;
+	UploadMemo shader_data_memo;
+	// Own the keys; ResourceSnapshot and ShaderStageRuntime belong to the previous draw.
+	// These memos contain no texture state, dirty-state result or synchronization decision.
+	std::vector<BufferMemo>  buffer_memos;
+	std::vector<SamplerMemo> sampler_memos;
 
 	// The draw owns the immutable compiled-program/runtime-snapshot association through commit.
 	const ShaderStageRuntime*                     runtime          = nullptr;

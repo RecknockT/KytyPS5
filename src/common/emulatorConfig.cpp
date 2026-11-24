@@ -5,14 +5,36 @@
 #include "common/gpuStall.h"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 
 namespace Config {
 
 static std::unique_ptr<ConfigOptions> g_config;
+static std::atomic<int>               g_binding_reuse_requested {-1};
+static std::atomic<int>               g_binding_reuse_effective {-1};
+static std::atomic<int> g_compact_readback_requested {-1}, g_compact_readback_effective {-1};
+static std::atomic<int> g_read_buffer_requested {-1}, g_read_buffer_effective {-1};
+static std::atomic<int> g_resource_prep_requested {-1}, g_resource_prep_effective {-1};
+static std::atomic<int> g_tile_layout_requested {-1};
+static std::atomic<int> g_tile_layout_effective {-1};
+static std::atomic<int> g_submit_cadence_requested {-1};
+static std::atomic<int> g_submit_cadence_effective {-1};
 
 void Initialize() {
 	EXIT_IF(g_config != nullptr);
+	g_binding_reuse_requested.store(-1, std::memory_order_relaxed);
+	g_binding_reuse_effective.store(-1, std::memory_order_relaxed);
+	g_compact_readback_requested.store(-1, std::memory_order_relaxed);
+	g_compact_readback_effective.store(-1, std::memory_order_relaxed);
+	g_read_buffer_requested.store(-1, std::memory_order_relaxed);
+	g_read_buffer_effective.store(-1, std::memory_order_relaxed);
+	g_resource_prep_requested.store(-1, std::memory_order_relaxed);
+	g_resource_prep_effective.store(-1, std::memory_order_relaxed);
+	g_tile_layout_requested.store(-1, std::memory_order_relaxed);
+	g_tile_layout_effective.store(-1, std::memory_order_relaxed);
+	g_submit_cadence_requested.store(-1, std::memory_order_relaxed);
+	g_submit_cadence_effective.store(-1, std::memory_order_relaxed);
 
 	g_config = std::make_unique<ConfigOptions>();
 }
@@ -32,6 +54,18 @@ void Load(const ConfigOptions& cfg) {
 	EXIT_IF(cfg.keyboard_player > static_cast<uint32_t>(MAX_PLAYERS));
 
 	*g_config = cfg;
+	g_binding_reuse_requested.store(-1, std::memory_order_relaxed);
+	g_binding_reuse_effective.store(-1, std::memory_order_relaxed);
+	g_compact_readback_requested.store(-1, std::memory_order_relaxed);
+	g_compact_readback_effective.store(-1, std::memory_order_relaxed);
+	g_read_buffer_requested.store(-1, std::memory_order_relaxed);
+	g_read_buffer_effective.store(-1, std::memory_order_relaxed);
+	g_resource_prep_requested.store(-1, std::memory_order_relaxed);
+	g_resource_prep_effective.store(-1, std::memory_order_relaxed);
+	g_tile_layout_requested.store(-1, std::memory_order_relaxed);
+	g_tile_layout_effective.store(-1, std::memory_order_relaxed);
+	g_submit_cadence_requested.store(-1, std::memory_order_relaxed);
+	g_submit_cadence_effective.store(-1, std::memory_order_relaxed);
 	Common::DebugCounters::SetEnabled(cfg.perf_overlay_enabled);
 	// Pushed here rather than read by the audio code, so audio tests need no config.
 	Common::GpuStall::Configure(cfg.audio_compile_hold_enabled);
@@ -254,6 +288,18 @@ bool BatchHotReadbacksEnabled() {
 	return g_config->batch_hot_readbacks;
 }
 
+bool ReadbackNeighboursEnabled() {
+	return g_config->readback_neighbours;
+}
+
+bool WideReadbackWindowEnabled() {
+	return g_config->wide_readback_window;
+}
+
+bool FaultAheadEnabled() {
+	return g_config->fault_ahead;
+}
+
 bool TessellationEnabled() {
 	return g_config->tessellation_enabled;
 }
@@ -279,7 +325,18 @@ bool AudioCompileHoldEnabled() {
 }
 
 bool GpuSubmitCadenceEnabled() {
-	return g_config != nullptr ? g_config->gpu_submit_cadence_enabled : false;
+	const auto mode = g_submit_cadence_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->gpu_submit_cadence_enabled;
+}
+void RequestSubmitCadenceMode(bool enabled) {
+	g_submit_cadence_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+std::optional<bool> ApplySubmitCadenceMode() {
+	const auto mode = g_submit_cadence_requested.exchange(-1, std::memory_order_relaxed);
+	if (mode < 0 || mode == g_submit_cadence_effective.load(std::memory_order_relaxed))
+		return std::nullopt;
+	g_submit_cadence_effective.store(mode, std::memory_order_relaxed);
+	return mode != 0;
 }
 
 bool TrophyEnabled() {
@@ -366,6 +423,73 @@ bool DescriptorCacheEnabled() {
 	return g_config != nullptr ? g_config->descriptor_cache_enabled : true;
 }
 
+bool TileLayoutCacheEnabled() {
+	const auto mode = g_tile_layout_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->tile_layout_cache_enabled;
+}
+void RequestTileLayoutCacheMode(bool enabled) {
+	g_tile_layout_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+void ApplyTileLayoutCacheMode() {
+	const auto mode = g_tile_layout_requested.exchange(-1, std::memory_order_relaxed);
+	if (mode >= 0) g_tile_layout_effective.store(mode, std::memory_order_relaxed);
+}
+
+bool TrimScratchMemoryEnabled() {
+	return g_config != nullptr && g_config->trim_scratch_memory_enabled;
+}
+
+bool CompactImageReadbackEnabled() {
+	const auto mode = g_compact_readback_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->compact_image_readback_enabled;
+}
+void RequestCompactImageReadbackMode(bool enabled) {
+	g_compact_readback_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+void ApplyCompactImageReadbackMode() {
+	const auto mode = g_compact_readback_requested.exchange(-1, std::memory_order_relaxed);
+	if (mode >= 0) g_compact_readback_effective.store(mode, std::memory_order_relaxed);
+}
+
+bool ReadBufferReuseEnabled() {
+	const auto mode = g_read_buffer_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->read_buffer_reuse_enabled;
+}
+void RequestReadBufferReuseMode(bool enabled) {
+	g_read_buffer_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+void ApplyReadBufferReuseMode() {
+	const auto mode = g_read_buffer_requested.exchange(-1, std::memory_order_relaxed);
+	if (mode >= 0) g_read_buffer_effective.store(mode, std::memory_order_relaxed);
+}
+
+bool ResourcePrepReuseEnabled() {
+	const auto mode = g_resource_prep_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->resource_prep_reuse_enabled;
+}
+void RequestResourcePrepReuseMode(bool enabled) {
+	g_resource_prep_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+void ApplyResourcePrepReuseMode() {
+	const auto mode = g_resource_prep_requested.exchange(-1, std::memory_order_relaxed);
+	if (mode >= 0) g_resource_prep_effective.store(mode, std::memory_order_relaxed);
+}
+
+bool BindingReuseEnabled() {
+	const int mode = g_binding_reuse_effective.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->binding_reuse_enabled;
+}
+
+void RequestBindingReuseMode(bool enabled) {
+	g_binding_reuse_requested.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+void ApplyBindingReuseMode() {
+	const auto mode = g_binding_reuse_requested.load(std::memory_order_relaxed);
+	if (mode >= 0 && mode != g_binding_reuse_effective.load(std::memory_order_relaxed))
+		g_binding_reuse_effective.store(mode, std::memory_order_relaxed);
+}
+
 bool ProgramCacheMruEnabled() {
 	return g_config != nullptr ? g_config->program_cache_mru_enabled : true;
 }
@@ -376,6 +500,10 @@ bool CoalesceReadFaultsEnabled() {
 
 bool GpuTimestampsEnabled() {
 	return g_config != nullptr ? g_config->gpu_timestamps_enabled : true;
+}
+
+bool EffectProfileEnabled() {
+	return g_config != nullptr ? g_config->effect_profile_enabled : false;
 }
 
 bool DiagnosticSkipWaterPassEnabled() {

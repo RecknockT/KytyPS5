@@ -215,6 +215,12 @@
               <property name="text"><string>Native ray tracing (experimental)</string></property>
              </widget>
             </item>
+              <item row="14" column="1">
+               <widget class="QCheckBox" name="checkBox_gpu_submit_cadence">
+                <property name="toolTip"><string>Send prepared graphics work earlier so the GPU can advance while the emulator prepares the rest. Performance depends on the game. Does not change game speed or graphics quality.</string></property>
+                <property name="text"><string>Send graphics work earlier</string></property>
+               </widget>
+              </item>
            </layout>
           </widget>
          </item>

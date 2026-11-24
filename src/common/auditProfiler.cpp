@@ -23,6 +23,7 @@
 #include <fstream>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <thread>
 #include <vector>
 
 namespace Common::AuditProfiler {
@@ -40,6 +41,37 @@ constexpr size_t THREAD_TABLE_MASK     = THREAD_TABLE_CAPACITY - 1;
 constexpr size_t MAX_PAGE_PROBE        = 32;
 constexpr size_t MAX_PROBE             = 16;
 constexpr size_t MAX_CAPTURED_FRAMES   = 65536;
+
+// Independent counters: audit Reset/StartCapture cannot erase a live interval.
+std::atomic<bool> g_live_enabled {false};
+enum LiveCounter : size_t {
+	LiveFrames,
+	LiveFrameNs,
+	LiveVblanks,
+	LiveSubmitted,
+	LiveCompleted,
+	LiveAudioNs,
+	LiveAudioBatches,
+	LiveHitch50,
+	LiveHitch100,
+	LiveHitch250,
+	LiveCount
+};
+std::array<std::atomic<uint64_t>, LiveCount> g_live_counts {};
+std::atomic<uint64_t>                        g_live_last_frame_ns {0}, g_live_max_frame_ns {0};
+std::array<std::atomic<uint64_t>, static_cast<size_t>(GpuWaitReason::Count)> g_live_wait_ns {};
+std::array<std::atomic<uint64_t>, static_cast<size_t>(PipelineStage::Count)> g_live_stage_ns {};
+
+uint64_t LiveNowNs() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+	    .count();
+}
+
+// Constructed on first use, after the counters. Joined before their destruction.
+std::jthread& LiveWriter() {
+	static std::jthread writer;
+	return writer;
+}
 
 struct alignas(64) PageSlot {
 	std::atomic<uint64_t> page {0};
@@ -89,9 +121,22 @@ PhaseCounters g_phase_loading {};
 PhaseCounters g_phase_gameplay {};
 
 // Baseline counters sampled at StartCapture()
-std::atomic<uint64_t> g_baseline_buffer_upload_bytes {0};
-std::atomic<uint64_t> g_baseline_texture_upload_bytes {0};
-std::atomic<uint64_t> g_baseline_buffer_download_bytes {0};
+std::atomic<uint64_t>                g_baseline_buffer_upload_bytes {0};
+std::atomic<uint64_t>                g_baseline_texture_upload_bytes {0};
+std::atomic<uint64_t>                g_baseline_buffer_download_bytes {0};
+std::atomic<uint64_t>                g_baseline_neighbour_downloads {0};
+std::atomic<uint64_t>                g_baseline_neighbour_download_bytes {0};
+std::array<std::atomic<uint64_t>, 5> g_baseline_binding_reuses {};
+std::atomic<uint64_t> g_baseline_tile_layout_hits {0}, g_baseline_tile_layout_misses {0};
+std::atomic<uint64_t> g_baseline_scratch_freed_bytes {0};
+std::atomic<uint64_t> g_baseline_scratch_retirements {0};
+std::atomic<uint64_t> g_baseline_scratch_allocations {0};
+std::atomic<uint64_t> g_baseline_compact_readback_copies {0};
+std::atomic<uint64_t> g_baseline_compact_readback_fallbacks {0};
+std::atomic<uint64_t> g_baseline_readback_prefill_avoided_bytes {0};
+std::atomic<uint64_t> g_baseline_readback_staging_saved_bytes {0};
+std::atomic<uint64_t> g_baseline_read_buffer_hits {0}, g_baseline_read_buffer_misses {0};
+std::atomic<uint64_t> g_baseline_resource_prep_hits {0}, g_baseline_resource_prep_misses {0};
 std::atomic<uint64_t> g_baseline_texture_download_bytes {0};
 std::atomic<uint64_t> g_baseline_texture_partial_refreshes {0};
 std::atomic<uint64_t> g_baseline_texture_partial_fallbacks {0};
@@ -139,6 +184,12 @@ std::atomic<uint64_t> g_baseline_draw_prep_committed {0};
 std::atomic<uint64_t> g_baseline_draw_prep_fallback {0};
 std::atomic<uint64_t> g_baseline_draw_prep_avoided {0};
 std::atomic<uint64_t> g_baseline_draw_prep_avoided_time_ns {0};
+
+// Tripartite workload distribution: queue latency accumulators
+std::array<std::atomic<uint64_t>, static_cast<size_t>(QueueLatencyType::Count)>
+    g_queue_latency_ns {};
+std::array<std::atomic<uint64_t>, static_cast<size_t>(QueueLatencyType::Count)>
+    g_queue_latency_count {};
 
 // Global lock-free tables for the active captured window
 PageSlot   g_page_table[PAGE_TABLE_CAPACITY];
@@ -331,6 +382,132 @@ bool IsEnabled() noexcept {
 	return g_enabled.load(std::memory_order_relaxed);
 }
 
+void StopLiveDiagnostics() {
+	g_live_enabled.store(false, std::memory_order_relaxed);
+	auto& writer = LiveWriter();
+	if (writer.joinable()) {
+		writer.request_stop();
+		writer.join();
+	}
+}
+
+bool StartLiveDiagnostics(const std::string& path) {
+	StopLiveDiagnostics();
+	std::ofstream output(path, std::ios::out | std::ios::trunc);
+	if (!output) return false;
+	for (auto& value: g_live_counts)
+		value.store(0, std::memory_order_relaxed);
+	for (auto& value: g_live_wait_ns)
+		value.store(0, std::memory_order_relaxed);
+	for (auto& value: g_live_stage_ns)
+		value.store(0, std::memory_order_relaxed);
+	g_live_last_frame_ns.store(0, std::memory_order_relaxed);
+	g_live_max_frame_ns.store(0, std::memory_order_relaxed);
+	output << nlohmann::json(
+	              {{"type", "metadata"},
+	               {"schema", 1},
+	               {"interval_seconds", 1},
+	               {"simulation_speed_measured", false},
+	               {"notes",
+	                "Flip/audio rates are not physics speed. Waits are thread-accumulated; stages "
+	                "can overlap. Last incomplete line may be lost on crash."}})
+	              .dump()
+	       << '\n';
+	output.flush();
+	if (!output) return false;
+	g_live_enabled.store(true, std::memory_order_relaxed);
+	LiveWriter() = std::jthread([out = std::move(output)](std::stop_token stop) mutable {
+		{
+			using Counter = DebugCounters::Counter;
+			constexpr std::array                  counters {Counter::Draws,
+			                                                Counter::Dispatches,
+			                                                Counter::ShadersCompiled,
+			                                                Counter::PipelinesCreated,
+			                                                Counter::BufferUploadBytes,
+			                                                Counter::BufferDownloadBytes,
+			                                                Counter::TextureUploadBytes,
+			                                                Counter::TextureDownloadBytes,
+			                                                Counter::GpuFaults};
+			constexpr std::array                  names {"draws",
+			                                             "dispatches",
+			                                             "shaders_compiled",
+			                                             "pipelines_created",
+			                                             "buffer_upload_bytes",
+			                                             "buffer_download_bytes",
+			                                             "texture_upload_bytes",
+			                                             "texture_download_bytes",
+			                                             "write_faults"};
+			std::array<uint64_t, LiveCount>       previous {};
+			std::array<uint64_t, counters.size()> previous_debug {};
+			for (size_t i = 0; i < counters.size(); ++i)
+				previous_debug[i] = DebugCounters::Get(counters[i]);
+			const auto started = LiveNowNs();
+			auto       last    = started;
+			do {
+				for (int i = 0; i < 10 && !stop.stop_requested(); ++i)
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				const auto   now     = LiveNowNs();
+				const double seconds = static_cast<double>(now - last) / 1e9;
+				if (seconds <= 0) continue;
+				std::array<uint64_t, LiveCount> current {}, delta {};
+				for (size_t i = 0; i < current.size(); ++i) {
+					current[i] = g_live_counts[i].load(std::memory_order_relaxed);
+					delta[i]   = current[i] - previous[i];
+				}
+				const auto     last_frame = g_live_last_frame_ns.load(std::memory_order_relaxed);
+				nlohmann::json row {
+				    {"type", stop.stop_requested() ? "final" : "sample"},
+				    {"elapsed_seconds", static_cast<double>(now - started) / 1e9},
+				    {"interval_seconds", seconds},
+				    {"frame_intervals", delta[LiveFrames]},
+				    {"rendered_interval_fps", delta[LiveFrames] / seconds},
+				    {"completed_flip_hz", delta[LiveCompleted] / seconds},
+				    {"submitted_flip_hz", delta[LiveSubmitted] / seconds},
+				    {"vblank_hz", delta[LiveVblanks] / seconds},
+				    {"completed_flips_total", current[LiveCompleted]},
+				    {"hitches_50ms", delta[LiveHitch50]},
+				    {"hitches_100ms", delta[LiveHitch100]},
+				    {"hitches_250ms", delta[LiveHitch250]},
+				    {"worst_frame_ms",
+				     g_live_max_frame_ns.exchange(0, std::memory_order_relaxed) / 1e6},
+				    {"audio_media_seconds", delta[LiveAudioNs] / 1e9},
+				    {"audio_batches", delta[LiveAudioBatches]},
+				    {"debug_counters_enabled", DebugCounters::Enabled()},
+				    {"phase", GetExecutionPhaseName(GetExecutionPhase())},
+				    {"gpu_submit_cadence", Config::GpuSubmitCadenceEnabled()},
+				    {"simulation_speed_measured", false}};
+				row["average_frame_ms"] =
+				    delta[LiveFrames] ? nlohmann::json(delta[LiveFrameNs] / 1e6 / delta[LiveFrames])
+				                      : nlohmann::json(nullptr);
+				row["seconds_without_frame"] =
+				    static_cast<double>(now - (last_frame ? last_frame : started)) / 1e9;
+				row["no_frame_seen"] = last_frame == 0;
+				for (size_t i = 0; i < counters.size(); ++i) {
+					const auto value      = DebugCounters::Get(counters[i]);
+					row["work"][names[i]] = value >= previous_debug[i]
+					                            ? nlohmann::json(value - previous_debug[i])
+					                            : nlohmann::json(nullptr);
+					previous_debug[i]     = value;
+				}
+				for (size_t i = 0; i < g_live_wait_ns.size(); ++i)
+					row["thread_accumulated_wait_ms"]
+					   [GetWaitReasonName(static_cast<GpuWaitReason>(i))] =
+					       g_live_wait_ns[i].exchange(0, std::memory_order_relaxed) / 1e6;
+				for (size_t i = 0; i < g_live_stage_ns.size(); ++i)
+					row["host_stage_ms"][GetPipelineStageName(static_cast<PipelineStage>(i))] =
+					    g_live_stage_ns[i].exchange(0, std::memory_order_relaxed) / 1e6;
+				out << row.dump() << '\n';
+				out.flush(); // Complete records remain readable without an ordinary shutdown.
+				if (!out) break;
+				previous = current;
+				last     = now;
+			} while (!stop.stop_requested());
+		}
+		g_live_enabled.store(false, std::memory_order_relaxed);
+	});
+	return true;
+}
+
 void SetEnabled(bool enabled) noexcept {
 	g_enabled.store(enabled, std::memory_order_relaxed);
 	if (enabled) {
@@ -502,6 +679,11 @@ void Reset() {
 	g_baseline_draw_prep_avoided.store(0, std::memory_order_relaxed);
 	g_baseline_draw_prep_avoided_time_ns.store(0, std::memory_order_relaxed);
 
+	for (size_t i = 0; i < static_cast<size_t>(QueueLatencyType::Count); ++i) {
+		g_queue_latency_ns[i].store(0, std::memory_order_relaxed);
+		g_queue_latency_count[i].store(0, std::memory_order_relaxed);
+	}
+
 	{
 		std::lock_guard<std::mutex> lock(g_frame_timeseries_mutex);
 		g_frame_timeseries.clear();
@@ -522,6 +704,46 @@ void StartCapture(const char* trigger_reason) {
 
 	// Snapshot baseline values of external DebugCounters to compute deltas
 	namespace Counters = Common::DebugCounters;
+	g_baseline_scratch_freed_bytes.store(Counters::Get(Counters::Counter::ScratchFreedBytes),
+	                                     std::memory_order_relaxed);
+	g_baseline_scratch_retirements.store(Counters::Get(Counters::Counter::ScratchRetirements),
+	                                     std::memory_order_relaxed);
+	g_baseline_scratch_allocations.store(Counters::Get(Counters::Counter::ScratchAllocations),
+	                                     std::memory_order_relaxed);
+	g_baseline_compact_readback_copies.store(
+	    Counters::Get(Counters::Counter::CompactReadbackCopies), std::memory_order_relaxed);
+	g_baseline_compact_readback_fallbacks.store(
+	    Counters::Get(Counters::Counter::CompactReadbackFallbacks), std::memory_order_relaxed);
+	g_baseline_readback_prefill_avoided_bytes.store(
+	    Counters::Get(Counters::Counter::ReadbackPrefillAvoidedBytes), std::memory_order_relaxed);
+	g_baseline_readback_staging_saved_bytes.store(
+	    Counters::Get(Counters::Counter::ReadbackStagingSavedBytes), std::memory_order_relaxed);
+	g_baseline_read_buffer_hits.store(Counters::Get(Counters::Counter::ReadBufferHits),
+	                                  std::memory_order_relaxed);
+	g_baseline_resource_prep_hits.store(Counters::Get(Counters::Counter::ResourcePrepHits),
+	                                    std::memory_order_relaxed);
+	g_baseline_read_buffer_misses.store(Counters::Get(Counters::Counter::ReadBufferMisses),
+	                                    std::memory_order_relaxed);
+	g_baseline_resource_prep_misses.store(Counters::Get(Counters::Counter::ResourcePrepMisses),
+	                                      std::memory_order_relaxed);
+	g_baseline_tile_layout_hits.store(Counters::Get(Counters::Counter::TileLayoutHits),
+	                                  std::memory_order_relaxed);
+	g_baseline_tile_layout_misses.store(Counters::Get(Counters::Counter::TileLayoutMisses),
+	                                    std::memory_order_relaxed);
+	g_baseline_binding_reuses[0].store(Counters::Get(Counters::Counter::BindingRangeReuses),
+	                                   std::memory_order_relaxed);
+	g_baseline_binding_reuses[1].store(Counters::Get(Counters::Counter::BindingLookupReuses),
+	                                   std::memory_order_relaxed);
+	g_baseline_binding_reuses[2].store(Counters::Get(Counters::Counter::BindingSamplerReuses),
+	                                   std::memory_order_relaxed);
+	g_baseline_binding_reuses[3].store(Counters::Get(Counters::Counter::BindingUploadReuses),
+	                                   std::memory_order_relaxed);
+	g_baseline_binding_reuses[4].store(Counters::Get(Counters::Counter::BindingUploadReuseBytes),
+	                                   std::memory_order_relaxed);
+	g_baseline_neighbour_downloads.store(Counters::Get(Counters::Counter::BufferNeighbourDownloads),
+	                                     std::memory_order_relaxed);
+	g_baseline_neighbour_download_bytes.store(
+	    Counters::Get(Counters::Counter::BufferNeighbourDownloadBytes), std::memory_order_relaxed);
 	g_baseline_buffer_upload_bytes.store(Counters::Get(Counters::Counter::BufferUploadBytes),
 	                                     std::memory_order_relaxed);
 	g_baseline_texture_upload_bytes.store(Counters::Get(Counters::Counter::TextureUploadBytes),
@@ -589,6 +811,11 @@ void StartCapture(const char* trigger_reason) {
 	                                   std::memory_order_relaxed);
 	g_baseline_draw_prep_avoided_time_ns.store(
 	    g_draw_prep_avoided_time_ns.load(std::memory_order_relaxed), std::memory_order_relaxed);
+
+	for (size_t i = 0; i < static_cast<size_t>(QueueLatencyType::Count); ++i) {
+		g_queue_latency_ns[i].store(0, std::memory_order_relaxed);
+		g_queue_latency_count[i].store(0, std::memory_order_relaxed);
+	}
 
 	const auto now       = Clock::now();
 	g_capture_start_time = now;
@@ -880,6 +1107,9 @@ void RecordReprotect(uint64_t vaddr, uint64_t size) noexcept {
 }
 
 void RecordGpuWait(GpuWaitReason reason, uint64_t wait_ns) noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed) &&
+	    static_cast<size_t>(reason) < g_live_wait_ns.size())
+		g_live_wait_ns[static_cast<size_t>(reason)].fetch_add(wait_ns, std::memory_order_relaxed);
 	if (!IsEnabled()) {
 		return;
 	}
@@ -933,6 +1163,17 @@ void RecordInternalGpuTransfer(uint64_t bytes) noexcept {
 }
 
 void RecordFrame(double frame_ms) noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed) && std::isfinite(frame_ms) &&
+	    frame_ms > 0.0 && frame_ms < 1e9) {
+		const auto ns = static_cast<uint64_t>(frame_ms * 1e6);
+		g_live_counts[LiveFrames].fetch_add(1, std::memory_order_relaxed);
+		g_live_counts[LiveFrameNs].fetch_add(ns, std::memory_order_relaxed);
+		g_live_last_frame_ns.store(LiveNowNs(), std::memory_order_relaxed);
+		UpdateMax(g_live_max_frame_ns, ns);
+		if (frame_ms >= 50) g_live_counts[LiveHitch50].fetch_add(1, std::memory_order_relaxed);
+		if (frame_ms >= 100) g_live_counts[LiveHitch100].fetch_add(1, std::memory_order_relaxed);
+		if (frame_ms >= 250) g_live_counts[LiveHitch250].fetch_add(1, std::memory_order_relaxed);
+	}
 	if (!IsEnabled() || frame_ms <= 0.0) {
 		return;
 	}
@@ -1087,6 +1328,8 @@ void RecordFrame(double frame_ms) noexcept {
 }
 
 void RecordVblank() noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed))
+		g_live_counts[LiveVblanks].fetch_add(1, std::memory_order_relaxed);
 	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
 		return;
 	}
@@ -1094,6 +1337,8 @@ void RecordVblank() noexcept {
 }
 
 void RecordFlipSubmitted() noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed))
+		g_live_counts[LiveSubmitted].fetch_add(1, std::memory_order_relaxed);
 	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
 		return;
 	}
@@ -1101,6 +1346,8 @@ void RecordFlipSubmitted() noexcept {
 }
 
 void RecordFlipCompleted() noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed))
+		g_live_counts[LiveCompleted].fetch_add(1, std::memory_order_relaxed);
 	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
 		return;
 	}
@@ -1115,7 +1362,12 @@ void RecordFlipWait(uint64_t wait_ns) noexcept {
 	g_flip_wait_count.fetch_add(1, std::memory_order_relaxed);
 }
 
-void RecordAudioUpdate(uint32_t samples, uint32_t /*freq*/) noexcept {
+void RecordAudioUpdate(uint32_t samples, uint32_t freq) noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed) && freq) {
+		g_live_counts[LiveAudioNs].fetch_add(uint64_t {samples} * 1'000'000'000 / freq,
+		                                     std::memory_order_relaxed);
+		g_live_counts[LiveAudioBatches].fetch_add(1, std::memory_order_relaxed);
+	}
 	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
 		return;
 	}
@@ -1124,6 +1376,10 @@ void RecordAudioUpdate(uint32_t samples, uint32_t /*freq*/) noexcept {
 }
 
 void RecordPipelineStage(PipelineStage stage, uint64_t duration_ns) noexcept {
+	if (g_live_enabled.load(std::memory_order_relaxed) &&
+	    static_cast<size_t>(stage) < g_live_stage_ns.size())
+		g_live_stage_ns[static_cast<size_t>(stage)].fetch_add(duration_ns,
+		                                                      std::memory_order_relaxed);
 	if (!IsEnabled() || g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
 		return;
 	}
@@ -1267,6 +1523,15 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.cadence_interval_us            = Config::GetGpuSubmitCadenceIntervalUs();
 	snapshot.partial_refresh_enabled        = Config::PartialBufferRefreshEnabled();
 	snapshot.batch_hot_readbacks_enabled    = Config::BatchHotReadbacksEnabled();
+	snapshot.readback_neighbours_enabled    = Config::ReadbackNeighboursEnabled();
+	snapshot.wide_readback_window_enabled   = Config::WideReadbackWindowEnabled();
+	snapshot.fault_ahead_enabled            = Config::FaultAheadEnabled();
+	snapshot.tile_layout_cache_enabled      = Config::TileLayoutCacheEnabled();
+	snapshot.trim_scratch_memory_enabled    = Config::TrimScratchMemoryEnabled();
+	snapshot.compact_image_readback_enabled = Config::CompactImageReadbackEnabled();
+	snapshot.read_buffer_reuse_enabled      = Config::ReadBufferReuseEnabled();
+	snapshot.resource_prep_reuse_enabled    = Config::ResourcePrepReuseEnabled();
+	snapshot.binding_reuse_enabled          = Config::BindingReuseEnabled();
 	snapshot.extended_stream_buffer_enabled = Config::ExtendedStreamBufferEnabled();
 	snapshot.redundant_bind_elision_enabled = Config::RedundantBindElisionEnabled();
 	snapshot.pipeline_cache_mru_enabled     = Config::PipelineCacheMruEnabled();
@@ -1372,6 +1637,53 @@ ProfileSnapshot TakeSnapshot() {
 	    (cur_tex_down >= base_tex_down) ? (cur_tex_down - base_tex_down) : cur_tex_down;
 
 	snapshot.gpu_to_cpu_readback_bytes = delta_buf_down + delta_tex_down;
+	snapshot.neighbour_readback_count =
+	    Counters::Get(Counters::Counter::BufferNeighbourDownloads) -
+	    g_baseline_neighbour_downloads.load(std::memory_order_relaxed);
+	snapshot.scratch_freed_bytes = Counters::Get(Counters::Counter::ScratchFreedBytes) -
+	                               g_baseline_scratch_freed_bytes.load(std::memory_order_relaxed);
+	snapshot.scratch_retirements = Counters::Get(Counters::Counter::ScratchRetirements) -
+	                               g_baseline_scratch_retirements.load(std::memory_order_relaxed);
+	snapshot.scratch_allocations = Counters::Get(Counters::Counter::ScratchAllocations) -
+	                               g_baseline_scratch_allocations.load(std::memory_order_relaxed);
+	snapshot.compact_readback_copies =
+	    Counters::Get(Counters::Counter::CompactReadbackCopies) -
+	    g_baseline_compact_readback_copies.load(std::memory_order_relaxed);
+	snapshot.compact_readback_fallbacks =
+	    Counters::Get(Counters::Counter::CompactReadbackFallbacks) -
+	    g_baseline_compact_readback_fallbacks.load(std::memory_order_relaxed);
+	snapshot.readback_prefill_avoided_bytes =
+	    Counters::Get(Counters::Counter::ReadbackPrefillAvoidedBytes) -
+	    g_baseline_readback_prefill_avoided_bytes.load(std::memory_order_relaxed);
+	snapshot.readback_staging_saved_bytes =
+	    Counters::Get(Counters::Counter::ReadbackStagingSavedBytes) -
+	    g_baseline_readback_staging_saved_bytes.load(std::memory_order_relaxed);
+	snapshot.read_buffer_hits     = Counters::Get(Counters::Counter::ReadBufferHits) -
+	                                g_baseline_read_buffer_hits.load(std::memory_order_relaxed);
+	snapshot.resource_prep_hits   = Counters::Get(Counters::Counter::ResourcePrepHits) -
+	                                g_baseline_resource_prep_hits.load(std::memory_order_relaxed);
+	snapshot.read_buffer_misses   = Counters::Get(Counters::Counter::ReadBufferMisses) -
+	                                g_baseline_read_buffer_misses.load(std::memory_order_relaxed);
+	snapshot.resource_prep_misses = Counters::Get(Counters::Counter::ResourcePrepMisses) -
+	                                g_baseline_resource_prep_misses.load(std::memory_order_relaxed);
+	snapshot.tile_layout_hits     = Counters::Get(Counters::Counter::TileLayoutHits) -
+	                                g_baseline_tile_layout_hits.load(std::memory_order_relaxed);
+	snapshot.tile_layout_misses   = Counters::Get(Counters::Counter::TileLayoutMisses) -
+	                                g_baseline_tile_layout_misses.load(std::memory_order_relaxed);
+	snapshot.binding_range_reuses = Counters::Get(Counters::Counter::BindingRangeReuses) -
+	                                g_baseline_binding_reuses[0].load(std::memory_order_relaxed);
+	snapshot.binding_lookup_reuses  = Counters::Get(Counters::Counter::BindingLookupReuses) -
+	                                  g_baseline_binding_reuses[1].load(std::memory_order_relaxed);
+	snapshot.binding_sampler_reuses = Counters::Get(Counters::Counter::BindingSamplerReuses) -
+	                                  g_baseline_binding_reuses[2].load(std::memory_order_relaxed);
+	snapshot.binding_upload_reuses  = Counters::Get(Counters::Counter::BindingUploadReuses) -
+	                                  g_baseline_binding_reuses[3].load(std::memory_order_relaxed);
+	snapshot.binding_upload_reuse_bytes =
+	    Counters::Get(Counters::Counter::BindingUploadReuseBytes) -
+	    g_baseline_binding_reuses[4].load(std::memory_order_relaxed);
+	snapshot.neighbour_readback_bytes =
+	    Counters::Get(Counters::Counter::BufferNeighbourDownloadBytes) -
+	    g_baseline_neighbour_download_bytes.load(std::memory_order_relaxed);
 	snapshot.internal_gpu_transfer_bytes =
 	    g_internal_gpu_transfer_bytes.load(std::memory_order_relaxed);
 
@@ -1812,6 +2124,114 @@ ProfileSnapshot TakeSnapshot() {
 		    snapshot.pm4_dispatch_exclusive_ms / static_cast<double>(snapshot.total_frames);
 	}
 
+	// Tripartite workload distribution: Queue vs CPU Active vs GPU Hardware Wait
+	{
+		auto&      td        = snapshot.time_distribution;
+		const auto q_sub_idx = static_cast<size_t>(QueueLatencyType::Submission);
+		const auto q_int_idx = static_cast<size_t>(QueueLatencyType::Intake);
+		const auto q_op_idx  = static_cast<size_t>(QueueLatencyType::OpStream);
+		const auto q_bp_idx  = static_cast<size_t>(QueueLatencyType::Backpressure);
+
+		td.queue_submission_count =
+		    g_queue_latency_count[q_sub_idx].load(std::memory_order_relaxed);
+		td.queue_submission_ms =
+		    static_cast<double>(g_queue_latency_ns[q_sub_idx].load(std::memory_order_relaxed)) /
+		    1e6;
+		td.queue_intake_count = g_queue_latency_count[q_int_idx].load(std::memory_order_relaxed);
+		td.queue_intake_ms =
+		    static_cast<double>(g_queue_latency_ns[q_int_idx].load(std::memory_order_relaxed)) /
+		    1e6;
+		td.queue_opstream_count = g_queue_latency_count[q_op_idx].load(std::memory_order_relaxed);
+		td.queue_opstream_ms =
+		    static_cast<double>(g_queue_latency_ns[q_op_idx].load(std::memory_order_relaxed)) / 1e6;
+		td.queue_backpressure_count =
+		    g_queue_latency_count[q_bp_idx].load(std::memory_order_relaxed);
+		td.queue_backpressure_ms =
+		    static_cast<double>(g_queue_latency_ns[q_bp_idx].load(std::memory_order_relaxed)) /
+		        1e6 +
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::SequencerWait)].total_ms +
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::DrawPrepCommitWait)]
+		        .total_ms;
+
+		td.total_queue_ms = td.queue_submission_ms + td.queue_intake_ms + td.queue_opstream_ms +
+		                    td.queue_backpressure_ms;
+
+		td.cpu_pm4_decode_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::Pm4Decode)].total_ms;
+		td.cpu_pm4_dispatch_ms = snapshot.pm4_dispatch_exclusive_ms;
+		td.cpu_render_state_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::RenderStatePrep)].total_ms;
+		td.cpu_pipeline_keys_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::PipelineKeyBuild)]
+		        .total_ms +
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::PipelineLookup)].total_ms;
+		td.cpu_descriptors_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::DescriptorPrep)].total_ms;
+		td.cpu_buffers_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::BufferPrep)].total_ms;
+		td.cpu_command_record_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::CommandRecording)]
+		        .total_ms +
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::CommandEnd)].total_ms;
+		td.cpu_submit_overhead_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::Submit)].total_ms;
+		td.cpu_draw_prep_worker_ms =
+		    snapshot.pipeline_stages[static_cast<size_t>(PipelineStage::DrawPrepWorker)].total_ms;
+
+		td.total_cpu_active_ms =
+		    td.cpu_pm4_decode_ms + td.cpu_pm4_dispatch_ms + td.cpu_render_state_ms +
+		    td.cpu_pipeline_keys_ms + td.cpu_descriptors_ms + td.cpu_buffers_ms +
+		    td.cpu_command_record_ms + td.cpu_submit_overhead_ms + td.cpu_draw_prep_worker_ms;
+
+		td.gpu_timeline_wait_ms =
+		    static_cast<double>(
+		        g_wait_nanos[static_cast<size_t>(GpuWaitReason::PriorityOperation)].load(
+		            std::memory_order_relaxed) +
+		        g_wait_nanos[static_cast<size_t>(GpuWaitReason::CommandSchedulerDrain)].load(
+		            std::memory_order_relaxed)) /
+		    1e6;
+		td.gpu_streambuffer_wait_ms =
+		    static_cast<double>(
+		        g_wait_nanos[static_cast<size_t>(GpuWaitReason::StreamBufferWait)].load(
+		            std::memory_order_relaxed)) /
+		    1e6;
+		td.gpu_swapchain_wait_ms =
+		    static_cast<double>(g_wait_nanos[static_cast<size_t>(GpuWaitReason::Swapchain)].load(
+		        std::memory_order_relaxed)) /
+		    1e6;
+		td.gpu_readback_wait_ms =
+		    static_cast<double>(
+		        g_wait_nanos[static_cast<size_t>(GpuWaitReason::BufferReadback)].load(
+		            std::memory_order_relaxed) +
+		        g_wait_nanos[static_cast<size_t>(GpuWaitReason::TextureWriteBack)].load(
+		            std::memory_order_relaxed)) /
+		    1e6;
+		td.total_gpu_wait_ms       = snapshot.gpu_thread_wait_time_ms;
+		const double accounted_gpu = td.gpu_timeline_wait_ms + td.gpu_streambuffer_wait_ms +
+		                             td.gpu_swapchain_wait_ms + td.gpu_readback_wait_ms;
+		td.gpu_other_wait_ms =
+		    (td.total_gpu_wait_ms > accounted_gpu) ? (td.total_gpu_wait_ms - accounted_gpu) : 0.0;
+
+		td.total_workload_ms = td.total_queue_ms + td.total_cpu_active_ms + td.total_gpu_wait_ms;
+		if (td.total_workload_ms > 0.0) {
+			td.queue_pct      = 100.0 * (td.total_queue_ms / td.total_workload_ms);
+			td.cpu_active_pct = 100.0 * (td.total_cpu_active_ms / td.total_workload_ms);
+			td.gpu_wait_pct   = 100.0 * (td.total_gpu_wait_ms / td.total_workload_ms);
+
+			if (td.gpu_wait_pct >= 50.0 || (td.total_gpu_wait_ms > td.total_cpu_active_ms &&
+			                                td.total_gpu_wait_ms > td.total_queue_ms)) {
+				td.bottleneck = WorkloadTimeDistribution::Bottleneck::GpuBound;
+			} else if (td.cpu_active_pct >= 50.0 ||
+			           (td.total_cpu_active_ms > td.total_gpu_wait_ms &&
+			            td.total_cpu_active_ms > td.total_queue_ms)) {
+				td.bottleneck = WorkloadTimeDistribution::Bottleneck::CpuBound;
+			} else if (td.queue_pct >= 35.0 || (td.total_queue_ms > td.total_cpu_active_ms &&
+			                                    td.total_queue_ms > td.total_gpu_wait_ms)) {
+				td.bottleneck = WorkloadTimeDistribution::Bottleneck::QueueSyncBound;
+			}
+		}
+	}
+
 	// Stage 8 additions: StreamBuffer audit
 	snapshot.stream_buffer_stats.total_allocs =
 	    g_stream_buffer_allocs.load(std::memory_order_relaxed);
@@ -1966,6 +2386,15 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"gpu_submit_cadence_interval_us", snap.cadence_interval_us},
 	         {"partial_buffer_refresh", snap.partial_refresh_enabled},
 	         {"batch_hot_readbacks", snap.batch_hot_readbacks_enabled},
+	         {"readback_neighbours", snap.readback_neighbours_enabled},
+	         {"wide_readback_window", snap.wide_readback_window_enabled},
+	         {"fault_ahead", snap.fault_ahead_enabled},
+	         {"binding_reuse", snap.binding_reuse_enabled},
+	         {"trim_scratch_memory", snap.trim_scratch_memory_enabled},
+	         {"compact_image_readback", snap.compact_image_readback_enabled},
+	         {"read_buffer_reuse", snap.read_buffer_reuse_enabled},
+	         {"resource_prep_reuse", snap.resource_prep_reuse_enabled},
+	         {"tile_layout_cache", snap.tile_layout_cache_enabled},
 	         {"extended_stream_buffer", snap.extended_stream_buffer_enabled},
 	         {"redundant_bind_elision", snap.redundant_bind_elision_enabled},
 	         {"pipeline_cache_mru", snap.pipeline_cache_mru_enabled},
@@ -2045,6 +2474,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	};
 
 	j["memory_transfers"] = {
+	    {"neighbour_readback_count", snap.neighbour_readback_count},
+	    {"neighbour_readback_bytes", snap.neighbour_readback_bytes},
 	    {"cpu_to_gpu_upload_mb",
 	     static_cast<double>(snap.cpu_to_gpu_upload_bytes) / (1024.0 * 1024.0)},
 	    {"cpu_to_gpu_upload_mb_per_frame",
@@ -2062,6 +2493,24 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	};
 
 	j["optimizations"] = {
+	    {"binding_range_reuses", snap.binding_range_reuses},
+	    {"binding_lookup_reuses", snap.binding_lookup_reuses},
+	    {"binding_sampler_reuses", snap.binding_sampler_reuses},
+	    {"scratch_freed_bytes", snap.scratch_freed_bytes},
+	    {"scratch_retirements", snap.scratch_retirements},
+	    {"scratch_allocations", snap.scratch_allocations},
+	    {"compact_readback_copies", snap.compact_readback_copies},
+	    {"compact_readback_fallbacks", snap.compact_readback_fallbacks},
+	    {"readback_prefill_avoided_bytes", snap.readback_prefill_avoided_bytes},
+	    {"readback_staging_saved_bytes", snap.readback_staging_saved_bytes},
+	    {"read_buffer_hits", snap.read_buffer_hits},
+	    {"read_buffer_misses", snap.read_buffer_misses},
+	    {"resource_prep_hits", snap.resource_prep_hits},
+	    {"resource_prep_misses", snap.resource_prep_misses},
+	    {"tile_layout_hits", snap.tile_layout_hits},
+	    {"tile_layout_misses", snap.tile_layout_misses},
+	    {"binding_upload_reuses", snap.binding_upload_reuses},
+	    {"binding_upload_reuse_bytes", snap.binding_upload_reuse_bytes},
 	    {"texture_partial_refreshes", snap.texture_partial_refreshes},
 	    {"texture_partial_fallbacks", snap.texture_partial_fallbacks},
 	    {"texture_partial_upload_mb",
@@ -2257,6 +2706,49 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	    {"last_wait_tick", snap.stream_buffer_stats.last_wait_tick},
 	};
 
+	const auto& td         = snap.time_distribution;
+	j["time_distribution"] = {
+	    {"total_workload_ms", td.total_workload_ms},
+	    {"bottleneck", td.BottleneckString()},
+	    {"queue_ms", td.total_queue_ms},
+	    {"queue_pct", td.queue_pct},
+	    {"queue_details",
+	     {
+	         {"submission_queue_count", td.queue_submission_count},
+	         {"submission_queue_ms", td.queue_submission_ms},
+	         {"intake_queue_count", td.queue_intake_count},
+	         {"intake_queue_ms", td.queue_intake_ms},
+	         {"opstream_queue_count", td.queue_opstream_count},
+	         {"opstream_queue_ms", td.queue_opstream_ms},
+	         {"backpressure_count", td.queue_backpressure_count},
+	         {"backpressure_ms", td.queue_backpressure_ms},
+	     }},
+	    {"cpu_active_ms", td.total_cpu_active_ms},
+	    {"cpu_active_pct", td.cpu_active_pct},
+	    {"cpu_details",
+	     {
+	         {"pm4_decode_ms", td.cpu_pm4_decode_ms},
+	         {"pm4_dispatch_ms", td.cpu_pm4_dispatch_ms},
+	         {"render_state_ms", td.cpu_render_state_ms},
+	         {"pipeline_keys_ms", td.cpu_pipeline_keys_ms},
+	         {"descriptors_ms", td.cpu_descriptors_ms},
+	         {"buffers_ms", td.cpu_buffers_ms},
+	         {"command_recording_ms", td.cpu_command_record_ms},
+	         {"submit_overhead_ms", td.cpu_submit_overhead_ms},
+	         {"draw_prep_workers_ms", td.cpu_draw_prep_worker_ms},
+	     }},
+	    {"gpu_wait_ms", td.total_gpu_wait_ms},
+	    {"gpu_wait_pct", td.gpu_wait_pct},
+	    {"gpu_wait_details",
+	     {
+	         {"timeline_wait_ms", td.gpu_timeline_wait_ms},
+	         {"streambuffer_wait_ms", td.gpu_streambuffer_wait_ms},
+	         {"swapchain_wait_ms", td.gpu_swapchain_wait_ms},
+	         {"readback_wait_ms", td.gpu_readback_wait_ms},
+	         {"other_wait_ms", td.gpu_other_wait_ms},
+	     }},
+	};
+
 	// Legacy backwards-compatible aliases for existing tests and scripts
 	j["configuration"]              = j["metadata"]["config"];
 	j["frametime_metrics_ms"]       = j["frametime_summary"];
@@ -2307,6 +2799,36 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("Metadata,PartialRefreshEnabled,{}\n", snap.partial_refresh_enabled ? 1 : 0);
 	out << fmt::format("Metadata,BatchHotReadbacksEnabled,{}\n",
 	                   snap.batch_hot_readbacks_enabled ? 1 : 0);
+	out << fmt::format("Metadata,ReadbackNeighboursEnabled,{}\n",
+	                   snap.readback_neighbours_enabled ? 1 : 0);
+	out << fmt::format("Metadata,WideReadbackWindowEnabled,{}\n",
+	                   snap.wide_readback_window_enabled ? 1 : 0);
+	out << fmt::format("Metadata,FaultAheadEnabled,{}\n", snap.fault_ahead_enabled ? 1 : 0);
+	out << fmt::format("Metadata,BindingReuseEnabled,{}\n", snap.binding_reuse_enabled ? 1 : 0);
+	out << fmt::format("Metadata,TrimScratchMemoryEnabled,{}\n",
+	                   snap.trim_scratch_memory_enabled ? 1 : 0);
+	out << fmt::format("Metadata,CompactImageReadbackEnabled,{}\n",
+	                   snap.compact_image_readback_enabled ? 1 : 0);
+	out << fmt::format("Metadata,ReadBufferReuseEnabled,{}\n",
+	                   snap.read_buffer_reuse_enabled ? 1 : 0);
+	out << fmt::format("Metadata,ResourcePrepReuseEnabled,{}\n",
+	                   snap.resource_prep_reuse_enabled ? 1 : 0);
+	out << fmt::format("Optimization,ScratchFreedBytes,{}\n", snap.scratch_freed_bytes);
+	out << fmt::format("Optimization,ScratchRetirements,{}\n", snap.scratch_retirements);
+	out << fmt::format("Optimization,ScratchAllocations,{}\n", snap.scratch_allocations);
+	out << fmt::format("Optimization,CompactReadbackCopies,{}\n", snap.compact_readback_copies);
+	out << fmt::format("Optimization,CompactReadbackFallbacks,{}\n",
+	                   snap.compact_readback_fallbacks);
+	out << fmt::format("Optimization,ReadbackPrefillAvoidedBytes,{}\n",
+	                   snap.readback_prefill_avoided_bytes);
+	out << fmt::format("Optimization,ReadbackStagingSavedBytes,{}\n",
+	                   snap.readback_staging_saved_bytes);
+	out << fmt::format("Optimization,ReadBufferHits,{}\nOptimization,ReadBufferMisses,{}\n",
+	                   snap.read_buffer_hits, snap.read_buffer_misses);
+	out << fmt::format("Optimization,ResourcePrepHits,{}\nOptimization,ResourcePrepMisses,{}\n",
+	                   snap.resource_prep_hits, snap.resource_prep_misses);
+	out << fmt::format("Metadata,TileLayoutCacheEnabled,{}\n",
+	                   snap.tile_layout_cache_enabled ? 1 : 0);
 	out << fmt::format("Metadata,ExtendedStreamBufferEnabled,{}\n",
 	                   snap.extended_stream_buffer_enabled ? 1 : 0);
 	out << fmt::format("Metadata,PipelineKeyCacheEnabled,{}\n",
@@ -2439,6 +2961,16 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                       frame_count);
 	out << fmt::format("Transfers,InternalGpuCopyMB,{:.2f}\n",
 	                   static_cast<double>(snap.internal_gpu_transfer_bytes) / (1024.0 * 1024.0));
+	out << fmt::format("Transfers,NeighbourReadbackCount,{}\n", snap.neighbour_readback_count);
+	out << fmt::format("Transfers,NeighbourReadbackBytes,{}\n", snap.neighbour_readback_bytes);
+	out << fmt::format("Optimization,BindingRangeReuses,{}\n", snap.binding_range_reuses);
+	out << fmt::format("Optimization,BindingLookupReuses,{}\n", snap.binding_lookup_reuses);
+	out << fmt::format("Optimization,BindingSamplerReuses,{}\n", snap.binding_sampler_reuses);
+	out << fmt::format("Optimization,TileLayoutHits,{}\n", snap.tile_layout_hits);
+	out << fmt::format("Optimization,TileLayoutMisses,{}\n", snap.tile_layout_misses);
+	out << fmt::format("Optimization,BindingUploadReuses,{}\n", snap.binding_upload_reuses);
+	out << fmt::format("Optimization,BindingUploadReuseBytes,{}\n",
+	                   snap.binding_upload_reuse_bytes);
 
 	out << fmt::format("Optimization,TexturePartialRefreshes,{}\n", snap.texture_partial_refreshes);
 	out << fmt::format("Optimization,TexturePartialFallbacks,{}\n", snap.texture_partial_fallbacks);
@@ -2500,6 +3032,20 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("CpuGpuSeparation,GpuThreadWallClockMs,{:.2f}\n",
 	                   snap.gpu_thread_wall_clock_ms);
 	out << fmt::format("CpuGpuSeparation,GpuThreadCpuTimeMs,{:.2f}\n", snap.gpu_thread_cpu_time_ms);
+
+	const auto& td = snap.time_distribution;
+	out << fmt::format("TimeDistribution,TotalWorkloadMs,{:.3f}\n", td.total_workload_ms);
+	out << fmt::format("TimeDistribution,Bottleneck,\"{}\"\n", td.BottleneckString());
+	out << fmt::format("TimeDistribution,TotalQueueMs,{:.3f}\n", td.total_queue_ms);
+	out << fmt::format("TimeDistribution,QueuePct,{:.2f}%\n", td.queue_pct);
+	out << fmt::format("TimeDistribution,SubmissionQueueMs,{:.3f}\n", td.queue_submission_ms);
+	out << fmt::format("TimeDistribution,IntakeQueueMs,{:.3f}\n", td.queue_intake_ms);
+	out << fmt::format("TimeDistribution,OpStreamQueueMs,{:.3f}\n", td.queue_opstream_ms);
+	out << fmt::format("TimeDistribution,BackpressureMs,{:.3f}\n", td.queue_backpressure_ms);
+	out << fmt::format("TimeDistribution,TotalCpuActiveMs,{:.3f}\n", td.total_cpu_active_ms);
+	out << fmt::format("TimeDistribution,CpuActivePct,{:.2f}%\n", td.cpu_active_pct);
+	out << fmt::format("TimeDistribution,TotalGpuWaitMs,{:.3f}\n", td.total_gpu_wait_ms);
+	out << fmt::format("TimeDistribution,GpuWaitPct,{:.2f}%\n", td.gpu_wait_pct);
 	out << fmt::format("CpuGpuSeparation,GpuThreadCpuUtilizationPct,{:.2f}%\n",
 	                   snap.gpu_thread_cpu_utilization_pct);
 	out << fmt::format("CpuGpuSeparation,GpuThreadWaitTimeMs,{:.2f}\n",
@@ -2599,8 +3145,30 @@ bool ExportAll(const std::string& json_path, const std::string& csv_path,
 		local_snap = TakeSnapshot();
 		snap_ptr   = &local_snap;
 	}
-	const bool json_ok = ExportJson(json_path, snap_ptr);
-	const bool csv_ok  = ExportCsv(csv_path, snap_ptr);
+	const bool  json_ok = ExportJson(json_path, snap_ptr);
+	const bool  csv_ok  = ExportCsv(csv_path, snap_ptr);
+	const auto& td      = snap_ptr->time_distribution;
+	if (td.total_workload_ms > 0.0) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "\n[AuditProfiler] === DISTRIBUCION TRIPARTITA (COLA / CPU / GPU WAIT) ===\n"
+		    "  1. Tiempo en Cola / Backpressure:  {:8.2f} ms ({:5.1f}%)\n"
+		    "     - Submission Queue:             {:8.2f} ms\n"
+		    "     - OpStream / Intake Queue:      {:8.2f} ms\n"
+		    "     - Backpressure / Sync Wait:     {:8.2f} ms\n"
+		    "  2. Ejecucion Activa en CPU:        {:8.2f} ms ({:5.1f}%)\n"
+		    "  3. Espera de GPU (Hardware Sync):  {:8.2f} ms ({:5.1f}%)\n"
+		    "     - Timeline / Priority Waits:    {:8.2f} ms\n"
+		    "     - StreamBuffer Ring Waits:      {:8.2f} ms\n"
+		    "     - Swapchain / Present Waits:    {:8.2f} ms\n"
+		    "     - Readback / WriteBack Waits:   {:8.2f} ms\n"
+		    "  Clasificacion de Cuello de Botella: {}\n"
+		    "==========================================================================\n",
+		    td.total_queue_ms, td.queue_pct, td.queue_submission_ms,
+		    td.queue_intake_ms + td.queue_opstream_ms, td.queue_backpressure_ms,
+		    td.total_cpu_active_ms, td.cpu_active_pct, td.total_gpu_wait_ms, td.gpu_wait_pct,
+		    td.gpu_timeline_wait_ms, td.gpu_streambuffer_wait_ms, td.gpu_swapchain_wait_ms,
+		    td.gpu_readback_wait_ms, td.BottleneckString()));
+	}
 
 	std::string frames_csv_path;
 	const auto  dot_pos = json_path.rfind('.');
@@ -2663,6 +3231,31 @@ void RecordDrawPrepAvoided(uint64_t ns) noexcept {
 	if (ns > 0) {
 		g_draw_prep_avoided_time_ns.fetch_add(ns, std::memory_order_relaxed);
 	}
+}
+
+const char* GetQueueLatencyTypeName(QueueLatencyType type) noexcept {
+	switch (type) {
+		case QueueLatencyType::Submission: return "SubmissionQueue";
+		case QueueLatencyType::Intake: return "SequencerIntake";
+		case QueueLatencyType::OpStream: return "OpStream";
+		case QueueLatencyType::Backpressure: return "Backpressure";
+		default: return "Unknown";
+	}
+}
+
+void RecordQueueLatency(QueueLatencyType type, uint64_t latency_ns) noexcept {
+	if (!IsEnabled()) {
+		return;
+	}
+	if (g_capture_state.load(std::memory_order_relaxed) != CaptureState::Running) {
+		return;
+	}
+	const auto idx = static_cast<size_t>(type);
+	if (idx >= static_cast<size_t>(QueueLatencyType::Count)) {
+		return;
+	}
+	g_queue_latency_ns[idx].fetch_add(latency_ns, std::memory_order_relaxed);
+	g_queue_latency_count[idx].fetch_add(1, std::memory_order_relaxed);
 }
 
 } // namespace Common::AuditProfiler

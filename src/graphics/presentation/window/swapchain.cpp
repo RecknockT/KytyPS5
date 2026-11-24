@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/hostFrameLimiter.h"
 #include "graphics/presentation/openxrHeadset.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
@@ -287,6 +288,7 @@ private:
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	uint32_t                       m_image_index         = 0;
 	uint32_t                       m_frame_index         = 0;
+	HostFrameLimiter               m_frame_limiter;
 };
 
 struct Presenter::Impl {
@@ -902,6 +904,8 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 }
 
 Swapchain::Status Swapchain::Present() {
+	// Wait outside the Vulkan queue lock, allowing rendering/submission to continue.
+	m_frame_limiter.Wait();
 	if (Common::AuditProfiler::IsEnabled() &&
 	    Common::AuditProfiler::GetExecutionPhase() ==
 	        Common::AuditProfiler::ExecutionPhase::Initialization) {

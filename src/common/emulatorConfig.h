@@ -99,8 +99,12 @@ struct ConfigOptions {
 	bool                  readback_storage_images         = false;
 	bool                  sync_raw_image_buffers          = false;
 	bool                  batch_hot_readbacks             = false;
-	bool                  partial_buffer_refresh_enabled  = false;
-	bool                  skip_redundant_unmap_drains     = false;
+	// Experimental transfer/fault optimizations; independently toggleable for A/B captures.
+	bool readback_neighbours            = false;
+	bool wide_readback_window           = false;
+	bool fault_ahead                    = false;
+	bool partial_buffer_refresh_enabled = false;
+	bool skip_redundant_unmap_drains    = false;
 	// Experimental. Keeps GPU buffer caches when direct memory is released and mapped back
 	// unchanged.
 	bool     keep_gpu_cache_on_reuse        = false;
@@ -110,8 +114,15 @@ struct ConfigOptions {
 	bool     draw_state_dirty_check_enabled = false;
 	bool     ensure_pipeline_cache_enabled  = true;
 	bool     descriptor_cache_enabled       = true;
+	bool     tile_layout_cache_enabled      = false;
+	bool     binding_reuse_enabled          = false;
+	bool     resource_prep_reuse_enabled    = false;
+	bool     read_buffer_reuse_enabled      = false;
+	bool     compact_image_readback_enabled = false;
+	bool     trim_scratch_memory_enabled    = false;
 	bool     program_cache_mru_enabled      = true;
 	bool     coalesce_read_faults_enabled   = true;
+	bool     effect_profile_enabled         = false;
 	bool     gpu_timestamps_enabled         = true;
 	bool     diagnostic_skip_water_enabled  = false;
 	bool     fast_pending_ops_enabled       = true;
@@ -140,6 +151,7 @@ struct ConfigOptions {
 	// Back-to-back failed zero-timeout event-flag polls back off: yield, then sleep briefly.
 	bool        poll_backoff_enabled           = true;
 	bool        audit_faults_enabled           = false;
+	bool        live_diagnostics_enabled       = false;
 	bool        audit_manual_trigger           = false;
 	bool        extended_stream_buffer_enabled = false;
 	std::string audit_export_path;
@@ -216,19 +228,24 @@ bool ReadbackTiledImagesEnabled();
 bool ReadbackStorageImagesEnabled();
 bool SyncRawImageBuffersEnabled();
 // Skips the GPU drain when a range that is already unmapped is unmapped again.
-bool     SkipRedundantUnmapDrainsEnabled();
-bool     PartialBufferRefreshEnabled();
-uint32_t GetFlushDraws();
-bool     TessellationEnabled();
-bool     OcclusionQueriesEnabled();
-bool     GpuSubmitCadenceEnabled();
-bool     RelaxedShaderFloatEnabled();
-bool     NativeRtEnabled();
-bool     LodStatsEnabled();
-bool     AudioCompileHoldEnabled();
+bool                SkipRedundantUnmapDrainsEnabled();
+bool                PartialBufferRefreshEnabled();
+uint32_t            GetFlushDraws();
+bool                TessellationEnabled();
+bool                OcclusionQueriesEnabled();
+bool                GpuSubmitCadenceEnabled();
+void                RequestSubmitCadenceMode(bool enabled);
+std::optional<bool> ApplySubmitCadenceMode();
+bool                RelaxedShaderFloatEnabled();
+bool                NativeRtEnabled();
+bool                LodStatsEnabled();
+bool                AudioCompileHoldEnabled();
 // Makes a fault readback that waits for the GPU also read back GPU-written bytes of buffers that
 // recently faulted.
 bool     BatchHotReadbacksEnabled();
+bool     ReadbackNeighboursEnabled();
+bool     WideReadbackWindowEnabled();
+bool     FaultAheadEnabled();
 bool     TrophyEnabled();
 uint32_t GetTrophyDurationSeconds();
 bool     PlayGoHackEnabled();
@@ -251,17 +268,35 @@ bool               PipelineKeyCacheEnabled();
 bool               DrawStateDirtyCheckEnabled();
 bool               EnsurePipelineCacheEnabled();
 bool               DescriptorCacheEnabled();
-bool               ProgramCacheMruEnabled();
-bool               CoalesceReadFaultsEnabled();
-bool               GpuTimestampsEnabled();
-bool               DiagnosticSkipWaterPassEnabled();
-bool               FastPendingOpsEnabled();
-bool               PrioritySpinWaitEnabled();
-uint32_t           PrioritySpinDurationUs();
-bool               CpSequencerEnabled();
-uint32_t           CpSequencerSpinUs();
-bool               DrawPrepEnabled();
-uint32_t           DrawPrepWorkers();
+bool               BindingReuseEnabled();
+bool               TrimScratchMemoryEnabled();
+bool               CompactImageReadbackEnabled();
+void               RequestCompactImageReadbackMode(bool enabled);
+void               ApplyCompactImageReadbackMode();
+bool               ReadBufferReuseEnabled();
+void               RequestReadBufferReuseMode(bool enabled);
+void               ApplyReadBufferReuseMode();
+bool               ResourcePrepReuseEnabled();
+void               RequestResourcePrepReuseMode(bool enabled);
+void               ApplyResourcePrepReuseMode();
+bool               TileLayoutCacheEnabled();
+void               RequestTileLayoutCacheMode(bool enabled);
+void               ApplyTileLayoutCacheMode();
+// Benchmark requests become effective only at a GPU operation boundary.
+void     RequestBindingReuseMode(bool enabled);
+void     ApplyBindingReuseMode();
+bool     ProgramCacheMruEnabled();
+bool     CoalesceReadFaultsEnabled();
+bool     GpuTimestampsEnabled();
+bool     DiagnosticSkipWaterPassEnabled();
+bool     EffectProfileEnabled();
+bool     FastPendingOpsEnabled();
+bool     PrioritySpinWaitEnabled();
+uint32_t PrioritySpinDurationUs();
+bool     CpSequencerEnabled();
+uint32_t CpSequencerSpinUs();
+bool     DrawPrepEnabled();
+uint32_t DrawPrepWorkers();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 void EnableRedZoneProtection();

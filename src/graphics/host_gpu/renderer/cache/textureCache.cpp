@@ -2323,11 +2323,21 @@ bool TextureCache::DownloadImageMemory(ImageId id, bool unlocked_copy) {
 	if (!image->SafeToDownload() || !CanDownload(*image)) {
 		return false;
 	}
-	const auto range = image->info.data;
-	auto       download =
+	const auto range           = image->info.data;
+	const bool compact_enabled = Config::CompactImageReadbackEnabled();
+	const auto compact_size  = compact_enabled && image->backing.format == image->info.pixel_format
+	                               ? CompactLinearReadbackSize(image->info)
+	                               : std::nullopt;
+	const auto transfer_size = compact_size.value_or(range.size);
+	// This is the same initial coverage check as TryReadBacking, without reading
+	// guest bytes that the GPU will completely overwrite. Unmap ordering is unchanged.
+	if (compact_size && !LibKernel::Memory::IsRangeBacked(range.address, range.size)) return false;
+	auto download =
 	    m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download)
-	        .MapDownload(range.size, std::max<uint64_t>(image->info.bytes_per_block, 4));
-	if (unlocked_copy) {
+	        .MapDownload(transfer_size, std::max<uint64_t>(image->info.bytes_per_block, 4));
+	if (compact_size) {
+		// No host prefill/flush: one color copy overwrites the entire staged prefix.
+	} else if (unlocked_copy) {
 		// Guest write faults wait for m_lock in InvalidateMemory and would spin for the whole copy.
 		// A write that lands meanwhile marks the image CPU dirty, and a freed slot can be reused,
 		// so look the image up again before recording the download.
@@ -2344,10 +2354,24 @@ bool TextureCache::DownloadImageMemory(ImageId id, bool unlocked_copy) {
 	} else if (!LibKernel::Memory::TryReadBacking(range.address, download.mapped, range.size)) {
 		return false;
 	}
-	download.buffer->Flush(download.offset, range.size);
-
-	DownloadImage(*image, *download.buffer, download.offset, range.size,
-	              image->info.resources.levels);
+	if (compact_size) {
+		vk::BufferImageCopy copy {};
+		copy.bufferOffset     = download.offset;
+		copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+		copy.imageExtent      = image->info.extent;
+		image->Download({&copy, 1}, download.buffer->Handle(), download.offset, transfer_size);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::CompactReadbackCopies);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadbackPrefillAvoidedBytes,
+		                           range.size);
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadbackStagingSavedBytes,
+		                           range.size - transfer_size);
+	} else {
+		download.buffer->Flush(download.offset, range.size);
+		DownloadImage(*image, *download.buffer, download.offset, range.size,
+		              image->info.resources.levels);
+		if (compact_enabled)
+			Common::DebugCounters::Add(Common::DebugCounters::Counter::CompactReadbackFallbacks);
+	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::TextureDownloadBytes, range.size);
 	vk::BufferMemoryBarrier barrier {};
 	barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eTransferWrite |
@@ -2357,7 +2381,7 @@ bool TextureCache::DownloadImageMemory(ImageId id, bool unlocked_copy) {
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.buffer              = download.buffer->Handle();
 	barrier.offset              = download.offset;
-	barrier.size                = range.size;
+	barrier.size                = transfer_size;
 	m_scheduler.EndRendering();
 	m_scheduler.Current().Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                                               vk::PipelineStageFlagBits::eHost, {}, 0, nullptr,
@@ -2370,17 +2394,17 @@ bool TextureCache::DownloadImageMemory(ImageId id, bool unlocked_copy) {
 		}
 		m_page_manager.UpdatePageWatchers<true, true>(range.address, range.size);
 	}
-	m_scheduler.DeferPriorityOperation(
-	    [this, download = std::move(download), range, trapped = m_readback_storage_images] {
-		    download.buffer->Invalidate(download.offset, range.size);
-		    LibKernel::Memory::WriteBacking(range.address, download.mapped, range.size);
-		    if (trapped) {
-			    m_page_manager.UpdatePageWatchers<false, true>(range.address, range.size);
-			    // Priority operations run in queue order, so this write-back is the oldest.
-			    std::scoped_lock write_back_lock {m_write_back_mutex};
-			    m_write_backs.erase(m_write_backs.begin());
-		    }
-	    });
+	m_scheduler.DeferPriorityOperation([this, download = std::move(download), range, transfer_size,
+	                                    trapped = m_readback_storage_images] {
+		download.buffer->Invalidate(download.offset, transfer_size);
+		LibKernel::Memory::WriteBacking(range.address, download.mapped, transfer_size);
+		if (trapped) {
+			m_page_manager.UpdatePageWatchers<false, true>(range.address, range.size);
+			// Priority operations run in queue order, so this write-back is the oldest.
+			std::scoped_lock write_back_lock {m_write_back_mutex};
+			m_write_backs.erase(m_write_backs.begin());
+		}
+	});
 	return true;
 }
 
@@ -2615,6 +2639,7 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::RunGarbageCollector() {
+	m_tiler.TrimScratchBuffers();
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {

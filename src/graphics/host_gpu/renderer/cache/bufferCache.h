@@ -78,6 +78,8 @@ public:
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
+	// GPU-thread only. A cached ID is usable only while this registration epoch is unchanged.
+	[[nodiscard]] uint64_t RegistrationEpoch() const noexcept { return m_registration_epoch; }
 	/// Finds or creates the buffer for a range that shaders read through BDA without a
 	/// descriptor binding, and counts that as a use so the garbage collector keeps it.
 	/// FindBuffer alone is a lookup and does not.
@@ -226,6 +228,8 @@ private:
 	// spans already in claimed and charging what it collects to budget.
 	void CollectRecentWrites(RangeSet& claimed, uint64_t& budget,
 	                         std::vector<BatchedDownload>& batch);
+	void CollectNeighbourDownloads(BufferId main_id, uint64_t vaddr, uint64_t size,
+	                               uint64_t& budget, std::vector<BatchedDownload>& batch);
 	// Collects one unclaimed piece of a recent write when a single buffer holds it and it fits.
 	void               CollectRecentPiece(uint64_t address, uint64_t size, uint64_t& budget,
 	                                      std::vector<BatchedDownload>& batch);
@@ -254,7 +258,14 @@ private:
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                          m_buffers;
 	PageTable                                          m_page_table;
-	RangeSet                                           m_gpu_modified_ranges;
+	uint64_t                                           m_registration_epoch = 1;
+	struct ReadBufferMemo {
+		uint64_t address = 0, size = 0, registration = 0, generation = 0;
+		BufferId id {};
+	};
+	// GPU-thread only; never stores stream allocations or image/texel bindings.
+	std::array<ReadBufferMemo, 4096> m_read_buffer_memos {};
+	RangeSet                         m_gpu_modified_ranges;
 	// One per TileManager::ColorClearSlots key slot.
 	std::array<RangeSet, 8> m_checked_color_metadata;
 	MemoryTracker           m_memory_tracker;
@@ -270,6 +281,8 @@ private:
 	TextureCache&     m_texture_cache;
 	// Read once because the fault path is hot and the flag must not change while the cache lives.
 	const bool                                 m_batch_hot_readbacks;
+	const bool                                 m_readback_neighbours;
+	const uint64_t                             m_download_window_size;
 	HotReadbackTable                           m_hot_readbacks;
 	RecentGpuWriteRing                         m_recent_writes;
 	uint64_t                                   m_total_used_memory  = 0;

@@ -320,6 +320,141 @@ TEST_F(AuditProfilerTest,
       snap.submits[static_cast<size_t>(SubmitReason::ExplicitFlush)].count, 1u);
 }
 
+TEST_F(AuditProfilerTest, SubmitCadenceChangesAtOperationBoundary) {
+  EXPECT_FALSE(Config::GpuSubmitCadenceEnabled());
+  Config::RequestSubmitCadenceMode(true);
+  EXPECT_FALSE(Config::GpuSubmitCadenceEnabled());
+  EXPECT_EQ(Config::ApplySubmitCadenceMode(), std::optional<bool>(true));
+  EXPECT_TRUE(Config::GpuSubmitCadenceEnabled());
+  EXPECT_FALSE(Config::ApplySubmitCadenceMode().has_value());
+  Config::RequestSubmitCadenceMode(false);
+  EXPECT_TRUE(Config::GpuSubmitCadenceEnabled());
+  EXPECT_EQ(Config::ApplySubmitCadenceMode(), std::optional<bool>(false));
+  EXPECT_FALSE(Config::GpuSubmitCadenceEnabled());
+  Config::ConfigOptions options{}; options.gpu_submit_cadence_enabled=true;
+  Config::Load(options);
+  EXPECT_TRUE(Config::GpuSubmitCadenceEnabled());
+  EXPECT_FALSE(Config::ApplySubmitCadenceMode().has_value());
+}
+
+TEST_F(AuditProfilerTest, BindingReuseChangesAtOperationBoundary) {
+  EXPECT_FALSE(Config::BindingReuseEnabled());
+  Config::RequestBindingReuseMode(true);
+  EXPECT_FALSE(Config::BindingReuseEnabled());
+  Config::ApplyBindingReuseMode();
+  EXPECT_TRUE(Config::BindingReuseEnabled());
+  Config::RequestBindingReuseMode(false);
+  EXPECT_TRUE(Config::BindingReuseEnabled());
+  Config::ApplyBindingReuseMode();
+  EXPECT_FALSE(Config::BindingReuseEnabled());
+  Config::ConfigOptions options{};
+  options.binding_reuse_enabled = true;
+  Config::Load(options);
+  EXPECT_TRUE(Config::BindingReuseEnabled());
+}
+
+TEST_F(AuditProfilerTest, TileLayoutModeAndCaptureDeltas) {
+  EXPECT_FALSE(Config::TileLayoutCacheEnabled());
+  Config::RequestTileLayoutCacheMode(true);
+  EXPECT_FALSE(Config::TileLayoutCacheEnabled());
+  Config::ApplyTileLayoutCacheMode();
+  EXPECT_TRUE(Config::TileLayoutCacheEnabled());
+  namespace Counters=Common::DebugCounters;
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::TileLayoutHits,99);
+  StartCapture("tile-layout");
+  Counters::Add(Counters::Counter::TileLayoutHits,7);
+  Counters::Add(Counters::Counter::TileLayoutMisses,3);
+  StopCapture(CaptureState::Completed);
+  const auto snap=TakeSnapshot();
+  EXPECT_TRUE(snap.tile_layout_cache_enabled);
+  EXPECT_EQ(snap.tile_layout_hits,7u); EXPECT_EQ(snap.tile_layout_misses,3u);
+  ASSERT_TRUE(ExportJson("test_profile.json", &snap));
+  std::ifstream input("test_profile.json"); nlohmann::json data; input>>data;
+  EXPECT_TRUE(data["configuration"]["tile_layout_cache"].get<bool>());
+  EXPECT_EQ(data["optimizations"]["tile_layout_hits"],7u);
+  StartCapture("tile-layout-next");
+  EXPECT_EQ(TakeSnapshot().tile_layout_hits,0u);
+  EXPECT_EQ(TakeSnapshot().tile_layout_misses,0u);
+  StopCapture(CaptureState::Completed);
+  Config::ConfigOptions options{}; Config::Load(options);
+  EXPECT_FALSE(Config::TileLayoutCacheEnabled());
+}
+
+TEST_F(AuditProfilerTest, BindingReuseCaptureDeltas) {
+  EXPECT_FALSE(Config::BindingReuseEnabled());
+  Config::ConfigOptions options{};
+  options.binding_reuse_enabled = true;
+  Config::Load(options);
+  namespace Counters = Common::DebugCounters;
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::BindingRangeReuses, 99);
+  StartCapture("binding-reuse");
+  Counters::Add(Counters::Counter::BindingRangeReuses, 3);
+  Counters::Add(Counters::Counter::BindingLookupReuses, 2);
+  Counters::Add(Counters::Counter::BindingSamplerReuses, 1);
+  Counters::Add(Counters::Counter::BindingUploadReuses, 2);
+  Counters::Add(Counters::Counter::BindingUploadReuseBytes, 4096);
+  StopCapture(CaptureState::Completed);
+  const auto snap = TakeSnapshot();
+  EXPECT_TRUE(snap.binding_reuse_enabled);
+  EXPECT_EQ(snap.binding_range_reuses, 3u);
+  EXPECT_EQ(snap.binding_lookup_reuses, 2u);
+  EXPECT_EQ(snap.binding_sampler_reuses, 1u);
+  EXPECT_EQ(snap.binding_upload_reuses, 2u);
+  EXPECT_EQ(snap.binding_upload_reuse_bytes, 4096u);
+  ASSERT_TRUE(ExportJson("test_profile.json", &snap));
+  std::ifstream input("test_profile.json");
+  nlohmann::json data;
+  input >> data;
+  EXPECT_TRUE(data["configuration"]["binding_reuse"].get<bool>());
+  EXPECT_EQ(data["optimizations"]["binding_range_reuses"], 3u);
+  StartCapture("binding-reuse-next");
+  EXPECT_EQ(TakeSnapshot().binding_range_reuses, 0u);
+  EXPECT_EQ(TakeSnapshot().binding_lookup_reuses, 0u);
+  EXPECT_EQ(TakeSnapshot().binding_sampler_reuses, 0u);
+  EXPECT_EQ(TakeSnapshot().binding_upload_reuses, 0u);
+  EXPECT_EQ(TakeSnapshot().binding_upload_reuse_bytes, 0u);
+}
+
+TEST_F(AuditProfilerTest, TransferPrefetchFlagsAndCaptureDeltas) {
+  EXPECT_FALSE(Config::ReadbackNeighboursEnabled());
+  EXPECT_FALSE(Config::WideReadbackWindowEnabled());
+  EXPECT_FALSE(Config::FaultAheadEnabled());
+  Config::ConfigOptions options{};
+  options.readback_neighbours = true;
+  options.wide_readback_window = true;
+  options.fault_ahead = true;
+  Config::Load(options);
+  namespace Counters = Common::DebugCounters;
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::BufferNeighbourDownloads, 7);
+  Counters::Add(Counters::Counter::BufferNeighbourDownloadBytes, 4096);
+  StartCapture("transfer-prefetch");
+  Counters::Add(Counters::Counter::BufferNeighbourDownloads, 2);
+  Counters::Add(Counters::Counter::BufferNeighbourDownloadBytes, 1024);
+  StopCapture(CaptureState::Completed);
+  const auto snap = TakeSnapshot();
+  EXPECT_TRUE(snap.readback_neighbours_enabled);
+  EXPECT_TRUE(snap.wide_readback_window_enabled);
+  EXPECT_TRUE(snap.fault_ahead_enabled);
+  EXPECT_EQ(snap.neighbour_readback_count, 2u);
+  EXPECT_EQ(snap.neighbour_readback_bytes, 1024u);
+  ASSERT_TRUE(ExportJson("test_profile.json", &snap));
+  std::ifstream input("test_profile.json");
+  nlohmann::json data;
+  input >> data;
+  EXPECT_TRUE(data["configuration"]["readback_neighbours"].get<bool>());
+  EXPECT_TRUE(data["configuration"]["wide_readback_window"].get<bool>());
+  EXPECT_TRUE(data["configuration"]["fault_ahead"].get<bool>());
+  EXPECT_EQ(data["memory_transfers"]["neighbour_readback_count"], 2u);
+  EXPECT_EQ(data["memory_transfers"]["neighbour_readback_bytes"], 1024u);
+  StartCapture("transfer-prefetch-second");
+  EXPECT_EQ(TakeSnapshot().neighbour_readback_count, 0u);
+  EXPECT_EQ(TakeSnapshot().neighbour_readback_bytes, 0u);
+  StopCapture(CaptureState::Completed);
+}
+
 TEST_F(AuditProfilerTest, ControlledCaptureSessionLifecycleAndReset) {
   SetEnabled(true);
 
@@ -1164,6 +1299,156 @@ TEST_F(AuditProfilerTest, Stage8_4SynchronizationFlags) {
   EXPECT_EQ(snap.pending_ops_fast_skips, 1u);
 
   StopCapture(CaptureState::Completed);
+}
+
+TEST_F(AuditProfilerTest, ResourcePrepModeAndCounterBaselines) {
+  namespace Counters = Common::DebugCounters;
+  Config::ConfigOptions cfg;
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::ResourcePrepReuseEnabled());
+  Config::RequestResourcePrepReuseMode(true);
+  EXPECT_FALSE(Config::ResourcePrepReuseEnabled());
+  Config::ApplyResourcePrepReuseMode();
+  EXPECT_TRUE(Config::ResourcePrepReuseEnabled());
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::ResourcePrepHits,7);
+  StartCapture("resource-prep");
+  Counters::Add(Counters::Counter::ResourcePrepHits,3);
+  Counters::Add(Counters::Counter::ResourcePrepMisses,2);
+  const auto snap=TakeSnapshot();
+  EXPECT_TRUE(snap.resource_prep_reuse_enabled);
+  EXPECT_EQ(snap.resource_prep_hits,3u);
+  EXPECT_EQ(snap.resource_prep_misses,2u);
+  StopCapture();
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::ResourcePrepReuseEnabled());
+}
+
+TEST_F(AuditProfilerTest, ReadBufferModeAndCounterBaselines) {
+  namespace Counters = Common::DebugCounters;
+  Config::ConfigOptions cfg;
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::ReadBufferReuseEnabled());
+  Config::RequestReadBufferReuseMode(true);
+  EXPECT_FALSE(Config::ReadBufferReuseEnabled());
+  Config::ApplyReadBufferReuseMode();
+  EXPECT_TRUE(Config::ReadBufferReuseEnabled());
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::ReadBufferHits,7);
+  StartCapture("resource-prep");
+  Counters::Add(Counters::Counter::ReadBufferHits,3);
+  Counters::Add(Counters::Counter::ReadBufferMisses,2);
+  const auto snap=TakeSnapshot();
+  EXPECT_TRUE(snap.read_buffer_reuse_enabled);
+  EXPECT_EQ(snap.read_buffer_hits,3u);
+  EXPECT_EQ(snap.read_buffer_misses,2u);
+  StopCapture();
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::ReadBufferReuseEnabled());
+}
+
+TEST_F(AuditProfilerTest, CompactReadbackModeAndCounterBaselines) {
+  namespace Counters = Common::DebugCounters;
+  Config::ConfigOptions cfg;
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::CompactImageReadbackEnabled());
+  Config::RequestCompactImageReadbackMode(true);
+  EXPECT_FALSE(Config::CompactImageReadbackEnabled());
+  Config::ApplyCompactImageReadbackMode();
+  EXPECT_TRUE(Config::CompactImageReadbackEnabled());
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::CompactReadbackCopies,7);
+  StartCapture("resource-prep");
+  Counters::Add(Counters::Counter::CompactReadbackCopies,3);
+  Counters::Add(Counters::Counter::CompactReadbackFallbacks,2);
+  const auto snap=TakeSnapshot();
+  EXPECT_TRUE(snap.compact_image_readback_enabled);
+  EXPECT_EQ(snap.compact_readback_copies,3u);
+  EXPECT_EQ(snap.compact_readback_fallbacks,2u);
+  StopCapture();
+  Config::Load(cfg);
+  EXPECT_FALSE(Config::CompactImageReadbackEnabled());
+}
+
+TEST_F(AuditProfilerTest, LiveJournalSurvivesCaptureResetAndFlushesOnStop) {
+  const auto path = std::filesystem::temp_directory_path() / "kyty_test_live_journal.jsonl";
+  ASSERT_TRUE(StartLiveDiagnostics(path.string()));
+  RecordFrame(100.0);
+  RecordFlipSubmitted();
+  RecordFlipCompleted();
+  RecordVblank();
+  RecordAudioUpdate(480, 48000);
+  RecordGpuWait(GpuWaitReason::BufferReadback, 2'000'000);
+  RecordPipelineStage(PipelineStage::DescriptorPrep, 3'000'000);
+  Reset(); // Ordinary capture resets must not erase the independent journal.
+  RecordFrame(20.0);
+  StopLiveDiagnostics();
+  std::ifstream input(path);
+  std::string line;
+  uint64_t frames = 0, flips = 0, hitches = 0;
+  double audio = 0, wait = 0, stage = 0;
+  bool metadata = false, final = false;
+  while (std::getline(input, line)) {
+    const auto row = nlohmann::json::parse(line);
+    EXPECT_FALSE(row["simulation_speed_measured"].get<bool>());
+    if (row["type"] == "metadata") { metadata = true; continue; }
+    frames += row["frame_intervals"].get<uint64_t>();
+    flips += row["completed_flip_hz"].get<double>() * row["interval_seconds"].get<double>() + 0.5;
+    hitches += row["hitches_100ms"].get<uint64_t>();
+    audio += row["audio_media_seconds"].get<double>();
+    wait += row["thread_accumulated_wait_ms"]["BufferReadback"].get<double>();
+    stage += row["host_stage_ms"]["DescriptorPrep"].get<double>();
+    if (row["type"] == "final") final = true;
+  }
+  EXPECT_TRUE(metadata);
+  EXPECT_TRUE(final);
+  EXPECT_EQ(frames, 2u);
+  EXPECT_EQ(flips, 1u);
+  EXPECT_EQ(hitches, 1u);
+  EXPECT_NEAR(audio, 0.01, 0.000001);
+  EXPECT_DOUBLE_EQ(wait, 2.0);
+  EXPECT_DOUBLE_EQ(stage, 3.0);
+  input.close();
+  std::filesystem::remove(path);
+}
+
+TEST_F(AuditProfilerTest, LiveJournalRecordsAnIntervalWithoutFrames) {
+  const auto path = std::filesystem::temp_directory_path() / "kyty_test_live_idle.jsonl";
+  ASSERT_TRUE(StartLiveDiagnostics(path.string()));
+  StopLiveDiagnostics();
+  std::ifstream input(path);
+  std::string line;
+  ASSERT_TRUE(static_cast<bool>(std::getline(input, line)));
+  ASSERT_TRUE(static_cast<bool>(std::getline(input, line)));
+  const auto row = nlohmann::json::parse(line);
+  EXPECT_EQ(row["type"], "final");
+  EXPECT_EQ(row["frame_intervals"], 0);
+  EXPECT_TRUE(row["no_frame_seen"]);
+  EXPECT_TRUE(row["average_frame_ms"].is_null());
+  EXPECT_GE(row["seconds_without_frame"].get<double>(), 0.0);
+  input.close();
+  std::filesystem::remove(path);
+}
+
+TEST_F(AuditProfilerTest, ScratchMemoryCounterBaselines) {
+  namespace Counters = Common::DebugCounters;
+  Config::ConfigOptions cfg;
+  cfg.trim_scratch_memory_enabled = true;
+  Config::Load(cfg);
+  Counters::SetEnabled(true);
+  Counters::Add(Counters::Counter::ScratchFreedBytes, 100);
+  StartCapture("scratch-memory");
+  Counters::Add(Counters::Counter::ScratchFreedBytes, 64);
+  Counters::Add(Counters::Counter::ScratchRetirements, 2);
+  Counters::Add(Counters::Counter::ScratchAllocations, 1);
+  const auto snap = TakeSnapshot();
+  EXPECT_TRUE(snap.trim_scratch_memory_enabled);
+  EXPECT_EQ(snap.scratch_freed_bytes, 64u);
+  EXPECT_EQ(snap.scratch_retirements, 2u);
+  EXPECT_EQ(snap.scratch_allocations, 1u);
+  StopCapture();
+  Config::Load({});
+  EXPECT_FALSE(Config::TrimScratchMemoryEnabled());
 }
 
 } // namespace

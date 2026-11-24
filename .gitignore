@@ -15,4 +15,6 @@ _TestLogs/
 stage8_*.csv
 stage8_*.json
 _Trophies/
+__pycache__/
+*.pyc
 

@@ -63,6 +63,9 @@ public:
 	void TileImage(Image& image, std::span<const vk::BufferImageCopy> regions, vk::Buffer tiled,
 	               uint64_t tiled_offset, uint64_t tiled_capacity, uint32_t levels = 0);
 	[[nodiscard]] Result GetScratchBuffer(uint64_t size, vk::Buffer input = nullptr);
+	// Called between render operations. Retire idle scratch through GPU completion.
+	void                   TrimScratchBuffers();
+	[[nodiscard]] uint64_t RetainedScratchBytes() const;
 	void                 ConvertD16(Result source, Result target, D16Direction direction, bool d32,
 	                                const D16Layout& layout);
 	[[nodiscard]] Result TransformColor(Result input, ColorTransform transform, bool to_host);
@@ -186,10 +189,17 @@ private:
 	[[nodiscard]] vk::Pipeline CreatePipeline(std::span<const uint32_t>     code,
 	                                          const vk::SpecializationInfo* specialization) const;
 
-	GraphicContext&                         m_graphics;
-	CommandScheduler&                       m_scheduler;
-	StreamBuffer&                           m_stream_buffer;
-	std::array<std::unique_ptr<Buffer>, 2>  m_scratch;
+	GraphicContext&                        m_graphics;
+	CommandScheduler&                      m_scheduler;
+	StreamBuffer&                          m_stream_buffer;
+	std::array<std::unique_ptr<Buffer>, 2> m_scratch;
+	struct ScratchUse {
+		uint64_t last_used_ms    = 0;
+		uint64_t window_start_ms = 0;
+		uint64_t window_peak     = 0;
+	};
+	std::array<ScratchUse, 2>               m_scratch_use {};
+	void                                    RetireScratch(size_t index);
 	vk::DescriptorSetLayout                 m_descriptor_layout = nullptr;
 	vk::PipelineLayout                      m_pipeline_layout   = nullptr;
 	std::array<vk::Pipeline, PipelineCount> m_pipelines {};

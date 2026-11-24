@@ -2,6 +2,8 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/debugCounters.h"
+#include "common/emulatorConfig.h"
 #include "gpu_tiler_shaders/gpu_tiler_color_clear_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_color_transform_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_demote_d16_spv.h"
@@ -23,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -532,19 +535,84 @@ void TileManager::TileImage(Image& image, std::span<const vk::BufferImageCopy> r
 	Record(linear.buffer, 0, linear_capacity, tiled, tiled_offset, tiled_capacity, tiling);
 }
 
+namespace {
+constexpr uint64_t ScratchRetentionMs = 5000;
+constexpr uint64_t ScratchFloor       = 1ull << 20;
+uint64_t           ScratchClockMs() {
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                 std::chrono::steady_clock::now().time_since_epoch())
+	                                 .count());
+}
+} // namespace
+
+void TileManager::RetireScratch(size_t index) {
+	auto& buffer = m_scratch[index];
+	if (!buffer) return;
+	const auto bytes = buffer->Size();
+	// The closure owns the allocation until the scheduler has retired all prior work.
+	m_scheduler.DeferRelease([old = std::move(buffer), bytes]() mutable {
+		old.reset();
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::ScratchFreedBytes, bytes);
+	});
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::ScratchRetirements);
+}
+
+uint64_t TileManager::RetainedScratchBytes() const {
+	uint64_t bytes = 0;
+	for (const auto& buffer: m_scratch)
+		if (buffer) bytes += buffer->Size();
+	return bytes;
+}
+
+void TileManager::TrimScratchBuffers() {
+	if (!Config::TrimScratchMemoryEnabled() || !m_scheduler.Active()) return;
+	const auto now = ScratchClockMs();
+	for (size_t index = 0; index < m_scratch.size(); ++index) {
+		const auto& use = m_scratch_use[index];
+		if (m_scratch[index] && now - use.last_used_ms >= ScratchRetentionMs) {
+			RetireScratch(index);
+			m_scratch_use[index] = {};
+		}
+	}
+}
+
 TileManager::Result TileManager::GetScratchBuffer(uint64_t size, vk::Buffer input) {
-	EXIT_IF(size == 0);
-	size         = Common::AlignUp(size, 4);
-	auto& buffer = m_scratch[m_scratch[0] && m_scratch[0]->Handle() == input ? 1 : 0];
+	EXIT_IF(size == 0 || size > UINT64_MAX - 3);
+	size           = Common::AlignUp(size, 4);
+	const auto now = ScratchClockMs();
+	// A ping-pong source is still in use even though the other slot is acquired.
+	for (size_t i = 0; i < m_scratch.size(); ++i)
+		if (input != nullptr && m_scratch[i] && m_scratch[i]->Handle() == input)
+			m_scratch_use[i].last_used_ms = now;
+	const size_t index           = m_scratch[0] && m_scratch[0]->Handle() == input ? 1 : 0;
+	auto&        buffer          = m_scratch[index];
+	auto&        use             = m_scratch_use[index];
+	uint64_t     allocation_size = size;
+	if (use.window_start_ms != 0 && now - use.window_start_ms >= ScratchRetentionMs) {
+		const auto demand = std::max(size, use.window_peak);
+		if (Config::TrimScratchMemoryEnabled() && buffer && buffer->Size() >= 4 * ScratchFloor &&
+		    demand <= buffer->Size() / 4) {
+			allocation_size = std::max(demand, ScratchFloor);
+			RetireScratch(index);
+		}
+		use.window_start_ms = now;
+		use.window_peak     = size;
+	} else {
+		if (use.window_start_ms == 0) use.window_start_ms = now;
+		use.window_peak = std::max(use.window_peak, size);
+	}
+	use.last_used_ms = now;
 	if (!buffer || buffer->Size() < size) {
 		if (buffer) {
+			// Growth preserves the previous lifetime behavior and is not a trim event.
 			m_scheduler.DeferRelease([old = std::move(buffer)]() mutable { old.reset(); });
 		}
 		buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
 		                                  vk::BufferUsageFlagBits::eStorageBuffer |
 		                                      vk::BufferUsageFlagBits::eTransferSrc |
 		                                      vk::BufferUsageFlagBits::eTransferDst,
-		                                  size);
+		                                  allocation_size, Config::TrimScratchMemoryEnabled());
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::ScratchAllocations);
 	}
 	return {buffer->Handle(), 0, size};
 }

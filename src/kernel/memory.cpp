@@ -1081,6 +1081,10 @@ bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 	return g_guest_address_space->TryWriteBacking(vaddr, data, size);
 }
 
+bool IsRangeBacked(uint64_t vaddr, uint64_t size) {
+	return g_guest_address_space->IsBacked(vaddr, size);
+}
+
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadBacking(vaddr, data, size);
 }

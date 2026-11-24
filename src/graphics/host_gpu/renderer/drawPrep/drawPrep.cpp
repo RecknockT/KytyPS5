@@ -6,6 +6,8 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -115,6 +117,7 @@ void Engine::Stop() {
 		}
 	}
 	m_worker_threads.clear();
+	Trace("stopped", m_head.load(std::memory_order_acquire));
 }
 
 void Engine::SetMode(Mode mode) {
@@ -136,14 +139,46 @@ bool Engine::WindowHasSpace() const noexcept {
 	return (tail - head) < m_window.size();
 }
 
+void Engine::Trace(const char* phase, uint64_t position) const {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CP_SEQ_DIAGNOSTICS");
+		return value && std::strcmp(value, "1") == 0;
+	}();
+	if (!enabled) return;
+	static thread_local uint64_t last = 0;
+	const auto                   now  = GetNowNs();
+	if (std::strcmp(phase, "stopped") != 0 && now - last < 1'000'000'000ull) return;
+	last = now;
+	uint32_t states[5] {};
+	for (const auto& slot: m_window) {
+		const auto state = static_cast<uint32_t>(slot.state.load(std::memory_order_acquire));
+		if (state < 5) ++states[state];
+	}
+	const auto stats = GetStats();
+	std::fprintf(
+	    stderr,
+	    R"({"type":"drawprep","ns":%llu,"phase":"%s","ticket":%llu,"head":%llu,"tail":%llu,"published":%llu,"prepared":%llu,"committed":%llu,"fallback":%llu,"free":%u,"pending":%u,"claimed":%u,"ready":%u,"stopping":%d})"
+	    "\n",
+	    static_cast<unsigned long long>(now), phase, static_cast<unsigned long long>(position),
+	    static_cast<unsigned long long>(m_head.load()),
+	    static_cast<unsigned long long>(m_tail.load()),
+	    static_cast<unsigned long long>(stats.published),
+	    static_cast<unsigned long long>(stats.prepared),
+	    static_cast<unsigned long long>(stats.committed),
+	    static_cast<unsigned long long>(stats.fallback), states[0], states[1], states[2], states[3],
+	    m_stopping.load());
+	std::fflush(stderr);
+}
+
 uint64_t Engine::Publish(const DrawIndexArgs* index_args, const DrawAutoArgs* auto_args,
                          const HW::Context& context, const HW::UserConfig& user_config,
                          const HW::Shader& shaders, const std::function<bool()>& wait_for_space) {
-	if (m_mode == Mode::Off) {
+	if (m_mode == Mode::Off || m_stopping.load(std::memory_order_acquire)) {
 		return UINT64_MAX;
 	}
 
 	while (!WindowHasSpace()) {
+		Trace("publish-backpressure", m_tail.load());
 		if (wait_for_space && !wait_for_space()) {
 			return UINT64_MAX;
 		}
@@ -153,11 +188,13 @@ uint64_t Engine::Publish(const DrawIndexArgs* index_args, const DrawAutoArgs* au
 		}
 	}
 
+	if (m_stopping.load(std::memory_order_acquire)) return UINT64_MAX;
 	const uint64_t pos      = m_tail.fetch_add(1, std::memory_order_acq_rel);
 	const uint32_t slot_idx = static_cast<uint32_t>(pos & m_window_mask);
 	auto&          slot     = m_window[slot_idx];
 
 	while (slot.state.load(std::memory_order_acquire) != SlotState::Free) {
+		if (m_stopping.load(std::memory_order_acquire)) return UINT64_MAX;
 		SpinWaitPause();
 	}
 
@@ -175,7 +212,10 @@ uint64_t Engine::Publish(const DrawIndexArgs* index_args, const DrawAutoArgs* au
 		slot.auto_args = *auto_args;
 	}
 
-	slot.state.store(SlotState::Published, std::memory_order_release);
+	{
+		std::lock_guard lock(m_queue_mutex);
+		slot.state.store(SlotState::Published, std::memory_order_release);
+	}
 	m_stat_published.fetch_add(1, std::memory_order_relaxed);
 	Common::AuditProfiler::RecordDrawPrepPublished();
 
@@ -236,6 +276,9 @@ void Engine::WorkerLoop(uint32_t worker_id) {
 
 void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 	const auto t_start = GetNowNs();
+	// Preparers append resources to value-initialized input info. A recycled slot
+	// must not retain counts, mesh-stage flags or has_programs from its last draw.
+	slot.prepared = {};
 
 	const auto& ctx    = slot.snapshot.context;
 	const auto& sh_ctx = slot.snapshot.shaders;
@@ -251,7 +294,10 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!ComputeDrawTopology(ucfg, topology)) {
 		slot.prepared.valid = false;
-		slot.state.store(SlotState::Ready, std::memory_order_release);
+		{
+			std::lock_guard lock(m_queue_mutex);
+			slot.state.store(SlotState::Ready, std::memory_order_release);
+		}
 		m_ready_cv.notify_all();
 		return;
 	}
@@ -267,10 +313,9 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 		slot.prepared.pixel_active = (sh_ctx.GetPs().ps_regs.data_addr != 0);
 
 		// Pre-populate DrawRenderState properties from snapshot
-		auto& state                      = slot.prepared.render_state;
-		state.ps_active                  = slot.prepared.pixel_active;
-		state.mrt_mask                   = ctx.GetRenderTargetMask();
-		state.vertex_info[0].buffers_num = static_cast<uint32_t>(ucfg.GetPrimType()) == 0 ? 0 : 1;
+		auto& state     = slot.prepared.render_state;
+		state.ps_active = slot.prepared.pixel_active;
+		state.mrt_mask  = ctx.GetRenderTargetMask();
 
 		const bool tess_active = ucfg.GetPrimType() == Prospero::PrimitiveType::kPatch;
 		if (!tess_active && vs_addr != 0 && ShaderHasMappedData(vs_addr)) {
@@ -295,18 +340,35 @@ void Engine::PrepareSlot(Slot& slot, uint32_t /*worker_id*/) {
 	m_stat_prepared.fetch_add(1, std::memory_order_relaxed);
 	Common::AuditProfiler::RecordDrawPrepPrepared();
 
-	slot.state.store(SlotState::Ready, std::memory_order_release);
+	{
+		std::lock_guard lock(m_queue_mutex);
+		slot.state.store(SlotState::Ready, std::memory_order_release);
+	}
 	m_ready_cv.notify_all();
 }
 
-bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
+bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared,
+                             const std::function<void()>& service_pending) {
 	if (m_mode == Mode::Off) {
 		return false;
 	}
 
+	// Only the resolver consumes, strictly in OpStream order. A stale ticket must
+	// never consume a recycled slot or wait forever for an already freed one.
+	if (position != m_head.load(std::memory_order_acquire) ||
+	    position >= m_tail.load(std::memory_order_acquire)) {
+		Trace("invalid-ticket", position);
+		out_prepared = {};
+		return false;
+	}
 	const auto     t_wait_start = GetNowNs();
 	const uint32_t slot_idx     = static_cast<uint32_t>(position & m_window_mask);
 	auto&          slot         = m_window[slot_idx];
+	const auto     state        = slot.state.load(std::memory_order_acquire);
+	if (state == SlotState::Free || slot.position != position) {
+		out_prepared = {};
+		return false;
+	}
 
 	// Bounded spin wait for slot readiness (up to 5 us to prevent thread starvation)
 	constexpr uint64_t max_spin_ns = 5'000;
@@ -323,10 +385,27 @@ bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
 
 	if (!ready) {
 		std::unique_lock lock(m_queue_mutex);
-		m_ready_cv.wait(lock, [&] {
+		const auto       ready_or_stopped = [&] {
 			return slot.state.load(std::memory_order_acquire) == SlotState::Ready ||
 			       m_stopping.load(std::memory_order_relaxed);
-		});
+		};
+		while (!ready_or_stopped()) {
+			// A preparation's guest-memory read can fault on a GPU-owned page and
+			// synchronously request a readback. Do not hold this mutex while the
+			// resolver services that request, or wait only for a Ready notification
+			// that the faulting worker cannot produce until that readback completes.
+			if (service_pending) {
+				lock.unlock();
+				service_pending();
+				lock.lock();
+			}
+			if (ready_or_stopped()) break;
+			m_ready_cv.wait_for(lock,
+			                    service_pending ? std::chrono::milliseconds(1)
+			                                    : std::chrono::milliseconds(250),
+			                    ready_or_stopped);
+			Trace("commit-wait", position);
+		}
 		ready = (slot.state.load(std::memory_order_acquire) == SlotState::Ready);
 	}
 
@@ -352,18 +431,10 @@ bool Engine::CommitPublished(uint64_t position, PreparedDraw& out_prepared) {
 
 	slot.state.store(SlotState::Free, std::memory_order_release);
 
-	auto head = m_head.load(std::memory_order_acquire);
-	while (head < m_tail.load(std::memory_order_acquire)) {
-		const auto idx = static_cast<uint32_t>(head & m_window_mask);
-		if (m_window[idx].state.load(std::memory_order_acquire) == SlotState::Free) {
-			if (m_head.compare_exchange_strong(head, head + 1, std::memory_order_acq_rel)) {
-				// Advanced head by 1, recheck next slot
-				head = head + 1;
-			}
-		} else {
-			break;
-		}
-	}
+	// A producer may already have reserved the next tail position while its state
+	// is still Free. Scanning Free slots would skip that unpublished live ticket.
+	// Commit consumes exactly one FIFO position, never future reservations.
+	m_head.store(position + 1, std::memory_order_release);
 	return success;
 }
 

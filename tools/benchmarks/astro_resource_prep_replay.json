@@ -1,0 +1,126 @@
+[
+  {
+    "at_ms": 0,
+    "action": "resource_prep_reuse",
+    "enabled": false
+  },
+  {
+    "at_ms": 45000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 48000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 65000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 68000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 110000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 110500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 112000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 112500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 114000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 114500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 118000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 121000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 130000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 130500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 145000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 148000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 156000,
+    "action": "capture",
+    "label": "landing"
+  },
+  {
+    "at_ms": 260000,
+    "action": "capture",
+    "label": "control1"
+  },
+  {
+    "at_ms": 305000,
+    "action": "resource_prep_reuse",
+    "enabled": true
+  },
+  {
+    "at_ms": 310000,
+    "action": "capture",
+    "label": "candidate1"
+  },
+  {
+    "at_ms": 355000,
+    "action": "capture",
+    "label": "candidate2"
+  },
+  {
+    "at_ms": 400000,
+    "action": "resource_prep_reuse",
+    "enabled": false
+  },
+  {
+    "at_ms": 405000,
+    "action": "capture",
+    "label": "control2"
+  },
+  {
+    "at_ms": 450000,
+    "action": "quit"
+  }
+]

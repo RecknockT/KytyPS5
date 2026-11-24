@@ -74,7 +74,8 @@ public:
 	                               const std::function<bool()>& wait_for_space);
 
 	// Resolver execution
-	[[nodiscard]] bool     CommitPublished(uint64_t position, PreparedDraw& out_prepared);
+	[[nodiscard]] bool     CommitPublished(uint64_t position, PreparedDraw& out_prepared,
+	                                       const std::function<void()>& service_pending = {});
 	void                   Drain();
 	[[nodiscard]] uint32_t GetQueueDepth() const noexcept {
 		const auto head = m_head.load(std::memory_order_acquire);
@@ -93,6 +94,7 @@ public:
 	[[nodiscard]] Stats GetStats() const noexcept;
 
 private:
+	void Trace(const char* phase, uint64_t position) const;
 	void WorkerLoop(uint32_t worker_id);
 	void PrepareSlot(Slot& slot, uint32_t worker_id);
 

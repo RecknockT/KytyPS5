@@ -5,7 +5,7 @@
 QString Configuration::NormalizeResolution(const QString& text) {
 	// Older settings stored the enum key, e.g. "R1920X1080".
 	static const QRegularExpression re(QStringLiteral("^\\s*R?(\\d+)\\s*[xX]\\s*(\\d+)\\s*$"));
-	const auto match = re.match(text);
+	const auto                      match = re.match(text);
 	if (!match.hasMatch()) {
 		return {};
 	}
@@ -41,6 +41,7 @@ QVariantMap Configuration::GameSettings() const {
 	KYTY_CFG_SET(relaxed_shader_float);
 	KYTY_CFG_SET(native_rt);
 	KYTY_CFG_SET(shader_cache_enabled);
+	KYTY_CFG_SET(gpu_submit_cadence_enabled);
 	KYTY_CFG_SET(trophy_enabled);
 	KYTY_CFG_SET(trophy_duration_seconds);
 	KYTY_CFG_SET(perf_overlay_enabled);
@@ -78,13 +79,13 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 #define KYTY_CFG_GET(n) n = s.value(QStringLiteral(#n)).template value<decltype(n)>()
 	const auto resolution = NormalizeResolution(s.value("screen_resolution").toString());
 	screen_resolution     = resolution.isEmpty() ? QStringLiteral("1280x720") : resolution;
-	user_name          = s.value("user_name", user_name).toString();
-	bool user_id_ok    = false;
-	auto saved_user_id = s.value("user_id", user_id).toInt(&user_id_ok);
-	user_id            = user_id_ok && Config::IsConfiguredUserIdValid(saved_user_id)
-	                         ? saved_user_id
-	                         : Config::DEFAULT_USER_ID;
-	audio_input_device = s.value("audio_input_device", audio_input_device).toString();
+	user_name             = s.value("user_name", user_name).toString();
+	bool user_id_ok       = false;
+	auto saved_user_id    = s.value("user_id", user_id).toInt(&user_id_ok);
+	user_id               = user_id_ok && Config::IsConfiguredUserIdValid(saved_user_id)
+	                            ? saved_user_id
+	                            : Config::DEFAULT_USER_ID;
+	audio_input_device    = s.value("audio_input_device", audio_input_device).toString();
 	KYTY_CFG_GET(present_mode);
 	gpu_index = s.value("gpu_index", -1).toInt();
 	if (EnumToText(present_mode).isEmpty()) {
@@ -104,7 +105,9 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 	KYTY_CFG_GET(relaxed_shader_float);
 	KYTY_CFG_GET(native_rt);
 	shader_cache_enabled = s.value("shader_cache_enabled", shader_cache_enabled).toBool();
-	trophy_enabled       = s.value("trophy_enabled", trophy_enabled).toBool();
+	gpu_submit_cadence_enabled =
+	    s.value("gpu_submit_cadence_enabled", gpu_submit_cadence_enabled).toBool();
+	trophy_enabled = s.value("trophy_enabled", trophy_enabled).toBool();
 	KYTY_CFG_GET(trophy_duration_seconds);
 	KYTY_CFG_GET(perf_overlay_enabled);
 	KYTY_CFG_GET(skip_notice_screen);
@@ -174,8 +177,8 @@ bool Configuration::SetGameSettings(const QJsonObject& settings, QString& error)
 			return fail(tr("Game setting %1 must be a string.").arg(it.key()));
 		}
 		const auto value = it.value().toString();
-		values.insert(it.key(), it.key() == "screen_resolution" ? NormalizeResolution(value)
-		                                                       : value);
+		values.insert(it.key(),
+		              it.key() == "screen_resolution" ? NormalizeResolution(value) : value);
 	}
 
 	ReadGameSettingsValues(values);

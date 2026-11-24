@@ -38,14 +38,14 @@ struct ResourceSpecialization {
 	};
 
 	struct Sampler {
-		uint32_t indirect_root = SamplerResource::NoIndirectSampler;
-		uint32_t indirect_mapping_offset = 0;
-		uint32_t indirect_search_iterations = 0;
-		bool operator==(const Sampler&) const = default;
+		uint32_t indirect_root                    = SamplerResource::NoIndirectSampler;
+		uint32_t indirect_mapping_offset          = 0;
+		uint32_t indirect_search_iterations       = 0;
+		bool     operator==(const Sampler&) const = default;
 	};
 
-	std::vector<Buffer> buffers;
-	std::vector<Image>  images;
+	std::vector<Buffer>  buffers;
+	std::vector<Image>   images;
 	std::vector<Sampler> samplers;
 
 	bool operator==(const ResourceSpecialization&) const = default;
@@ -61,8 +61,19 @@ std::vector<uint8_t> SaveResourcePlan(const ResourcePlan& plan);
 bool                 LoadResourcePlan(std::span<const uint8_t> bytes, ResourcePlan& plan);
 
 // Refreshes cached resources and specialization in place. A failed refresh must not be used.
+// For one immutable plan. Guest reads and the walker still run before every comparison.
+struct ResourceMaterializationCache {
+	const ResourcePlan*          plan     = nullptr;
+	const void*                  walker   = nullptr;
+	bool                         eligible = false, valid = false, last_hit = false;
+	std::vector<uint64_t>        walked;
+	std::vector<DescriptorValue> buffers, images, samplers;
+	ResourceSpecialization       specialization;
+};
+
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
-                          ResourceSnapshot& snapshot, ResourceSpecialization& specialization);
+                          ResourceSnapshot& snapshot, ResourceSpecialization& specialization,
+                          ResourceMaterializationCache* cache = nullptr);
 
 // Applies an already-derived specialization to native IR before layout and emission.
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization);

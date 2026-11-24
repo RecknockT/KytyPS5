@@ -1,0 +1,148 @@
+[
+  {
+    "at_ms": 0,
+    "action": "read_buffer_reuse",
+    "enabled": false
+  },
+  {
+    "at_ms": 45000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 48000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 95000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 98000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 100000,
+    "action": "wait_file",
+    "label": "worldmap_ready",
+    "confirm": true
+  },
+  {
+    "at_ms": 102000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 102500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 104000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 104500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 106000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 106500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 107000,
+    "action": "capture",
+    "label": "galaxy_load"
+  },
+  {
+    "at_ms": 150000,
+    "action": "wait_file",
+    "label": "galaxy_loaded"
+  },
+  {
+    "at_ms": 152000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 157000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 187000,
+    "action": "down",
+    "key": "W"
+  },
+  {
+    "at_ms": 187500,
+    "action": "up",
+    "key": "W"
+  },
+  {
+    "at_ms": 202000,
+    "action": "down",
+    "key": "J"
+  },
+  {
+    "at_ms": 207000,
+    "action": "up",
+    "key": "J"
+  },
+  {
+    "at_ms": 210000,
+    "action": "wait_file",
+    "label": "sky_garden_started",
+    "confirm": true
+  },
+  {
+    "at_ms": 215000,
+    "action": "capture",
+    "label": "landing"
+  },
+  {
+    "at_ms": 370000,
+    "action": "capture",
+    "label": "control1"
+  },
+  {
+    "at_ms": 415000,
+    "action": "read_buffer_reuse",
+    "enabled": true
+  },
+  {
+    "at_ms": 420000,
+    "action": "capture",
+    "label": "candidate1"
+  },
+  {
+    "at_ms": 465000,
+    "action": "capture",
+    "label": "candidate2"
+  },
+  {
+    "at_ms": 510000,
+    "action": "read_buffer_reuse",
+    "enabled": false
+  },
+  {
+    "at_ms": 515000,
+    "action": "capture",
+    "label": "control2"
+  },
+  {
+    "at_ms": 560000,
+    "action": "quit"
+  }
+]

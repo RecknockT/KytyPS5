@@ -157,8 +157,10 @@ public:
 	[[nodiscard]] bool IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
 private:
-	void ProcessPm4(Pm4Execution& execution);
-	void SuspendPm4();
+	void                   ProcessPm4(Pm4Execution& execution);
+	[[nodiscard]] uint32_t CaptureSnapshot();
+	[[nodiscard]] bool     SequenceSync(uint32_t action);
+	void                   SuspendPm4();
 	/// Submits the current command buffer when the submit cadence says the GPU should start on
 	/// the work recorded so far.
 	void              FlushForCadence();
@@ -173,11 +175,13 @@ private:
 	std::optional<HW::Context> m_saved_ctx;
 	HW::UserConfig             m_ucfg;
 	HW::Shader                 m_sh_ctx;
-	uint32_t                   m_index_type_and_size              = 0;
-	uint32_t                   m_index_buffer_size                = 0;
-	uint64_t                   m_index_base_addr                  = 0;
-	uint64_t                   m_draw_indirect_args_base_addr     = 0;
-	uint64_t                   m_dispatch_indirect_args_base_addr = 0;
+	// Owned exclusively by the GPU resolver, never by the PM4 producer.
+	CpSeq::RegisterState m_resolver_registers;
+	uint32_t             m_index_type_and_size              = 0;
+	uint32_t             m_index_buffer_size                = 0;
+	uint64_t             m_index_base_addr                  = 0;
+	uint64_t             m_draw_indirect_args_base_addr     = 0;
+	uint64_t             m_dispatch_indirect_args_base_addr = 0;
 	// Persistent draw state. Indirect draws leave the address of their last instance count,
 	// read only when a later draw inherits it.
 	uint32_t m_num_instances      = 1;

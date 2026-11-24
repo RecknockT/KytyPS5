@@ -4,6 +4,7 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <algorithm>
 #include <chrono>
@@ -87,7 +88,7 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics,
                                    bool submit_cadence, std::chrono::microseconds cadence_interval)
     : m_master(graphics), m_context(context), m_graphics(graphics),
-      m_command_pool(graphics, m_master), m_command(*this),
+      m_command_pool(graphics, m_master), m_command(*this), m_effect_profiler(graphics),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }),
       m_cadence(submit_cadence, cadence_interval) {}
 
@@ -121,6 +122,7 @@ void CommandScheduler::Shutdown() {
 	}
 	m_master.Wait(CurrentTick() - 1, Common::AuditProfiler::GpuWaitReason::CommandSchedulerDrain);
 	PopPendingOperations();
+	m_effect_profiler.Finish(CurrentTick() - 1);
 	DrainPriorityOperations();
 	m_priority_thread.request_stop();
 	m_operation_available.notify_all();
@@ -238,6 +240,18 @@ void CommandScheduler::PopPendingOperations() {
 }
 
 void CommandScheduler::StartOperation() {
+	Config::ApplyBindingReuseMode();
+	Config::ApplyTileLayoutCacheMode();
+	Config::ApplyResourcePrepReuseMode();
+	Config::ApplyReadBufferReuseMode();
+	Config::ApplyCompactImageReadbackMode();
+	if (&m_context.GetCommandScheduler() == this) {
+		if (const auto mode = Config::ApplySubmitCadenceMode()) {
+			m_cadence = SubmitCadence(
+			    *mode, std::chrono::microseconds(Config::GetGpuSubmitCadenceIntervalUs()));
+			if (m_has_recorded_work) m_cadence.NoteWork();
+		}
+	}
 	{
 		std::lock_guard lock(m_operation_mutex);
 		SealReleasesLocked();
@@ -426,6 +440,8 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	EXIT_IF(!m_command.IsInvalid());
 	m_command.m_buffer = m_command_pool.Commit();
 	m_command.Begin();
+	if (&m_context.GetCommandScheduler() == this)
+		m_effect_profiler.BeginCommand(m_command.Handle(), CurrentTick(), m_master.KnownGpuTick());
 	m_dynamic_state.Invalidate();
 	m_has_recorded_work = false;
 	// Any submit starts a new command buffer, so the cadence counts again from its first draw.
@@ -456,6 +472,8 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::Subm
 	{
 		Common::AuditProfiler::ScopedStageTimer end_timer(
 		    Common::AuditProfiler::PipelineStage::CommandEnd);
+		m_command.EndRendering();
+		m_effect_profiler.EndCommand(m_command.Handle());
 		m_command.End();
 	}
 	const auto buffer   = m_command.m_buffer;

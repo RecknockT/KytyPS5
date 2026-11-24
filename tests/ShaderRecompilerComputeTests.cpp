@@ -1,4 +1,7 @@
+#include "graphics/host_gpu/renderer/image/tileLayoutCache.h"
 #define SPV_ENABLE_UTILITY_CODE
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 #include "SrtWalkerTestMemory.h"
 #include "common/assert.h"
@@ -72,6 +75,7 @@
 #include "loader/symbolDatabase.h"
 #include "spirv-tools/libspirv.hpp"
 #include <vulkan/vulkan_format_traits.hpp>
+#include <vk_mem_alloc.h>
 
 #if __has_include("graphics/host_gpu/renderer/renderTargetBarriers.h")
 #error "legacy render-target barrier API must remain deleted"
@@ -365,6 +369,9 @@ struct RenderContextTestAccess {
 };
 
 struct StreamBufferTestAccess {
+  static void ForceNextWrap(StreamBuffer &buffer) {
+    buffer.m_offset = buffer.Size();
+  }
   static bool NormalizeReservation(bool coherent, uint64_t atom, uint64_t &size,
                                    uint64_t &alignment) {
     return StreamBuffer::NormalizeReservation(coherent, atom, size, alignment);
@@ -400,6 +407,15 @@ struct ImageTestAccess {
 };
 
 struct TileManagerTestAccess {
+  static Buffer& Scratch(TileManager& manager, size_t index) { return *manager.m_scratch[index]; }
+  static void AgeLastUse(TileManager& manager, size_t index) {
+    manager.m_scratch_use[index].last_used_ms = 0;
+  }
+  static void LowDemandWindow(TileManager& manager, size_t index, uint64_t peak) {
+    manager.m_scratch_use[index].window_start_ms = 1;
+    manager.m_scratch_use[index].window_peak = peak;
+  }
+
   struct RegionRecordSummary {
     uint32_t total = 0;
     uint32_t window_start = 0;
@@ -687,6 +703,21 @@ struct TextureCacheTestAccess {
 };
 
 struct RenderExecutorTestAccess {
+  static PreparedBindings &BindingReuseStage(RenderExecutor &executor) {
+    return executor.m_graphics_bindings.vertex[0];
+  }
+  static void PrepareBindingReuse(RenderExecutor &executor,
+                                  const ShaderStageRuntime &runtime,
+                                  PreparedBindings &prepared) {
+    executor.ResetBindings();
+    executor.PrepareBindings(runtime, prepared);
+    std::array<PreparedBindings *, 1> stages{&prepared};
+    executor.FindBuffers(stages);
+  }
+  static void RebindBindingReuse(RenderExecutor &executor,
+                                 PreparedBindings &prepared) {
+    executor.RebindBuffers(prepared);
+  }
   static bool DrawIndex(RenderExecutor &executor, CommandBuffer &command,
                         const DrawIndexArgs &args) {
     return executor.DrawIndex(command, args);
@@ -1721,6 +1752,51 @@ SubmitCadence MakeTestCadence(bool enabled, SubmitCadence::Clock::duration inter
 }
 
 // The lag is the submitted but unfinished ticks, and it saturates instead of wrapping.
+void CheckTileLayoutCache() {
+  constexpr const char* name="TileLayoutCache";
+  TileLayoutCache cache;
+  const auto layout_key=[](const TileSurfaceLayout& l) {
+    const auto& b=l.texture.block;
+    return std::tuple{b.family,b.bytes_per_element,b.block_size,b.block_width,b.block_height,
+      b.block_depth,l.texture.texel_width,l.texture.texel_height,l.first_tail_level,
+      l.block_slice_size,l.total_size};
+  };
+  const auto check=[&](const TileSurfaceDescription& description) {
+    std::array<TileMipLayout,16> expected{}, actual{};
+    for (auto& mip:expected) mip.offset=UINT64_MAX;
+    actual=expected;
+    TileSurfaceLayout reference{},cached{};
+    const auto valid=TileGetTiledTextureLayout(description,reference,expected.data());
+    bool hit=false;
+    Require(name,"cold layout",cache.Get(description,cached,actual.data(),&hit)==valid &&
+        layout_key(reference)==layout_key(cached) && expected==actual,"cached and direct layouts differ");
+    actual.fill({});
+    for (auto& mip:actual) mip.offset=UINT64_MAX;
+    cached={};
+    Require(name,"repeat and tail preservation",cache.Get(description,cached,actual.data(),&hit)==valid &&
+        hit==valid && layout_key(reference)==layout_key(cached) && expected==actual,
+        "repeat returned a stale layout or overwrote unused mip records");
+  };
+  for (auto format: {Prospero::BufferFormat::k8_8_8_8UNorm,Prospero::BufferFormat::kBc1UNorm,
+                     Prospero::BufferFormat::kBc3Srgb,Prospero::BufferFormat::k32UInt}) {
+    for (auto tile: {Prospero::TileMode::kStandard256B,Prospero::TileMode::kStandard4KB,
+                    Prospero::TileMode::kStandard64KB,Prospero::TileMode::kPrt}) {
+      for (auto levels: {1u,3u,7u,10u}) {
+        for (auto layers: {1u,3u,6u}) check({format,tile,TileSurfaceDimension::Dim2D,513,257,1,levels,layers});
+        check({format,tile,TileSurfaceDimension::Dim3D,129,65,17,levels,1});
+      }
+    }
+  }
+  // Exceed capacity and vary each complete key, including layout tails and array/volume state.
+  for (uint32_t i=0;i<512;++i) check({Prospero::BufferFormat::k8_8_8_8UNorm,
+      Prospero::TileMode::kStandard64KB,TileSurfaceDimension::Dim2D,17+i,19+i*2,1,1+i%8,1+i%7});
+  for (auto levels: {0u,17u}) check({Prospero::BufferFormat::k8_8_8_8UNorm,
+      Prospero::TileMode::kStandard64KB,TileSurfaceDimension::Dim2D,512,512,1,levels,1});
+  check({Prospero::BufferFormat::k8_8_8_8UNorm,Prospero::TileMode::kStandard64KB,
+      TileSurfaceDimension::Dim3D,512,512,16,5,2});
+  std::printf("TileLayoutCache: full-key variants, eviction, invalid inputs and mip tails passed\n");
+}
+
 void CheckSubmitCadenceLagMath() {
   constexpr const char *name = "SubmitCadence";
   using Access = CommandSchedulerTestAccess;
@@ -3145,6 +3221,690 @@ public:
     m_device.destroyPipelineLayout(pipeline_layout, nullptr);
     m_device.destroyDescriptorSetLayout(layout, nullptr);
     std::printf("[host]    %-32s ok\n", "DescriptorHeapLargeSet");
+  }
+
+  void CheckCadenceRuntime() {
+    constexpr const char* name="CadenceRuntime";
+    EnsureRuntimeContext();
+    Config::ConfigOptions options; options.printf_direction=Config::LogDirection::Silent;
+    Config::Load(options);
+    {
+      RenderContext context(m_runtime_context);
+      auto& scheduler=context.GetCommandScheduler();
+      HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+      scheduler.Begin(registers,user_config,shaders);
+      const auto tick=scheduler.CurrentTick();
+      const auto handle=scheduler.Current().Handle();
+      for (bool mode: {true,false,true,false}) {
+        Config::RequestSubmitCadenceMode(mode);
+        scheduler.StartOperation();
+        Require(name,"policy and reporting agree",
+            CommandSchedulerTestAccess::CadenceEnabled(scheduler)==mode &&
+            Config::GpuSubmitCadenceEnabled()==mode,"runtime mode did not reach the renderer");
+        Require(name,"no forced submit",scheduler.CurrentTick()==tick &&
+            scheduler.Current().Handle()==handle,"changing policy submitted or replaced the command buffer");
+      }
+      scheduler.Finish();
+    }
+    Config::Load(options);
+    std::printf("CadenceRuntime: mode changes at operation boundaries without forced submits passed\n");
+  }
+
+  void CheckEffectProfiler() {
+    constexpr const char* name="EffectProfiler";
+    EnsureRuntimeContext();
+    Require(name,"timestamp wrap",EffectProfiler::TimestampDelta(0xfffffff0, 0x10, 32)==32 &&
+        EffectProfiler::TimestampDelta(UINT64_MAX-3, 5, 64)==9 &&
+        EffectProfiler::TimestampDelta(5, 8, 0)==0,"modular timestamp arithmetic failed");
+    auto directory=std::filesystem::temp_directory_path()/
+        ("kyty_effect_profile_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    const auto old_path=Common::AuditProfiler::GetExportPath();
+    Common::AuditProfiler::SetExportPath((directory/"audit.json").string());
+    Config::ConfigOptions options;
+    options.printf_direction=Config::LogDirection::Silent;
+    options.effect_profile_enabled=true;
+    Config::Load(options);
+    {
+      RenderContext context(m_runtime_context);
+      auto& scheduler=context.GetCommandScheduler();
+      HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+      scheduler.Begin(registers,user_config,shaders);
+      Libs::Graphics::Buffer scratch(m_runtime_context,scheduler,MemoryUsage::DeviceLocal,0,AllFlags,4096);
+      auto& profiler=scheduler.GetEffectProfiler();
+      Require(name,"enabled",profiler.Enabled(),"profiler did not initialize");
+      for (uint32_t i=0;i<80;++i) {
+        auto command=scheduler.Current().Handle();
+        {
+          EffectProfiler::CpuScope scope(profiler);
+          scope.Identify({0x1234,0,1,0}); scope.Prepared();
+          { EffectProfiler::ReadbackScope readback; }
+          { EffectProfiler::SectionScope section(EffectProfiler::Section::Programs); }
+          auto sample=profiler.BeginSample(command,{0x1234,0,1,0});
+          command.fillBuffer(scratch.Handle(),0,4096,i);
+          profiler.EndSample(command,sample);
+        }
+        scheduler.NoteRecordedWork(); scheduler.Finish();
+      }
+      scheduler.Shutdown();
+    }
+    std::ifstream input(directory/"effects.jsonl");
+    std::string line; nlohmann::json final;
+    while (std::getline(input,line)) final=nlohmann::json::parse(line);
+    Require(name,"cpu accounting",final["rows"].size()==1 && final["rows"][0]["calls"]==80 &&
+        final["rows"][0]["cpu_ns"].get<uint64_t>()>0 && final["rows"][0]["readback_count"]==80 && final["rows"][0]["sections_ns"].contains("programs"),"CPU samples were lost");
+    if (final["timestamp_bits"].get<uint32_t>()>0) {
+      Require(name,"gpu pool recycling",final["rows"][0]["gpu_samples"]==80 &&
+          final["rows"][0]["gpu_sample_ns"].get<uint64_t>()>0 && final["dropped"]==0,
+          "GPU results lost, overwritten, or invalid after recycling query pools");
+    }
+    Config::Load({}); Common::AuditProfiler::SetExportPath(old_path);
+    input.close();
+    std::filesystem::remove_all(directory);
+    std::printf("EffectProfiler: timestamp wrap, GPU queries and 80 recycled batches passed\n");
+  }
+
+  void CheckScratchMemoryTrim() {
+    constexpr const char* name = "ScratchMemoryTrim";
+    constexpr uint64_t MiB = 1ull << 20;
+    EnsureRuntimeContext();
+    for (bool enabled : {false, true}) {
+      Config::ConfigOptions options;
+      options.printf_direction = Config::LogDirection::Silent;
+      options.trim_scratch_memory_enabled = enabled;
+      options.perf_overlay_enabled = true;
+      Config::Load(options);
+      RenderContext context(m_runtime_context);
+      auto& scheduler = context.GetCommandScheduler();
+      HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+      scheduler.Begin(registers, user_config, shaders);
+      auto& manager = TextureCacheTestAccess::Tiler(context.GetTextureCache());
+      using Counter = Common::DebugCounters::Counter;
+      const auto freed_before = Common::DebugCounters::Get(Counter::ScratchFreedBytes);
+      auto first = manager.GetScratchBuffer(16 * MiB);
+      auto second = manager.GetScratchBuffer(8 * MiB, first.buffer);
+      Require(name, "two slots", first.buffer != second.buffer && manager.RetainedScratchBytes() == 24 * MiB,
+              "ping-pong scratch slots alias or have incorrect capacities");
+      // The input slot is live even when only the opposite slot is acquired.
+      TileManagerTestAccess::AgeLastUse(manager, 0);
+      TileManagerTestAccess::AgeLastUse(manager, 1);
+      (void)manager.GetScratchBuffer(MiB, first.buffer);
+      manager.TrimScratchBuffers();
+      Require(name, "live input protected", manager.RetainedScratchBytes() == 24 * MiB,
+              "recently used input/output was retired");
+      Libs::Graphics::Buffer readback(m_runtime_context, scheduler, MemoryUsage::Download, 0,
+                      vk::BufferUsageFlagBits::eTransferDst, 8);
+      TileManagerTestAccess::Scratch(manager, 0).Fill(0, 4, 0x12345678u);
+      TileManagerTestAccess::Scratch(manager, 1).Fill(0, 4, 0x87654321u);
+      readback.CopyFrom(scheduler.Current(), TileManagerTestAccess::Scratch(manager, 0), 0, 0, 4);
+      readback.CopyFrom(scheduler.Current(), TileManagerTestAccess::Scratch(manager, 1), 0, 4, 4);
+      VmaTotalStatistics before{};
+      vmaCalculateStatistics(m_runtime_context.allocator, &before);
+      const auto retained_before = manager.RetainedScratchBytes();
+      TileManagerTestAccess::LowDemandWindow(manager, 1, MiB);
+      auto small = manager.GetScratchBuffer(MiB, first.buffer);
+      Require(name, "sustained low demand", TileManagerTestAccess::Scratch(manager, 1).Size() ==
+                  (enabled ? MiB : 8 * MiB), "oversized slot did not follow the selected mode");
+      Require(name, "input not replaced", manager.GetScratchBuffer(MiB, small.buffer).buffer == first.buffer,
+              "shrinking the other slot replaced its source");
+      const auto allocations = Common::DebugCounters::Get(Counter::ScratchAllocations);
+      for (int i = 0; i < 12; ++i) (void)manager.GetScratchBuffer(MiB, first.buffer);
+      Require(name, "no allocation churn", Common::DebugCounters::Get(Counter::ScratchAllocations) == allocations,
+              "repeated small requests churn allocations");
+      TileManagerTestAccess::AgeLastUse(manager, 0);
+      TileManagerTestAccess::AgeLastUse(manager, 1);
+      manager.TrimScratchBuffers();
+      const auto retained_after = manager.RetainedScratchBytes();
+      Require(name, "idle trim", retained_after == (enabled ? 0 : 24 * MiB),
+              "idle slots did not follow the selected mode");
+      Require(name, "deferred lifetime", Common::DebugCounters::Get(Counter::ScratchFreedBytes) == freed_before,
+              "allocation was destroyed before recorded GPU work completed");
+      scheduler.Finish(); scheduler.DrainPriorityOperations();
+      readback.Invalidate(0, 8);
+      std::array<uint32_t, 2> actual{};
+      std::memcpy(actual.data(), readback.Mapped().data(), 8);
+      Require(name, "in-flight contents", actual == std::array{0x12345678u, 0x87654321u},
+              "trim destroyed data still needed by the GPU");
+      VmaTotalStatistics after{};
+      vmaCalculateStatistics(m_runtime_context.allocator, &after);
+      Require(name, "live allocation reduction",
+              before.total.statistics.allocationBytes - after.total.statistics.allocationBytes ==
+                  (enabled ? 24 * MiB : 0), "VMA live allocation bytes did not fall as expected");
+      if (enabled) Require(name, "backing allocation returned",
+          before.total.statistics.blockBytes >= after.total.statistics.blockBytes + 24 * MiB,
+          "VMA kept the freed large scratch in reserved blocks");
+      const auto freed = Common::DebugCounters::Get(Counter::ScratchFreedBytes) - freed_before;
+      Require(name, "actual destruction counter", freed == (enabled ? 25 * MiB : 0),
+              "freed-byte counter did not reflect completed destructions");
+      std::printf("[memory] trim=%d retained_before=%llu retained_after=%llu vma_before=%llu vma_after=%llu block_before=%llu block_after=%llu freed=%llu\n",
+          int(enabled), static_cast<unsigned long long>(retained_before), static_cast<unsigned long long>(retained_after),
+          static_cast<unsigned long long>(before.total.statistics.allocationBytes), static_cast<unsigned long long>(after.total.statistics.allocationBytes),
+          static_cast<unsigned long long>(before.total.statistics.blockBytes), static_cast<unsigned long long>(after.total.statistics.blockBytes),
+          static_cast<unsigned long long>(freed));
+      auto grown = manager.GetScratchBuffer(32 * MiB);
+      Require(name, "regrowth", grown.buffer != nullptr && grown.size == 32 * MiB &&
+          TileManagerTestAccess::Scratch(manager, 0).Size() >= grown.size, "trimmed pool could not grow again");
+      TileManagerTestAccess::Scratch(manager, 0).Fill(0, 4, 0x42u);
+      readback.CopyFrom(scheduler.Current(), TileManagerTestAccess::Scratch(manager, 0), 0, 0, 4);
+      scheduler.Finish(); readback.Invalidate(0, 4);
+      uint32_t value = 0; std::memcpy(&value, readback.Mapped().data(), 4);
+      Require(name, "regrowth data", value == 0x42u, "regrown scratch lost its data");
+    }
+    Config::Load({.printf_direction = Config::LogDirection::Silent});
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
+  void CheckCompactImageReadback() {
+    constexpr const char *name = "CompactImageReadback";
+    constexpr uintptr_t base = 0x0000000206000000ull;
+    constexpr uint64_t size = 0x800000, reservation = 0x100000;
+    constexpr uint32_t sentinel = 0x11223344u, painted = 0xaabbccddu, padding_write = 0x98765432u;
+    EnsureRuntimeContext();
+    int64_t physical = -1;
+    void *mapped = reinterpret_cast<void *>(base);
+    Require(name, "allocate/map", LibKernel::Memory::KernelAllocateDirectMemory(
+        0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size, 0, &physical) == 0 &&
+        LibKernel::Memory::KernelMapDirectMemory(&mapped, size, 0x3, 0x10, physical, size) == 0,
+        "allocation failed");
+    Require(name, "backing coverage", LibKernel::Memory::IsRangeBacked(base, size),
+            "mapped backing was not found");
+    for (bool enabled : {false, true}) {
+      Config::ConfigOptions options;
+      options.printf_direction = Config::LogDirection::Silent;
+      options.perf_overlay_enabled = true;
+      options.compact_image_readback_enabled = enabled;
+      options.readback_storage_images = true;
+      Config::Load(options);
+      RenderContext context(m_runtime_context);
+      context.InitializeGpu(nullptr);
+      context.GetGpu().SendCommandSync([&] {
+        auto &scheduler = context.GetCommandScheduler();
+        HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+        scheduler.Begin(registers, user_config, shaders);
+        context.MapMemory(base, size);
+        auto &cache = context.GetTextureCache();
+        using Counter = Common::DebugCounters::Counter;
+        for (uint32_t slot = 0; slot < 2; ++slot) {
+          const uint32_t width = slot == 0 ? 256 : 255;
+          const uint64_t address = base + reservation * slot;
+          std::vector<uint32_t> initial(reservation / 4, sentinel);
+          LibKernel::Memory::WriteBacking(address, initial.data(), reservation);
+          auto desc = MakeLinearDesc(address, reservation, vk::Format::eR32Uint,
+              Prospero::BufferFormat::k32UInt, Prospero::ImageType::kColor2D,
+              {width, 128, 1}, 1, 4, 1);
+          desc.info.pitch = 256;
+          desc.info.UpdateSize();
+          const auto plan = CompactLinearReadbackSize(desc.info);
+          Require(name, "layout selection", slot == 0 ? plan == 256u * 128u * 4u : !plan,
+                  "packed/padded row eligibility incorrect");
+          if (slot == 0) {
+            auto bad = desc.info; bad.resources.levels = 2;
+            Require(name, "mip fallback", !CompactLinearReadbackSize(bad), "mip chain accepted");
+            bad = desc.info; bad.resources.layers = 2;
+            Require(name, "array fallback", !CompactLinearReadbackSize(bad), "array accepted");
+            bad = desc.info; bad.metadata.kind = ImageMetadataKind::Dcc;
+            Require(name, "metadata fallback", !CompactLinearReadbackSize(bad), "metadata accepted");
+            bad = desc.info; bad.bgra16 = true;
+            Require(name, "conversion fallback", !CompactLinearReadbackSize(bad), "conversion accepted");
+            bad = desc.info; bad.data.size = 4;
+            Require(name, "bounds fallback", !CompactLinearReadbackSize(bad), "undersized reservation accepted");
+            bad = desc.info; bad.pixel_format = vk::Format::eR32G32B32A32Sfloat;
+            Require(name, "format size fallback", !CompactLinearReadbackSize(bad), "different host byte size accepted");
+            bad = desc.info; bad.samples = 4;
+            Require(name, "MSAA fallback", !CompactLinearReadbackSize(bad), "multisample accepted");
+            bad = desc.info; bad.tile_mode = Prospero::TileMode::kRenderTarget;
+            Require(name, "tiled fallback", !CompactLinearReadbackSize(bad), "tiled image accepted");
+          }
+          const auto image = cache.FindImage(desc);
+          vk::ClearValue color{}; color.color.uint32 = std::array{painted, 0u, 0u, 0u};
+          TextureCacheTestAccess::ClearImage(cache, scheduler.Current(), image,
+              {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, color);
+          const auto before = Common::DebugCounters::Get(Counter::CompactReadbackCopies);
+          const auto avoided = Common::DebugCounters::Get(Counter::ReadbackPrefillAvoidedBytes);
+          const auto saved = Common::DebugCounters::Get(Counter::ReadbackStagingSavedBytes);
+          Require(name, "download", TextureCacheTestAccess::TryDownload(cache, image),
+                  "readback was refused");
+          // This tail is not a GPU texel. A later CPU write must survive compact publication.
+          if (enabled && slot == 0)
+            LibKernel::Memory::WriteBacking(address + reservation - 4, &padding_write, 4);
+          Require(name, "pending storage trap", cache.WriteBackTick(address, 1) != 0,
+                  "required readback did not trap its guest range");
+          scheduler.Finish(); scheduler.DrainPriorityOperations();
+          Require(name, "released storage trap", cache.WriteBackTick(address, 1) == 0,
+                  "storage readback left its guest range blocked");
+          std::vector<uint32_t> actual(initial.size());
+          Require(name, "read backing", LibKernel::Memory::TryReadBacking(address, actual.data(), reservation),
+                  "backing read failed");
+          const auto pitch = desc.info.LinearLayout().mips[0].pitch;
+          for (uint32_t row = 0; row < 128; ++row) {
+            for (uint32_t col = 0; col < 256; ++col) {
+              Require(name, "texels and row padding", actual[row * pitch + col] ==
+                      (col < width ? painted : sentinel), "pixels or padding changed");
+            }
+          }
+          const bool compact = enabled && slot == 0;
+          for (size_t index = 256 * 128; index < actual.size(); ++index)
+            Require(name, "tail padding", actual[index] ==
+                (compact && index + 1 == actual.size() ? padding_write : sentinel),
+                "unrelated bytes were overwritten");
+          Require(name, "mode and counters",
+              Common::DebugCounters::Get(Counter::CompactReadbackCopies) - before == uint64_t(compact) &&
+              Common::DebugCounters::Get(Counter::ReadbackPrefillAvoidedBytes) - avoided ==
+                  (compact ? reservation : 0) &&
+              Common::DebugCounters::Get(Counter::ReadbackStagingSavedBytes) - saved ==
+                  (compact ? reservation - *plan : 0), "wrong compact counters");
+          cache.GetImage(image).MarkCpuDirty();
+          Require(name, "CPU dirty refusal", !TextureCacheTestAccess::TryDownload(cache, image),
+                  "CPU-dirty image was downloaded");
+        }
+        if (enabled && std::getenv("KYTY_COMPACT_READBACK_BENCHMARK") != nullptr) {
+          TextureCacheTestAccess::SetStorageReadback(cache, false);
+          auto desc = MakeLinearDesc(base + 0x200000, 0x400000, vk::Format::eR32Uint,
+              Prospero::BufferFormat::k32UInt, Prospero::ImageType::kColor2D,
+              {512, 512, 1}, 1, 4, 1);
+          const auto image = cache.FindImage(desc);
+          vk::ClearValue color{}; color.color.uint32 = std::array{painted, 0u, 0u, 0u};
+          TextureCacheTestAccess::ClearImage(cache, scheduler.Current(), image,
+              {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, color);
+          scheduler.Finish(); scheduler.DrainPriorityOperations();
+          for (bool mode : {false, true, true, false}) {
+            Config::RequestCompactImageReadbackMode(mode); Config::ApplyCompactImageReadbackMode();
+            constexpr uint32_t count = 64;
+            const auto compact_before = Common::DebugCounters::Get(Counter::CompactReadbackCopies);
+            const auto started = std::chrono::steady_clock::now();
+            for (uint32_t i = 0; i < count; ++i) {
+              Require(name, "benchmark download", TextureCacheTestAccess::TryDownload(cache, image),
+                      "benchmark image refused");
+              if (i % 8 == 7) { scheduler.Finish(); scheduler.DrainPriorityOperations(); }
+            }
+            Require(name, "benchmark path", Common::DebugCounters::Get(Counter::CompactReadbackCopies) - compact_before == (mode ? count : 0),
+                    "benchmark did not exercise compact readbacks");
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            std::printf("[bench] compact_image_readback=%d copies=%u milliseconds=%.3f\n",
+                        int(mode), count, double(ns) / 1000000);
+          }
+          Config::RequestCompactImageReadbackMode(true); Config::ApplyCompactImageReadbackMode();
+        }
+        context.UnmapMemory(base, size); scheduler.Finish();
+      });
+      context.ShutdownGpu();
+    }
+    Require(name, "release", LibKernel::Memory::KernelMunmap(base, size) == 0 &&
+        LibKernel::Memory::KernelReleaseDirectMemory(physical, size) == 0,
+        "cleanup failed");
+    Require(name, "unmapped backing", !LibKernel::Memory::IsRangeBacked(base, size),
+            "unmapped backing reported present");
+    Config::Load({.printf_direction = Config::LogDirection::Silent});
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
+  void CheckReadBufferReuse() {
+    constexpr const char *name = "ReadBufferReuse";
+    constexpr uintptr_t base = 0x0000000205800000ull;
+    constexpr uint64_t size = 0x40000, bytes = 0x8000;
+    EnsureRuntimeContext();
+    int64_t physical = -1;
+    void *mapped = reinterpret_cast<void *>(base);
+    Require(name, "allocate/map",
+            LibKernel::Memory::KernelAllocateDirectMemory(
+                0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size,
+                0, &physical) == 0 &&
+                LibKernel::Memory::KernelMapDirectMemory(
+                    &mapped, size, 0x3, 0x10, physical, size) == 0,
+            "test allocation failed");
+    for (bool enabled : {false, true}) {
+      Config::ConfigOptions options;
+      options.printf_direction = Config::LogDirection::Silent;
+      options.read_buffer_reuse_enabled = enabled;
+      options.perf_overlay_enabled = true;
+      Config::Load(options);
+      RenderContext context(m_runtime_context);
+      context.InitializeGpu(nullptr);
+      context.GetGpu().SendCommandSync([&] {
+      auto &scheduler = context.GetCommandScheduler();
+      HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+      scheduler.Begin(registers, user_config, shaders);
+      context.MapMemory(base, size);
+      auto &cache = context.GetBufferCache();
+      using Counter = Common::DebugCounters::Counter;
+      const auto hits = [] { return Common::DebugCounters::Get(Counter::ReadBufferHits); };
+      const auto read = [&] { return cache.ObtainBuffer(base, bytes, false); };
+      const auto check = [&](uint32_t expected) {
+        auto [buffer, offset] = read();
+        auto &stream = cache.GetUtilityBuffer(MemoryUsage::Download);
+        auto result = stream.MapDownload(sizeof(expected), 4);
+        result.buffer->CopyFrom(scheduler.Current(), *buffer, offset,
+                                result.offset, sizeof(expected));
+        scheduler.Finish();
+        result.buffer->Invalidate(result.offset, sizeof(expected));
+        uint32_t actual = 0;
+        std::memcpy(&actual, result.mapped, sizeof(actual));
+        Require(name, "contents", actual == expected, "stale read buffer contents");
+      };
+      for (uint32_t value : {0x12345678u, 0x87654321u}) {
+        context.InvalidateMemory(base, sizeof(value));
+        std::memcpy(reinterpret_cast<void *>(base), &value, sizeof(value));
+        check(value);
+        const auto before = hits();
+        check(value);
+        Require(name, "clean reuse", hits() - before == uint64_t(enabled),
+                "unchanged regular buffer did not use the requested path");
+      }
+      if (enabled && std::getenv("KYTY_READ_BUFFER_BENCHMARK") != nullptr) {
+        for (bool mode : {false, true, true, false}) {
+          Config::RequestReadBufferReuseMode(mode);
+          Config::ApplyReadBufferReuseMode();
+          for (uint32_t i = 0; i < 1000; ++i) (void)read();
+          constexpr uint32_t iterations = 500000;
+          const auto start = std::chrono::steady_clock::now();
+          for (uint32_t i = 0; i < iterations; ++i) (void)read();
+          const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - start).count();
+          std::printf("[bench] read_buffer_reuse=%d iterations=%u ns/call=%.2f\n",
+                      int(mode), iterations, double(ns) / iterations);
+        }
+        Config::RequestReadBufferReuseMode(true);
+        Config::ApplyReadBufferReuseMode();
+      }
+      // Replacement retires the ID remembered by the clean read.
+      const auto epoch = cache.RegistrationEpoch();
+      (void)cache.FindBuffer(base, 2 * bytes);
+      Require(name, "merge", cache.RegistrationEpoch() != epoch,
+              "test failed to replace its buffer");
+      const auto before_merge = hits();
+      check(0x87654321u);
+      Require(name, "retired ID", hits() == before_merge,
+              "buffer replacement retained a read memo");
+      // A writable/texel access must never take the read shortcut.
+      const auto before_write = hits();
+      (void)cache.ObtainBuffer(base, bytes, true);
+      cache.FillBuffer(base, bytes, 0xaabbccddu, false);
+      Require(name, "write bypass", hits() == before_write,
+              "a writable binding took the read shortcut");
+      check(0xaabbccddu);
+      const auto before_texel = hits();
+      (void)cache.ObtainBuffer(base, bytes, false, true);
+      Require(name, "texel bypass", hits() == before_texel,
+              "a texel binding took the read shortcut");
+      // Simulate unmap/remap of the same guest address without trusting old IDs.
+      context.UnmapMemory(base, size);
+      scheduler.Finish();
+      context.MapMemory(base, size);
+      context.InvalidateMemory(base, size);
+      *reinterpret_cast<uint32_t *>(base) = 0x10203040u;
+      const auto before_remap = hits();
+      check(0x10203040u);
+      Require(name, "remap", hits() == before_remap,
+              "remapped memory retained a read memo");
+      // CPU-dirty small ranges use transient stream allocations, never the memo.
+      context.InvalidateMemory(base, size);
+      const auto before_stream = hits();
+      (void)cache.ObtainBuffer(base, 64, false);
+      (void)cache.ObtainBuffer(base, 64, false);
+      Require(name, "stream bypass", hits() == before_stream,
+              "transient stream allocations were memoized");
+      context.UnmapMemory(base, size);
+      scheduler.Finish();
+      });
+      context.ShutdownGpu();
+    }
+    Require(name, "release", LibKernel::Memory::KernelMunmap(base, size) == 0 &&
+                LibKernel::Memory::KernelReleaseDirectMemory(physical, size) == 0,
+            "test cleanup failed");
+    Config::Load({.printf_direction = Config::LogDirection::Silent});
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
+  void CheckBindingReuse() {
+    constexpr const char *name = "BindingReuse";
+    constexpr uintptr_t base = 0x0000000204f00000ull;
+    constexpr uint64_t size = 0x40000;
+    EnsureRuntimeContext();
+    int64_t physical = -1;
+    void *mapped = reinterpret_cast<void *>(base);
+    Require(name, "allocate/map",
+            LibKernel::Memory::KernelAllocateDirectMemory(
+                0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size,
+                0, &physical) == 0 &&
+                LibKernel::Memory::KernelMapDirectMemory(
+                    &mapped, size, 0x3, 0x10, physical, size) == 0,
+            "test memory allocation failed");
+    for (bool enabled : {false, true}) {
+      Config::ConfigOptions options;
+      options.printf_direction = Config::LogDirection::Silent;
+      options.binding_reuse_enabled = enabled;
+      Config::Load(options);
+      RenderContext context(m_runtime_context);
+      auto &scheduler = context.GetCommandScheduler();
+      HW::Context registers{};
+      HW::UserConfig user_config{};
+      HW::Shader shaders{};
+      scheduler.Begin(registers, user_config, shaders);
+      context.MapMemory(base, size);
+      auto &executor = context.GetRenderExecutor();
+      auto &cache = context.GetBufferCache();
+      auto &prepared = RenderExecutorTestAccess::BindingReuseStage(executor);
+      ShaderModule module;
+      auto &program = module.info;
+      program.stage = ShaderType::Vertex;
+      program.info.buffers.resize(1);
+      program.info.buffers[0].descriptor_index = 0;
+      program.info.buffers[0].read = true;
+      program.info.buffers[0].scalar = true;
+      program.bindings.descriptor_counts[static_cast<size_t>(
+          ShaderRecompiler::IR::DescriptorBindingKind::Buffers)] = 1;
+      program.info.samplers.resize(1);
+      ShaderRecompiler::IR::ResourceSnapshot snapshot;
+      snapshot.buffers.resize(1);
+      snapshot.samplers.resize(1);
+      snapshot.samplers[0].dword_count = 4;
+      auto set_buffer = [&](uint64_t address, uint32_t bytes,
+                            uint32_t mode = 3) {
+        ShaderBufferResource descriptor{};
+        descriptor.UpdateAddress48(address);
+        descriptor.fields[2] = bytes;
+        descriptor.fields[3] = mode << 28u;
+        auto &value = snapshot.buffers[0];
+        value.dword_count = 4;
+        std::copy_n(descriptor.fields, 4, value.dwords.begin());
+      };
+      ShaderStageRuntime runtime{&module, &snapshot};
+      const auto prepare = [&] {
+        RenderExecutorTestAccess::PrepareBindingReuse(executor, runtime,
+                                                      prepared);
+      };
+      set_buffer(base + 0x1000, 64);
+      prepare();
+      const auto first = prepared.buffer_sources[0];
+      const auto sampler = prepared.samplers[0];
+      // A different snapshot object must hit by value; the previous runtime
+      // need not survive.
+      auto next_snapshot = snapshot;
+      runtime.resources = &next_snapshot;
+      prepare();
+      Require(name, "same descriptors after reset",
+              prepared.buffer_sources[0].id == first.id &&
+                  prepared.samplers[0] == sampler &&
+                  (!enabled || prepared.buffer_memos[0].valid),
+              "reusable bindings changed");
+      runtime.resources = &snapshot;
+      snapshot.samplers[0].dwords[0] = 1;
+      prepare();
+      ShaderSamplerResource changed_sampler{};
+      changed_sampler.fields[0] = 1;
+      Require(name, "sampler changed", prepared.samplers[0] ==
+                  context.GetSamplerCache().GetSampler(changed_sampler, false),
+              "sampler descriptor change retained the previous sampler");
+      program.info.samplers[0].integer_border = true;
+      prepare();
+      Require(name, "sampler policy changed", prepared.samplers[0] ==
+                  context.GetSamplerCache().GetSampler(changed_sampler, true),
+              "sampler policy change retained the previous sampler");
+      // A wider allocation merges/retires the cached host buffer without
+      // changing the V#.
+      const auto epoch = cache.RegistrationEpoch();
+      const auto merged = cache.FindBuffer(base, 0x20000);
+      Require(name, "merge epoch", cache.RegistrationEpoch() != epoch,
+              "buffer replacement did not invalidate IDs");
+      prepare();
+      Require(name, "retired ID", prepared.buffer_sources[0].id == merged,
+              "a stale host buffer survived the merge");
+      const auto check_upload = [&](uint32_t expected) {
+        RenderExecutorTestAccess::RebindBindingReuse(executor, prepared);
+        auto &stream = cache.GetUtilityBuffer(MemoryUsage::Download);
+        auto readback = stream.MapDownload(sizeof(expected), 4);
+        auto &stream_source = cache.GetUtilityBuffer(MemoryUsage::Stream);
+        auto &source = prepared.buffers[0].buffer == stream_source.Handle()
+                           ? stream_source
+                           : cache.GetBuffer(prepared.buffer_sources[0].id);
+        const auto byte_adjustment =
+            prepared.shader_data[program.bindings.memory_offset_dword] & 0xffu;
+        readback.buffer->CopyFrom(scheduler.Current(), source,
+                                  prepared.buffers[0].offset + byte_adjustment,
+                                  readback.offset, sizeof(expected));
+        scheduler.Finish();
+        readback.buffer->Invalidate(readback.offset, sizeof(expected));
+        uint32_t actual = 0;
+        std::memcpy(&actual, readback.mapped, sizeof(actual));
+        Require(name, "new CPU data reaches GPU", actual == expected,
+                "reuse skipped a required upload");
+      };
+      for (uint32_t value : {0x12345678u, 0x87654321u}) {
+        context.InvalidateMemory(base + 0x1000, sizeof(value));
+        std::memcpy(reinterpret_cast<void *>(base + 0x1000), &value,
+                    sizeof(value));
+        prepare();
+        check_upload(value);
+      }
+      set_buffer(base + 0x2000, 128);
+      prepare();
+      Require(name, "descriptor changed",
+              prepared.buffer_sources[0].address == base + 0x2000 &&
+                  prepared.buffer_sources[0].size == 128,
+              "old range reused for a new descriptor");
+      set_buffer(base + 0x2000, 1, 2);
+      program.info.buffers[0].scalar = false;
+      program.info.buffers[0].max_byte_extent = 32;
+      prepare();
+      Require(name, "vector extent", prepared.buffer_sources[0].size == 32,
+              "zero-stride vector range was truncated");
+      program.info.buffers[0].max_byte_extent = 64;
+      prepare();
+      Require(name, "metadata changed", prepared.buffer_sources[0].size == 64,
+              "shader extent change retained old range");
+      program.info.buffers[0].scalar = true;
+      prepare();
+      Require(name, "scalar changed", prepared.buffer_sources[0].size == 1,
+              "scalar metadata change retained vector extent");
+      set_buffer(base + 0x1000, UINT32_MAX);
+      program.info.buffers[0].written = true;
+      snapshot.specialization_reads = {{base + 0x8000, 4}};
+      prepare();
+      Require(name, "sentinel bound",
+              prepared.buffer_sources[0].size == 0x7000 &&
+                  (!enabled || !prepared.buffer_memos[0].valid),
+              "sentinel range was memoized or crossed a scalar table");
+      snapshot.specialization_reads = {{base + 0x4000, 4}};
+      prepare();
+      Require(name, "sentinel bound changed",
+              prepared.buffer_sources[0].size == 0x3000,
+              "sentinel range ignored the current scalar reads");
+      program.info.buffers[0].written = false;
+      snapshot.specialization_reads.clear();
+      set_buffer(0, 0);
+      prepare();
+      Require(name, "null descriptor", prepared.buffer_sources[0].address == 0,
+              "null resource retained a live range");
+      if (enabled) {
+        set_buffer(base + 0x1000, 64);
+        program.info.user_data_registers = {0};
+        program.bindings.memory_offset_dword = 1;
+        snapshot.user_data = {1};
+        program.bindings.descriptor_counts[static_cast<size_t>(
+            ShaderRecompiler::IR::DescriptorBindingKind::FlattenedSrt)] = 1;
+        program.bindings.descriptor_counts[static_cast<size_t>(
+            ShaderRecompiler::IR::DescriptorBindingKind::ShaderData)] = 1;
+        snapshot.flattened_srt.assign(4096, 0x12345678u);
+        const auto upload = [&] {
+          prepare();
+          RenderExecutorTestAccess::RebindBindingReuse(executor, prepared);
+        };
+        upload();
+        const auto first_srt = prepared.flattened_srt;
+        const auto first_data = prepared.shader_data_buffer;
+        upload();
+        Require(name, "unchanged uploads",
+                prepared.flattened_srt == first_srt &&
+                    prepared.shader_data_buffer == first_data,
+                "identical descriptor bytes were uploaded again");
+        snapshot.user_data[0] = 2;
+        upload();
+        Require(name, "changed shader data", prepared.shader_data_buffer != first_data &&
+                prepared.shader_data_memo.words[0] == 2,
+                "user-data change retained the old shader data");
+        snapshot.flattened_srt[0] ^= 1u;
+        upload();
+        Require(name, "changed upload", prepared.flattened_srt != first_srt,
+                "changed bytes retained the old allocation");
+        auto &stream = cache.GetUtilityBuffer(MemoryUsage::Stream);
+        Require(
+            name, "uploaded bytes",
+            std::memcmp(stream.Mapped().data() + prepared.flattened_srt.offset,
+                        snapshot.flattened_srt.data(),
+                        snapshot.flattened_srt.size() * sizeof(uint32_t)) == 0,
+            "flattened descriptors contain stale data");
+        scheduler.Finish();
+        const auto old_tick = prepared.flattened_srt_memo.tick;
+        upload();
+        Require(name, "submission invalidates uploads",
+                prepared.flattened_srt_memo.tick != old_tick &&
+                    prepared.flattened_srt_memo.tick == scheduler.CurrentTick(),
+                "upload survived the command buffer lifetime");
+        const auto old_epoch = stream.ReuseEpoch();
+        StreamBufferTestAccess::ForceNextWrap(stream);
+        upload();
+        Require(name, "ring wrap invalidates uploads",
+                stream.ReuseEpoch() != old_epoch &&
+                    prepared.flattened_srt_memo.epoch == stream.ReuseEpoch(),
+                "upload survived ring overwrite");
+        snapshot.flattened_srt.resize(20000, 0);
+        upload();
+        const auto large_srt = prepared.flattened_srt;
+        upload();
+        Require(name, "large upload fallback", prepared.flattened_srt != large_srt &&
+                prepared.flattened_srt_memo.words.size() <= 16384,
+                "large tables bypassed the bounded fallback");
+        snapshot.flattened_srt.resize(4096);
+        constexpr uint32_t iterations = 100000;
+        // CPU-only preparation microbenchmark, ABBA in one context. No drawing
+        // or FPS claim.
+        for (bool mode : {false, true, true, false}) {
+          options.binding_reuse_enabled = mode;
+          Config::Load(options);
+          for (uint32_t i = 0; i < 100; ++i)
+            upload();
+          const auto start = std::chrono::steady_clock::now();
+          for (uint32_t i = 0; i < iterations; ++i)
+            upload();
+          const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - start)
+                              .count();
+          std::printf(
+              "[bench] binding_reuse=%d iterations=%u ns/preparation=%.2f\n",
+              int(mode), iterations, double(ns) / iterations);
+        }
+      }
+      context.UnmapMemory(base, size);
+      scheduler.Finish();
+    }
+    Require(name, "release mapping",
+            LibKernel::Memory::KernelMunmap(base, size) == 0 &&
+                LibKernel::Memory::KernelReleaseDirectMemory(physical, size) ==
+                    0,
+            "test memory cleanup failed");
+    Config::Load({.printf_direction = Config::LogDirection::Silent});
+    std::printf("[host]    %-32s ok\n", name);
   }
 
   void CheckGraphicsPushConstantBank() {
@@ -33994,8 +34754,9 @@ private:
   std::unique_ptr<RenderContext> m_renderer;
 };
 
-// A guest memory mapping with a render context, for tests that fault GPU-written buffers through
-// the real ReadMemory path. The flag is loaded before the context so the cache reads it.
+// A guest memory mapping with a render context, for tests that fault
+// GPU-written buffers through the real ReadMemory path. The flag is loaded
+// before the context so the cache reads it.
 class HotBatchBed {
 public:
   static constexpr uintptr_t Base = 0x0000000208000000ull;
@@ -34005,8 +34766,11 @@ public:
   static constexpr uint64_t BigRegion = 0x100000;
   static constexpr uint32_t StaleValue = 0x0badf00du;
 
-  HotBatchBed(GraphicContext &graphics, bool flag_enabled)
-      : context((LoadConfig(flag_enabled), graphics)) {
+  HotBatchBed(GraphicContext &graphics, bool flag_enabled,
+              bool neighbours = false, bool wide_window = false,
+              bool fault_ahead = false)
+      : context((LoadConfig(flag_enabled, neighbours, wide_window, fault_ahead),
+                 graphics)) {
     constexpr const char *name = "HotBatchBed";
     Require(name, "direct allocation",
             Libs::LibKernel::Memory::KernelAllocateDirectMemory(
@@ -34016,7 +34780,8 @@ public:
     void *mapped = reinterpret_cast<void *>(Base);
     Require(name, "direct mapping",
             Libs::LibKernel::Memory::KernelMapDirectMemory(
-                &mapped, MappingSize, 0x3, 0x10, m_direct_offset, Alignment) == 0 &&
+                &mapped, MappingSize, 0x3, 0x10, m_direct_offset, Alignment) ==
+                    0 &&
                 mapped == reinterpret_cast<void *>(Base),
             "fixed direct-memory mapping failed");
     auto &scheduler = context.GetCommandScheduler();
@@ -34035,8 +34800,8 @@ public:
             Libs::LibKernel::Memory::KernelMunmap(Base, MappingSize) == 0,
             "mapping release failed");
     Require("HotBatchBed", "release direct backing",
-            Libs::LibKernel::Memory::KernelReleaseDirectMemory(m_direct_offset,
-                                                               MappingSize) == 0,
+            Libs::LibKernel::Memory::KernelReleaseDirectMemory(
+                m_direct_offset, MappingSize) == 0,
             "allocation release failed");
     Config::ConfigOptions options;
     options.printf_direction = Config::LogDirection::Silent;
@@ -34050,21 +34815,25 @@ public:
   CommandScheduler &Scheduler() { return context.GetCommandScheduler(); }
   static uint64_t Address(uint64_t offset) { return Base + offset; }
 
-  // Writes a stale value to the backing, then makes the GPU write the new value over a region.
+  // Writes a stale value to the backing, then makes the GPU write the new value
+  // over a region.
   void GpuWrite(uint64_t offset, uint64_t size, uint32_t value) {
-    Libs::LibKernel::Memory::WriteBacking(Address(offset), &StaleValue, sizeof(StaleValue));
+    Libs::LibKernel::Memory::WriteBacking(Address(offset), &StaleValue,
+                                          sizeof(StaleValue));
     Require("HotBatchBed", "gpu write allocation",
-            Cache().ObtainBuffer(Address(offset), size, true, false).first != nullptr,
+            Cache().ObtainBuffer(Address(offset), size, true, false).first !=
+                nullptr,
             "buffer allocation for a GPU write failed");
     Cache().FillBuffer(Address(offset), size, value, false);
   }
 
   [[nodiscard]] uint32_t Backing(uint64_t offset) const {
-    // Reads the backing directly, because touching a GPU-dirty guest page would fault and
-    // download it, which is the very thing these tests observe.
+    // Reads the backing directly, because touching a GPU-dirty guest page would
+    // fault and download it, which is the very thing these tests observe.
     uint32_t value = 0;
     Require("HotBatchBed", "backing read",
-            Libs::LibKernel::Memory::TryReadSparseBacking(Address(offset), &value, sizeof(value)),
+            Libs::LibKernel::Memory::TryReadSparseBacking(
+                Address(offset), &value, sizeof(value)),
             "the guest backing could not be read");
     return value;
   }
@@ -34075,12 +34844,16 @@ public:
 
   // Faults a word and returns how many queue submits that readback caused.
   uint64_t Fault(uint64_t offset) {
-    const auto before = Common::DebugCounters::Get(Common::DebugCounters::Counter::QueueSubmits);
+    const auto before = Common::DebugCounters::Get(
+        Common::DebugCounters::Counter::QueueSubmits);
     Cache().ReadMemory(Address(offset), sizeof(uint32_t));
-    return Common::DebugCounters::Get(Common::DebugCounters::Counter::QueueSubmits) - before;
+    return Common::DebugCounters::Get(
+               Common::DebugCounters::Counter::QueueSubmits) -
+           before;
   }
 
-  // Writes a region on the GPU, then reads it back once so its buffer becomes hot.
+  // Writes a region on the GPU, then reads it back once so its buffer becomes
+  // hot.
   void MakeHot(uint64_t offset, uint64_t size, uint32_t value) {
     GpuWrite(offset, size, value);
     (void)Fault(offset);
@@ -34096,10 +34869,14 @@ public:
   RenderContext context;
 
 private:
-  static void LoadConfig(bool flag_enabled) {
+  static void LoadConfig(bool flag_enabled, bool neighbours, bool wide_window,
+                         bool fault_ahead) {
     Config::ConfigOptions options;
     options.printf_direction = Config::LogDirection::Silent;
     options.batch_hot_readbacks = flag_enabled;
+    options.readback_neighbours = neighbours;
+    options.wide_readback_window = wide_window;
+    options.fault_ahead = fault_ahead;
     Config::Load(options);
   }
 
@@ -34108,6 +34885,128 @@ private:
   HW::UserConfig m_user_config{};
   HW::Shader m_shaders{};
 };
+
+// Real GPU fills and guest backing reads exercise the production fault/readback
+// path.
+void CheckTransferPrefetchOptimizations(VulkanHarness &harness) {
+  constexpr const char *name = "TransferPrefetch";
+  constexpr uint64_t main_offset = 0x10000;
+  constexpr uint64_t neighbour = 0x14000;
+  constexpr uint64_t after_gap = 0x30000;
+  constexpr uint64_t clean = 0x1c000;
+  constexpr uint64_t outside = 0x90000;
+  constexpr uint64_t region = BufferCache::CACHING_PAGESIZE;
+  constexpr uint32_t value = 0x1234abcdu;
+  using Common::DebugCounters::Counter;
+  for (const bool hot : {false, true}) {
+    for (const bool neighbours : {false, true}) {
+      HotBatchBed bed(harness.RuntimeContext(), hot, neighbours);
+      // A small read-only ObtainBuffer may use transient staging without clearing CPU dirty
+      // state. Publish a real GPU fill first so this is demonstrably clean in both trackers.
+      bed.GpuWrite(clean, region, value);
+      (void)bed.Fault(clean);
+      if (hot)
+        bed.MakeHot(neighbour, region, value - 1);
+      bed.GpuWrite(main_offset, region, value);
+      bed.GpuWrite(neighbour, region, value + 1);
+      bed.GpuWrite(after_gap, region, value + 2);
+      bed.GpuWrite(outside, region, value + 3);
+      const auto count =
+          Common::DebugCounters::Get(Counter::BufferNeighbourDownloads);
+      const auto bytes =
+          Common::DebugCounters::Get(Counter::BufferNeighbourDownloadBytes);
+      const auto submits = bed.Fault(main_offset);
+      Require(name, "one submit for the batch", submits == 1,
+              "neighbours must share the main readback's submission");
+      Require(name, "primary value", bed.Backing(main_offset) == value,
+              "primary GPU contents were not published");
+      Require(name, "nearby GPU contents",
+              (bed.Backing(neighbour) == value + 1) == (hot || neighbours),
+              "neighbour publication does not match the selected flags");
+      Require(name, "registered buffers beyond gaps",
+              (bed.Backing(after_gap) == value + 2) == neighbours,
+              "the bounded window must visit registered sources without "
+              "creating gap buffers");
+      Require(name, "outside window remains owned by GPU",
+              bed.Backing(outside) != value + 3 && bed.Dirty(outside, region),
+              "a neighbour download cleared bytes outside its window");
+      Require(name, "clean CPU bytes stay intact",
+              bed.Backing(clean) == value &&
+                  !bed.Cache().IsRegionCpuModified(HotBatchBed::Address(clean),
+                                                   region),
+              "prefetch must neither overwrite clean CPU bytes nor mark them "
+              "CPU-dirty");
+      const uint64_t expected = neighbours ? (hot ? 1 : 2) : 0;
+      Require(name, "no duplicate hot/neighbour collection",
+              Common::DebugCounters::Get(Counter::BufferNeighbourDownloads) -
+                          count ==
+                      expected &&
+                  Common::DebugCounters::Get(
+                      Counter::BufferNeighbourDownloadBytes) -
+                          bytes ==
+                      expected * region,
+              "the same hot buffer must not be collected twice or charge the "
+              "budget twice");
+      if (neighbours) {
+        Require(name, "next readback needs no submit",
+                bed.Fault(after_gap) == 0,
+                "prefetched bytes should already be CPU-visible");
+        bed.GpuWrite(after_gap, region, value + 4);
+        (void)bed.Fault(after_gap);
+        Require(name, "new GPU writes are not hidden",
+                bed.Backing(after_gap) == value + 4,
+                "prefetch must not suppress later GPU writes");
+      }
+    }
+  }
+  for (const bool wide : {false, true}) {
+    HotBatchBed bed(harness.RuntimeContext(), false, false, wide);
+    constexpr uint64_t start = 0x400000;
+    constexpr uint64_t distant_offset = start + 0x100000;
+    bed.GpuWrite(start, 2 * HotBatchBed::BigRegion, value);
+    bed.GpuWrite(distant_offset, region, value + 1);
+    (void)bed.Fault(start);
+    Require(name, "wide window publishes distant bytes in the same buffer",
+            (bed.Backing(distant_offset) == value + 1) == wide &&
+                bed.Dirty(distant_offset, region) != wide,
+            "512 KiB and 4 MiB windows should have different, correctly "
+            "tracked extents");
+    Require(
+        name, "wide window avoids the second submission",
+            (bed.Fault(distant_offset) == 0) == wide,
+        "the wide window must save the next readback without hiding its data");
+  }
+  for (const bool ahead : {false, true}) {
+    HotBatchBed bed(harness.RuntimeContext(), false, false, false, ahead);
+    constexpr uint64_t start = 0x800000;
+    bed.GpuWrite(start, HotBatchBed::BigRegion, value);
+    Require(name, "write-fault handler",
+            bed.context.HandleFault(PageFaultAccess::Write,
+                                    HotBatchBed::Address(start + 16)),
+            "mapped registered-buffer write fault was not handled");
+    Require(name, "fault ahead reaches the next write pages",
+            bed.Cache().IsRegionCpuModified(
+                HotBatchBed::Address(start + 0x20000), 4) == ahead,
+            "the 256 KiB option must invalidate more pages than the 64 KiB "
+            "baseline");
+    Require(name, "write invalidation remains bounded",
+            !bed.Cache().IsRegionCpuModified(
+                HotBatchBed::Address(start + 0x50000), 4) &&
+                bed.Dirty(start + 0x90000, 4),
+            "write-fault handling must not clear tracking outside its windows");
+    Require(name, "buffer-end clamp",
+            bed.Cache().CoalesceWriteFaultRange(
+                HotBatchBed::Address(start + HotBatchBed::BigRegion - 16),
+                0x40000) == 16,
+            "coalescing must stop at the registered buffer boundary");
+    (void)bed.Cache().FindBuffer(HotBatchBed::Address(0xb00000), 0x200000);
+    Require(name, "tracker-region clamp",
+            bed.Cache().CoalesceWriteFaultRange(HotBatchBed::Address(0xbffff0),
+                                                0x40000) == 16,
+            "coalescing must stop at the tracker region boundary");
+  }
+  std::printf("[host]    %-32s ok\n", name);
+}
 
 namespace HotBatchOffsets {
 constexpr uint64_t Faulting = 0x0;
@@ -34120,8 +35019,9 @@ constexpr uint32_t ThirdValue = 0x33333333u;
 constexpr uint32_t FaultingValue = 0x44444444u;
 } // namespace HotBatchOffsets
 
-// Reads back a faulting buffer after a hot one was rewritten. Returns the submits that the
-// faulting readback cost, and fills in what the hot buffer looked like afterwards.
+// Reads back a faulting buffer after a hot one was rewritten. Returns the
+// submits that the faulting readback cost, and fills in what the hot buffer
+// looked like afterwards.
 struct HotBatchOutcome {
   uint64_t faulting_submits = 0;
   uint64_t hot_fault_submits = 0;
@@ -34129,23 +35029,27 @@ struct HotBatchOutcome {
   bool hot_dirty = false;
 };
 
-HotBatchOutcome RunHotBatch(VulkanHarness &harness, bool flag_enabled, uint64_t entry_age) {
+HotBatchOutcome RunHotBatch(VulkanHarness &harness, bool flag_enabled,
+                            uint64_t entry_age) {
   using namespace HotBatchOffsets;
   HotBatchBed bed(harness.RuntimeContext(), flag_enabled);
   bed.MakeHot(Hot, HotBatchBed::SmallRegion, FirstValue);
   bed.GpuWrite(Hot, HotBatchBed::SmallRegion, SecondValue);
   bed.GpuWrite(Faulting, HotBatchBed::SmallRegion, FaultingValue);
   if (entry_age != 0) {
-    // The fault below collects at the current tick, so land the hot entry on an exact age.
+    // The fault below collects at the current tick, so land the hot entry on an
+    // exact age.
     uint64_t entry_tick = 0;
-    Require("HotBatch", "hot entry recorded",
-            BufferCacheTestAccess::HotReadbackTick(bed.Cache(), HotBatchBed::Address(Hot),
-                                                   entry_tick) &&
-                bed.Scheduler().CurrentTick() <= entry_tick + entry_age,
-            "the hot entry should exist and be no older than the age under test");
+    Require(
+        "HotBatch", "hot entry recorded",
+        BufferCacheTestAccess::HotReadbackTick(
+            bed.Cache(), HotBatchBed::Address(Hot), entry_tick) &&
+            bed.Scheduler().CurrentTick() <= entry_tick + entry_age,
+        "the hot entry should exist and be no older than the age under test");
     bed.AdvanceTicks(entry_tick + entry_age - bed.Scheduler().CurrentTick());
-    // The advanced ticks finish the hot buffer's rewrite, so the recent write ring would download
-    // it whatever its hot entry's age. Clearing the ring keeps these runs about the hot table.
+    // The advanced ticks finish the hot buffer's rewrite, so the recent write
+    // ring would download it whatever its hot entry's age. Clearing the ring
+    // keeps these runs about the hot table.
     BufferCacheTestAccess::ClearRecentWrites(bed.Cache());
   }
   HotBatchOutcome outcome;
@@ -62733,6 +63637,27 @@ void CheckStableProgramIds(VulkanHarness &vulkan) {
 // With a shader store a restart compiles nothing and creates every pipeline
 // before the first lookup. A damaged record and everything after it are
 // dropped; a stale store starts over.
+void TestPipelineCacheMruCoherency(PipelineCache &cache, CommandBuffer &command,
+                                   const DrawRenderState &state) {
+  constexpr const char *name = "PipelineCacheMruCoherency";
+  auto &first = cache.GetGraphicsPipeline(command, state, {});
+  auto &repeated = cache.GetGraphicsPipeline(command, state, {});
+  Require(name, "repeat first shader stages", &first == &repeated,
+          "repeating the initial pipeline changed its identity");
+  auto other_state = state;
+  other_state.ps_active = !state.ps_active;
+  auto &other = cache.GetGraphicsPipeline(command, other_state, {});
+  Require(name, "change shader stages", &other != &first,
+          "different shader stages reused the same pipeline");
+  auto &restored = cache.GetGraphicsPipeline(command, state, {});
+  Require(
+      name, "restore previous stages after insertion", &restored == &first,
+      "new pipeline insertion left stale key inputs pointing at the new MRU");
+  Require(name, "repeat restored stages",
+          &cache.GetGraphicsPipeline(command, state, {}) == &first,
+          "MRU reuse lost its matching shader stages");
+}
+
 void CheckShaderStore(VulkanHarness &vulkan) {
   constexpr const char *name = "ShaderStore";
   constexpr uintptr_t base = 0x0000000205000000ull;
@@ -62793,6 +63718,7 @@ void CheckShaderStore(VulkanHarness &vulkan) {
     std::memset(mapped, 0, allocation_size);
     RenderContext context(vulkan.RuntimeContext(), store);
     auto &pipelines = context.GetPipelineCache();
+    PipelineCache coherence(vulkan.RuntimeContext(), nullptr);
     Session session{.prewarmed = PipelineCacheTestAccess::Pipelines(pipelines)};
     context.InitializeGpu(nullptr);
     LibKernel::Memory::InstallGpuResources(&context);
@@ -62827,6 +63753,9 @@ void CheckShaderStore(VulkanHarness &vulkan) {
       DrawRenderState state{.topology = vk::PrimitiveTopology::eTriangleList};
       pipelines.GetGraphicsPrograms(scheduler.Current(), state);
       (void)pipelines.GetGraphicsPipeline(scheduler.Current(), state, {});
+      {
+        TestPipelineCacheMruCoherency(coherence, scheduler.Current(), state);
+      }
       context.GetBufferCache().ReadMemory(base, sizeof(u32));
       (void)LibKernel::Memory::TryReadBacking(base, &session.output,
                                               sizeof(u32));
@@ -66036,6 +66965,57 @@ void CheckImageSamplerSpecialization() {
   }
 
   std::printf("[host]    %-32s ok\n", "ImageSpecializationPipelineId");
+}
+
+void CheckResourcePrepReuse() {
+  constexpr const char* name = "ResourcePrepReuse";
+  using namespace ShaderRecompiler::IR;
+  std::vector<u32> code{EncodeSmem0(0x02, 8), EncodeSmem1(0, 125),
+                       EncodeSmem0(0x08, 12, 4), EncodeSmem1(0, 125),
+                       EncodeSmem0(0x00, 13), EncodeSmem1(16, 125)};
+  AppendVop3(&code, 0x125u, 0, 12, 13);
+  code.insert(code.end(), {EncodeMubuf0(0x1c, 0, false, false), EncodeMubuf1(0, 2, 0)});
+  AppendEnd(&code);
+  std::array<u32, 8> users{};
+  std::vector<u32> memory{0x1000u, 0u, 16u, 0x30000000u | DstSel(4,5,6,7), 7u};
+  ShaderPixelInputInfo pixel{};
+  ShaderRecompiler::CompileOptions options;
+  options.stage = ShaderType::Pixel;
+  options.user_data = users;
+  options.input_info.pixel = &pixel;
+  auto translated = ShaderRecompiler::TranslateProgram(code, options);
+  auto plan = ExtractResourcePlan(translated.program);
+  ResourceSnapshot actual, reference;
+  ResourceSpecialization actual_spec, reference_spec;
+  ResourceMaterializationCache cache;
+  SrtRuntime runtime{.user_data=users};
+  FakeGuestMemory fake(ReadTestMemory, &memory);
+  const auto check = [&](int expected_hit) {
+    Require(name,"cached refresh",MaterializeResources(plan,runtime,actual,actual_spec,&cache),"cached refresh failed");
+    Require(name,"reference refresh",MaterializeResources(plan,runtime,reference,reference_spec),"ordinary refresh failed");
+    Require(name,"same complete snapshot",actual.buffers==reference.buffers && actual.images==reference.images &&
+      actual.samplers==reference.samplers && actual.flattened_srt==reference.flattened_srt &&
+      actual.user_data==reference.user_data && actual.specialization_reads==reference.specialization_reads &&
+      actual.uniform_fill==reference.uniform_fill && actual_spec==reference_spec,"cached output differs from ordinary materialization");
+    if(expected_hit>=0) Require(name,"expected hit",cache.last_hit==bool(expected_hit),"reuse did not follow fresh descriptor changes");
+  };
+  check(0); check(1);
+  memory[0]=0x2000u; check(0); check(1);
+  memory[1]=16u<<16u; check(0); check(1);
+  memory[4]=123u; check(-1);
+  users[7]=0xdeadbeefu; check(-1);
+  Require(name,"live user data",actual.user_data[7]==users[7],"user data became stale on reuse");
+  runtime.user_data={};
+  Require(name,"failed read invalidates",!MaterializeResources(plan,runtime,actual,actual_spec,&cache) && !cache.valid,"failed walk retained a valid cache");
+  runtime.user_data=users; check(0); check(1);
+  auto second = ExtractResourcePlan(translated.program);
+  Require(name,"new plan miss",MaterializeResources(second,runtime,actual,actual_spec,&cache) && !cache.last_hit,"another plan reused stale state");
+  ShaderComputeInputInfo compute{};
+  options.stage=ShaderType::Compute; options.input_info.compute=&compute;
+  auto compute_program=ShaderRecompiler::TranslateProgram(code,options);
+  auto compute_plan=ExtractResourcePlan(compute_program.program);
+  Require(name,"compute fallback",MaterializeResources(compute_plan,runtime,actual,actual_spec,&cache) && !cache.eligible && !cache.last_hit,"compute unexpectedly reused preparation");
+  std::printf("[host] %-32s ok\n",name);
 }
 
 void CheckResourcePlanHandoff() {
@@ -71274,6 +72254,48 @@ int main(int argc, char **argv) {
     CheckPm4Predication(vulkan.RuntimeRenderer());
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--cadence-runtime-only") == 0) {
+    VulkanHarness vulkan; vulkan.CheckCadenceRuntime(); return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--resource-prep-reuse-only") == 0) {
+    CheckResourcePrepReuse();
+    VulkanHarness vulkan;
+    Config::ConfigOptions options; options.printf_direction=Config::LogDirection::Silent;
+    options.resource_prep_reuse_enabled=true; Config::Load(options);
+    vulkan.CheckSmallFormattedImageSync();
+    vulkan.CheckNullTextureDescriptors();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--tile-layout-cache-only") == 0) {
+    CheckTileLayoutCache();
+    VulkanHarness vulkan;
+    Config::ConfigOptions options; options.printf_direction=Config::LogDirection::Silent;
+    options.tile_layout_cache_enabled=true; Config::Load(options);
+    vulkan.CheckSmallFormattedImageSync();
+    vulkan.CheckNullTextureDescriptors();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--effect-profile-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckEffectProfiler();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--scratch-memory-trim-only") == 0) {
+    VulkanHarness vulkan; vulkan.CheckScratchMemoryTrim(); return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--compact-image-readback-only") == 0) {
+    VulkanHarness vulkan; vulkan.CheckCompactImageReadback(); return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--read-buffer-reuse-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckReadBufferReuse();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--binding-reuse-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckBindingReuse();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--descriptor-heap-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckDescriptorHeapLargeSet();
@@ -71763,6 +72785,11 @@ int main(int argc, char **argv) {
     vulkan.CheckHotReadbackRecording(false);
     vulkan.CheckHotReadbackRecording(true);
     CheckHotBatchReadbacks(vulkan);
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--transfer-prefetch-only") == 0) {
+    VulkanHarness vulkan;
+    CheckTransferPrefetchOptimizations(vulkan);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-gc-only") == 0) {

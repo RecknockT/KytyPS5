@@ -27,6 +27,29 @@ public:
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
+	// Read-only buffer reuse proofs. Large/cross-region ranges deliberately fall back.
+	// Establish a clean proof under the region lock: Generation() is bumped BEFORE
+	// dirty bits/protection change, so a lock-free dirty query cannot establish it.
+	[[nodiscard]] uint64_t ReadCleanGeneration(uint64_t vaddr, uint64_t size) {
+		ValidateRange(vaddr, size);
+		if (vaddr / TRACKER_REGION_SIZE != (vaddr + size - 1) / TRACKER_REGION_SIZE) return 0;
+		auto* manager = m_regions[vaddr / TRACKER_REGION_SIZE].load(std::memory_order_acquire);
+		if (manager == nullptr) return 0;
+		std::scoped_lock lock(manager->lock);
+		return manager->IsModified<DirtySource::Cpu>(vaddr % TRACKER_REGION_SIZE, size)
+		           ? 0
+		           : manager->Generation();
+	}
+	[[nodiscard]] bool MatchesReadGeneration(uint64_t vaddr, uint64_t size,
+	                                         uint64_t generation) const {
+		ValidateRange(vaddr, size);
+		if (generation == 0 ||
+		    vaddr / TRACKER_REGION_SIZE != (vaddr + size - 1) / TRACKER_REGION_SIZE)
+			return false;
+		const auto* manager =
+		    m_regions[vaddr / TRACKER_REGION_SIZE].load(std::memory_order_acquire);
+		return manager != nullptr && manager->Generation() == generation;
+	}
 	// Removes protection from a range and flushes GPU-owned data when required.
 	template <typename Flush>
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {

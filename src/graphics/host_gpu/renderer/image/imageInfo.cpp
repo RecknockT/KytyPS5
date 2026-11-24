@@ -1,6 +1,11 @@
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 
 #include "common/alignment.h"
+#include "common/debugCounters.h"
+#include "common/emulatorConfig.h"
+#include "graphics/host_gpu/renderer/image/tileLayoutCache.h"
+
+#include <memory>
 
 namespace Libs::Graphics {
 namespace {
@@ -161,7 +166,19 @@ void ImageInfo::UpdateSize() {
 		                                          IsVolume() ? extent.depth : 1u,
 		                                          resources.levels,
 		                                          resources.layers};
-		EXIT_NOT_IMPLEMENTED(!TileGetTiledTextureLayout(description, surface, mip_layout.data()));
+		if (Config::TileLayoutCacheEnabled()) {
+			// Allocate lazily: disabled mode reserves no per-thread table.
+			thread_local std::unique_ptr<TileLayoutCache> layouts;
+			if (!layouts) layouts = std::make_unique<TileLayoutCache>();
+			bool       hit   = false;
+			const bool valid = layouts->Get(description, surface, mip_layout.data(), &hit);
+			Common::DebugCounters::Add(hit ? Common::DebugCounters::Counter::TileLayoutHits
+			                               : Common::DebugCounters::Counter::TileLayoutMisses);
+			EXIT_NOT_IMPLEMENTED(!valid);
+		} else {
+			EXIT_NOT_IMPLEMENTED(
+			    !TileGetTiledTextureLayout(description, surface, mip_layout.data()));
+		}
 		tiling             = surface.texture;
 		first_tail_level   = surface.first_tail_level;
 		tiled_slice_stride = surface.block_slice_size;
@@ -446,6 +463,54 @@ std::vector<vk::BufferImageCopy> ImageInfo::BufferCopies(uint64_t buffer_offset,
 		}
 	}
 	return copies;
+}
+
+std::optional<uint64_t> CompactLinearReadbackSize(const ImageInfo& info) {
+	if (!info.data.Valid() || info.IsTiled() || info.IsDepth() || info.HasStencil() ||
+	    info.HasMetadata() || info.IsBlock() || info.IsVolume() || info.samples != 1 ||
+	    info.resources.levels != 1 || info.resources.layers != 1 || info.extent.depth != 1 ||
+	    info.extent.width == 0 || info.extent.height == 0 || info.bytes_per_block == 0 ||
+	    info.pixel_format == vk::Format::eS8Uint ||
+	    info.metadata.compression != VideoOutCompression::Uncompressed ||
+	    info.GetColorTransform() != ColorTransform::None || info.tiling.texel_width != 1 ||
+	    info.tiling.texel_height != 1 ||
+	    info.tiling.block.bytes_per_element != info.bytes_per_block)
+		return std::nullopt;
+	const uint32_t host_bytes = [&] {
+		switch (info.pixel_format) {
+			case vk::Format::eR8Unorm:
+			case vk::Format::eR8Uint: return 1u;
+			case vk::Format::eR8G8Unorm:
+			case vk::Format::eR8G8Uint:
+			case vk::Format::eR16Sfloat:
+			case vk::Format::eR16Uint: return 2u;
+			case vk::Format::eR8G8B8A8Unorm:
+			case vk::Format::eR8G8B8A8Srgb:
+			case vk::Format::eR8G8B8A8Uint:
+			case vk::Format::eB8G8R8A8Unorm:
+			case vk::Format::eB8G8R8A8Srgb:
+			case vk::Format::eR16G16Sfloat:
+			case vk::Format::eR16G16Uint:
+			case vk::Format::eR32Uint:
+			case vk::Format::eR32Sint:
+			case vk::Format::eR32Sfloat: return 4u;
+			case vk::Format::eR16G16B16A16Sfloat:
+			case vk::Format::eR16G16B16A16Unorm:
+			case vk::Format::eR32G32Sfloat:
+			case vk::Format::eR32G32Uint: return 8u;
+			case vk::Format::eR32G32B32A32Sfloat:
+			case vk::Format::eR32G32B32A32Uint: return 16u;
+			default: return 0u;
+		}
+	}();
+	if (host_bytes == 0 || host_bytes != info.bytes_per_block) return std::nullopt;
+	const auto layout = info.LinearLayout();
+	if (layout.mips[0].offset != 0 || layout.mips[0].pitch != info.extent.width)
+		return std::nullopt;
+	const uint64_t row = uint64_t {info.extent.width} * info.bytes_per_block;
+	if (info.extent.height > UINT64_MAX / row) return std::nullopt;
+	const auto bytes = row * info.extent.height;
+	return bytes <= info.data.size ? std::optional<uint64_t> {bytes} : std::nullopt;
 }
 
 } // namespace Libs::Graphics

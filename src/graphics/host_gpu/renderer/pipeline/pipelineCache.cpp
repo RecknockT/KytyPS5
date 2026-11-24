@@ -385,8 +385,14 @@ template <bool HasCalls>
 ShaderModule* PipelineCache::Program::FindModule(const ShaderRecompiler::IR::SrtRuntime& runtime,
                                                  uint32_t push_data_cursor,
                                                  uint32_t push_data_ceiling) {
-	EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(resource_plan, runtime, resources,
-	                                                    specialization));
+	EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
+	    resource_plan, runtime, resources, specialization,
+	    Config::ResourcePrepReuseEnabled() ? &preparation_cache : nullptr));
+	if (Config::ResourcePrepReuseEnabled()) {
+		Common::DebugCounters::Add(preparation_cache.last_hit
+		                               ? Common::DebugCounters::Counter::ResourcePrepHits
+		                               : Common::DebugCounters::Counter::ResourcePrepMisses);
+	}
 	for (auto& candidate: modules) {
 		const auto& layout = candidate.info.bindings;
 		const auto  start  = ShaderRecompiler::IR::PushData::StartFor(
@@ -1555,6 +1561,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		m_last_graphics_pipeline = &pipeline;
 	}
 
+	if (Config::PipelineKeyCacheEnabled()) {
+		UpdateKeyInputCache(command, state, targets, stages, vs_input_info);
+	}
 	return pipeline;
 }
 
