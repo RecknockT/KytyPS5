@@ -29,6 +29,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <semaphore>
 #include <thread>
 #include <vector>
@@ -1349,10 +1350,14 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		const auto t_disp_start = Common::AuditProfiler::IsEnabled()
 		                              ? Common::AuditProfiler::Clock::now()
 		                              : Common::AuditProfiler::Clock::time_point {};
+		std::optional<Common::AuditProfiler::Pm4OpcodeScope> pm4_scope;
+		if (Common::AuditProfiler::g_pm4_profiling_active.load(std::memory_order_relaxed))
+			pm4_scope.emplace(opcode, t_disp_start);
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		if (Common::AuditProfiler::IsEnabled()) {
 			const auto t_disp_end = Common::AuditProfiler::Clock::now();
+			if (pm4_scope) pm4_scope->Finish(t_disp_end);
 			Common::AuditProfiler::RecordPipelineStage(
 			    Common::AuditProfiler::PipelineStage::Pm4Dispatch,
 			    static_cast<uint64_t>(

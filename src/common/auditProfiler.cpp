@@ -212,6 +212,7 @@ std::atomic<uint64_t> g_submit_counts[static_cast<size_t>(SubmitReason::Count)] 
 
 // Internal GPU transfers
 std::atomic<uint64_t> g_internal_gpu_transfer_bytes {0};
+std::atomic<uint64_t> g_baseline_image_binding_entries {0}, g_baseline_image_binding_skips {0};
 
 // Frametimes buffer for exact percentiles
 alignas(64) double g_captured_frames[MAX_CAPTURED_FRAMES] {};
@@ -516,9 +517,11 @@ void SetEnabled(bool enabled) noexcept {
 		}
 		if (g_capture_state.load(std::memory_order_relaxed) == CaptureState::Idle) {
 			g_capture_state.store(CaptureState::Running, std::memory_order_relaxed);
+			EnablePm4Profile();
 			g_capture_start_time = Clock::now();
 		}
 	} else {
+		StopPm4Profile();
 		g_capture_state.store(CaptureState::Idle, std::memory_order_relaxed);
 	}
 }
@@ -558,6 +561,7 @@ uint64_t GetCaptureDurationMs() noexcept {
 }
 
 void Reset() {
+	ResetPm4Profile(Config::ProfilePm4Enabled());
 	g_total_faults.store(0, std::memory_order_relaxed);
 	g_total_reprotects.store(0, std::memory_order_relaxed);
 	g_total_handler_ns.store(0, std::memory_order_relaxed);
@@ -698,6 +702,12 @@ void StartCapture(const char* trigger_reason) {
 	SetEnabled(true);
 	Common::DebugCounters::SetEnabled(true);
 	Reset();
+	g_baseline_image_binding_entries.store(
+	    Common::DebugCounters::Get(Common::DebugCounters::Counter::ImageBindingResetEntries),
+	    std::memory_order_relaxed);
+	g_baseline_image_binding_skips.store(
+	    Common::DebugCounters::Get(Common::DebugCounters::Counter::ImageBindingDuplicateSkips),
+	    std::memory_order_relaxed);
 
 	g_current_phase.store(ExecutionPhase::Gameplay, std::memory_order_relaxed);
 	g_trigger_reason = trigger_reason != nullptr ? trigger_reason : "Unknown";
@@ -852,6 +862,7 @@ void StartCapture(const char* trigger_reason) {
 	g_capture_id        = fmt::format("cap_{:x}", epoch_ms);
 
 	g_capture_state.store(CaptureState::Running, std::memory_order_relaxed);
+	EnablePm4Profile();
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[AuditProfiler] Capture STARTED (ID: {}, reason: {}, target duration: {} s, phase: "
 	    "Gameplay) - Clean baseline established\n",
@@ -867,6 +878,7 @@ void StopCapture(CaptureState state) {
 
 	g_capture_end_time = Clock::now();
 	g_capture_state.store(state, std::memory_order_relaxed);
+	StopPm4Profile();
 
 	// Freeze snapshot at the exact moment of capture completion
 	g_completed_snapshot = TakeSnapshot();
@@ -1518,6 +1530,7 @@ ProfileSnapshot TakeSnapshot() {
 	}
 
 	ProfileSnapshot snapshot {};
+	snapshot.pm4_profile                    = TakePm4Snapshot();
 	snapshot.enabled                        = IsEnabled();
 	snapshot.cadence_enabled                = Config::GpuSubmitCadenceEnabled();
 	snapshot.cadence_interval_us            = Config::GetGpuSubmitCadenceIntervalUs();
@@ -1532,6 +1545,7 @@ ProfileSnapshot TakeSnapshot() {
 	snapshot.read_buffer_reuse_enabled      = Config::ReadBufferReuseEnabled();
 	snapshot.resource_prep_reuse_enabled    = Config::ResourcePrepReuseEnabled();
 	snapshot.binding_reuse_enabled          = Config::BindingReuseEnabled();
+	snapshot.image_binding_dedup_enabled    = Config::ImageBindingDedupEnabled();
 	snapshot.extended_stream_buffer_enabled = Config::ExtendedStreamBufferEnabled();
 	snapshot.redundant_bind_elision_enabled = Config::RedundantBindElisionEnabled();
 	snapshot.pipeline_cache_mru_enabled     = Config::PipelineCacheMruEnabled();
@@ -1670,8 +1684,14 @@ ProfileSnapshot TakeSnapshot() {
 	                                g_baseline_tile_layout_hits.load(std::memory_order_relaxed);
 	snapshot.tile_layout_misses   = Counters::Get(Counters::Counter::TileLayoutMisses) -
 	                                g_baseline_tile_layout_misses.load(std::memory_order_relaxed);
-	snapshot.binding_range_reuses = Counters::Get(Counters::Counter::BindingRangeReuses) -
-	                                g_baseline_binding_reuses[0].load(std::memory_order_relaxed);
+	snapshot.image_binding_reset_entries =
+	    Counters::Get(Counters::Counter::ImageBindingResetEntries) -
+	    g_baseline_image_binding_entries.load(std::memory_order_relaxed);
+	snapshot.image_binding_duplicate_skips =
+	    Counters::Get(Counters::Counter::ImageBindingDuplicateSkips) -
+	    g_baseline_image_binding_skips.load(std::memory_order_relaxed);
+	snapshot.binding_range_reuses   = Counters::Get(Counters::Counter::BindingRangeReuses) -
+	                                  g_baseline_binding_reuses[0].load(std::memory_order_relaxed);
 	snapshot.binding_lookup_reuses  = Counters::Get(Counters::Counter::BindingLookupReuses) -
 	                                  g_baseline_binding_reuses[1].load(std::memory_order_relaxed);
 	snapshot.binding_sampler_reuses = Counters::Get(Counters::Counter::BindingSamplerReuses) -
@@ -2390,6 +2410,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	         {"wide_readback_window", snap.wide_readback_window_enabled},
 	         {"fault_ahead", snap.fault_ahead_enabled},
 	         {"binding_reuse", snap.binding_reuse_enabled},
+	         {"image_binding_dedup", snap.image_binding_dedup_enabled},
+	         {"profile_pm4", snap.pm4_profile.enabled},
 	         {"trim_scratch_memory", snap.trim_scratch_memory_enabled},
 	         {"compact_image_readback", snap.compact_image_readback_enabled},
 	         {"read_buffer_reuse", snap.read_buffer_reuse_enabled},
@@ -2493,6 +2515,8 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 	};
 
 	j["optimizations"] = {
+	    {"image_binding_reset_entries", snap.image_binding_reset_entries},
+	    {"image_binding_duplicate_skips", snap.image_binding_duplicate_skips},
 	    {"binding_range_reuses", snap.binding_range_reuses},
 	    {"binding_lookup_reuses", snap.binding_lookup_reuses},
 	    {"binding_sampler_reuses", snap.binding_sampler_reuses},
@@ -2678,6 +2702,32 @@ bool ExportJson(const std::string& filepath, const ProfileSnapshot* existing_sna
 		};
 	}
 	j["pipeline_stage_timings"] = stages_json;
+
+	auto opcode_rows = nlohmann::json::array();
+	for (const auto& row: snap.pm4_profile.opcodes) {
+		const auto exclusive = row.inclusive_ns - row.excluded_ns;
+		opcode_rows.push_back(
+		    {{"opcode", row.opcode},
+		     {"opcode_hex", fmt::format("0x{:02X}", row.opcode)},
+		     {"calls", row.calls},
+		     {"calls_per_frame", row.calls / frame_count},
+		     {"inclusive_ns", row.inclusive_ns},
+		     {"excluded_union_ns", row.excluded_ns},
+		     {"exclusive_ns", exclusive},
+		     {"host_wait_union_ns", row.host_wait_ns},
+		     {"inclusive_ms_per_frame", row.inclusive_ns / 1e6 / frame_count},
+		     {"exclusive_ms_per_frame", exclusive / 1e6 / frame_count},
+		     {"exclusive_avg_ns", row.calls ? double(exclusive) / row.calls : 0.0},
+		     {"max_inclusive_ns", row.max_ns}});
+	}
+	j["pm4_opcode_profile"] = {
+	    {"enabled", snap.pm4_profile.enabled},
+	    {"discarded_scopes", snap.pm4_profile.discarded_scopes},
+	    {"note", "Host wall time; exclusive excludes the union of instrumented child scopes on the "
+	             "same thread. Host waits are a subset of that union, not physical GPU time. "
+	             "Uninstrumented work/waits and profiler overhead remain in exclusive time. Nested "
+	             "opcode inclusive times overlap."},
+	    {"opcodes", opcode_rows}};
 
 	j["cpu_gpu_separation"] = {
 	    {"gpu_thread_wall_clock_ms", snap.gpu_thread_wall_clock_ms},
@@ -2963,6 +3013,10 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	                   static_cast<double>(snap.internal_gpu_transfer_bytes) / (1024.0 * 1024.0));
 	out << fmt::format("Transfers,NeighbourReadbackCount,{}\n", snap.neighbour_readback_count);
 	out << fmt::format("Transfers,NeighbourReadbackBytes,{}\n", snap.neighbour_readback_bytes);
+	out << fmt::format("Optimization,ImageBindingResetEntries,{}\n",
+	                   snap.image_binding_reset_entries);
+	out << fmt::format("Optimization,ImageBindingDuplicateSkips,{}\n",
+	                   snap.image_binding_duplicate_skips);
 	out << fmt::format("Optimization,BindingRangeReuses,{}\n", snap.binding_range_reuses);
 	out << fmt::format("Optimization,BindingLookupReuses,{}\n", snap.binding_lookup_reuses);
 	out << fmt::format("Optimization,BindingSamplerReuses,{}\n", snap.binding_sampler_reuses);
@@ -3015,6 +3069,16 @@ bool ExportCsv(const std::string& filepath, const ProfileSnapshot* existing_snap
 	out << fmt::format("PhaseGameplay,GpuWaitMs,{:.2f}\n",
 	                   static_cast<double>(snap.phase_gameplay.gpu_wait_ns) / 1000000.0);
 
+	out << fmt::format("PM4Profile,Enabled,{}\n", snap.pm4_profile.enabled);
+	out << fmt::format("PM4Profile,DiscardedScopes,{}\n", snap.pm4_profile.discarded_scopes);
+	for (const auto& row: snap.pm4_profile.opcodes) {
+		const auto key = fmt::format("0x{:02X}", row.opcode);
+		out << fmt::format("PM4Calls,{},{}\n", key, row.calls);
+		out << fmt::format("PM4InclusiveNs,{},{}\n", key, row.inclusive_ns);
+		out << fmt::format("PM4ExcludedUnionNs,{},{}\n", key, row.excluded_ns);
+		out << fmt::format("PM4ExclusiveNs,{},{}\n", key, row.inclusive_ns - row.excluded_ns);
+		out << fmt::format("PM4HostWaitUnionNs,{},{}\n", key, row.host_wait_ns);
+	}
 	for (size_t i = 0; i < static_cast<size_t>(PipelineStage::Count); ++i) {
 		const auto  stage = static_cast<PipelineStage>(i);
 		const auto& s     = snap.pipeline_stages[i];

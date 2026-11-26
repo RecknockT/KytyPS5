@@ -46,7 +46,8 @@ void MasterSemaphore::Wait(uint64_t tick, Common::AuditProfiler::GpuWaitReason r
 		return;
 	}
 
-	vk::SemaphoreWaitInfo wait_info {};
+	Common::AuditProfiler::Pm4ChildScope pm4_wait(true);
+	vk::SemaphoreWaitInfo                wait_info {};
 	wait_info.semaphoreCount = 1;
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;

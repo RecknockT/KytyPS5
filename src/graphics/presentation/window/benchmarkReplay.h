@@ -20,6 +20,8 @@ private:
 		Down,
 		Up,
 		Mode,
+		Pm4Profile,
+		ImageBindingDedup,
 		Cadence,
 		TileLayout,
 		ResourcePrep,

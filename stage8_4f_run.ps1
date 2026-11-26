@@ -21,10 +21,12 @@ param(
     [ValidateRange(0,4)][int]$KeyboardPlayer = 0,
     [switch]$Preview,
     [ValidateRange(0,3600)][int]$MaxRuntimeSeconds = 0,
-    [string[]]$ExtraArgs = @()
+    [string[]]$ExtraArgs = @(),
+    [string]$RuntimeDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
+$runtimeRoot = if ($RuntimeDirectory) { (Resolve-Path -LiteralPath $RuntimeDirectory).Path } else { $repoRoot }
 $emuPath = Join-Path $repoRoot '_Build\windows\kyty_emulator.exe'
 if (!(Test-Path -LiteralPath $emuPath)) { throw "Falta Release: $emuPath" }
 if (!(Test-Path -LiteralPath (Join-Path $GameDirectory 'eboot.bin'))) { throw 'No se encontro eboot.bin.' }
@@ -96,13 +98,14 @@ public static class Stage84fNativeProbe {
 }
 try {
     $metadata = [ordered]@{ profile=$Profile; transfers=$Transfers; sha=(& git -C $repoRoot rev-parse HEAD); arguments=$emuArguments; bootSeconds=$BootSeconds; captureSeconds=$CaptureSeconds; maxRuntimeSeconds=$MaxRuntimeSeconds; coldBoot=[bool]$ColdBoot; traceOps=[bool]$TraceOps; started=(Get-Date).ToString('o'); executableHash=(Get-FileHash -LiteralPath $emuPath).Hash }
+    $metadata.runtimeDirectory = $runtimeRoot
     $metadata.benchmarkReplay = $env:KYTY_BENCH_REPLAY
     if ($env:KYTY_BENCH_REPLAY -and (Test-Path -LiteralPath $env:KYTY_BENCH_REPLAY)) {
         Copy-Item -LiteralPath $env:KYTY_BENCH_REPLAY -Destination (Join-Path $runDirectory 'replay.json')
     }
     $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runDirectory 'run.json')
     & git -C $repoRoot diff --ignore-submodules -- src tests CMakeLists.txt docs | Set-Content -LiteralPath (Join-Path $runDirectory 'source.patch')
-    $process = Start-Process -FilePath $emuPath -ArgumentList $emuArguments -WorkingDirectory $repoRoot -PassThru -WindowStyle Normal -RedirectStandardOutput (Join-Path $runDirectory 'stdout.log') -RedirectStandardError (Join-Path $runDirectory 'stderr.log')
+    $process = Start-Process -FilePath $emuPath -ArgumentList $emuArguments -WorkingDirectory $runtimeRoot -PassThru -WindowStyle Normal -RedirectStandardOutput (Join-Path $runDirectory 'stdout.log') -RedirectStandardError (Join-Path $runDirectory 'stderr.log')
     $metadata.pid = $process.Id
     $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runDirectory 'run.json')
     Write-Host "Perfil $Profile; PID $($process.Id); logs: $runDirectory"

@@ -1525,6 +1525,136 @@ TEST_F(AuditProfilerTest, WorkloadTimeDistributionQueueAndCpuBound) {
   StopCapture();
 }
 
+
+Clock::time_point Pm4TestTime(uint64_t ns) { return Clock::time_point(std::chrono::nanoseconds(ns)); }
+void StartPm4Test(bool enabled = true) {
+  Config::ConfigOptions cfg;
+  cfg.profile_pm4_enabled = enabled;
+  Config::Load(cfg);
+  SetExportPath("test_profile.json");
+  StartCapture("pm4-test");
+}
+TEST_F(AuditProfilerTest, Pm4NestedChildrenAreSubtractedOnce) {
+  StartPm4Test();
+  Pm4OpcodeScope scope(0x2d, Pm4TestTime(0));
+  ASSERT_TRUE(BeginPm4Child(Pm4TestTime(10)));
+  ASSERT_TRUE(BeginPm4Child(Pm4TestTime(20), true));
+  EndPm4Child(Pm4TestTime(30), true);
+  EndPm4Child(Pm4TestTime(60));
+  ASSERT_TRUE(BeginPm4Child(Pm4TestTime(70), true));
+  ASSERT_TRUE(BeginPm4Child(Pm4TestTime(75), true));
+  EndPm4Child(Pm4TestTime(80), true);
+  EndPm4Child(Pm4TestTime(90), true);
+  scope.Finish(Pm4TestTime(100));
+  const auto snap = TakeSnapshot();
+  ASSERT_EQ(snap.pm4_profile.opcodes.size(), 1u);
+  const auto& row = snap.pm4_profile.opcodes[0];
+  EXPECT_EQ(row.calls, 1u);
+  EXPECT_EQ(row.inclusive_ns, 100u);
+  EXPECT_EQ(row.excluded_ns, 70u);
+  EXPECT_EQ(row.host_wait_ns, 30u);
+  ASSERT_TRUE(ExportJson("test_profile.json", &snap));
+  ASSERT_TRUE(ExportCsv("test_profile.csv", &snap));
+  std::ifstream in("test_profile.json"); nlohmann::json j; in >> j;
+  EXPECT_TRUE(j["configuration"]["profile_pm4"]);
+  EXPECT_EQ(j["pm4_opcode_profile"]["opcodes"][0]["exclusive_ns"], 30);
+  std::ifstream csv("test_profile.csv");
+  const std::string text((std::istreambuf_iterator<char>(csv)), {});
+  EXPECT_NE(text.find("PM4ExclusiveNs,0x2D,30"), std::string::npos);
+}
+TEST_F(AuditProfilerTest, Pm4OtherThreadsDoNotSubtractFromHandler) {
+  StartPm4Test();
+  Pm4OpcodeScope scope(0x2d, Pm4TestTime(0));
+  std::thread worker([] {
+    EXPECT_FALSE(BeginPm4Child(Pm4TestTime(20), true));
+    Pm4OpcodeScope other(0x15, Pm4TestTime(10));
+    EXPECT_TRUE(BeginPm4Child(Pm4TestTime(20), true));
+    EndPm4Child(Pm4TestTime(30), true);
+    other.Finish(Pm4TestTime(50));
+  });
+  worker.join(); scope.Finish(Pm4TestTime(100));
+  const auto snap = TakeSnapshot();
+  ASSERT_EQ(snap.pm4_profile.opcodes.size(), 2u);
+  EXPECT_EQ(snap.pm4_profile.opcodes[0].opcode, 0x15u);
+  EXPECT_EQ(snap.pm4_profile.opcodes[0].excluded_ns, 10u);
+  EXPECT_EQ(snap.pm4_profile.opcodes[1].excluded_ns, 0u);
+}
+TEST_F(AuditProfilerTest, Pm4NestedOpcodesAndResetAreIsolated) {
+  StartPm4Test();
+  Pm4OpcodeScope outer(0x2d, Pm4TestTime(0));
+  { Pm4OpcodeScope inner(0x15, Pm4TestTime(20)); inner.Finish(Pm4TestTime(60)); }
+  outer.Finish(Pm4TestTime(100));
+  auto snap = TakeSnapshot();
+  ASSERT_EQ(snap.pm4_profile.opcodes.size(), 2u);
+  EXPECT_EQ(snap.pm4_profile.opcodes[1].excluded_ns, 40u);
+  Pm4OpcodeScope stale(0x2d, Pm4TestTime(0));
+  StopCapture(); StartPm4Test();
+  { Pm4OpcodeScope fresh(0x16, Pm4TestTime(0)); fresh.Finish(Pm4TestTime(20)); }
+  stale.Finish(Pm4TestTime(100));
+  snap = TakeSnapshot();
+  ASSERT_EQ(snap.pm4_profile.opcodes.size(), 1u);
+  EXPECT_EQ(snap.pm4_profile.opcodes[0].opcode, 0x16u);
+}
+TEST_F(AuditProfilerTest, Pm4DisabledAndIncompleteScopesAreNotReportedAsComplete) {
+  StartPm4Test(false);
+  { Pm4OpcodeScope scope(0x2d, Pm4TestTime(0)); scope.Finish(Pm4TestTime(100)); }
+  EXPECT_TRUE(TakeSnapshot().pm4_profile.opcodes.empty());
+  StopCapture(); StartPm4Test();
+  { Pm4OpcodeScope scope(0x2d, Pm4TestTime(0)); BeginPm4Child(Pm4TestTime(10)); scope.Finish(Pm4TestTime(100)); }
+  EXPECT_TRUE(TakeSnapshot().pm4_profile.opcodes.empty());
+  EXPECT_EQ(TakeSnapshot().pm4_profile.discarded_scopes, 1u);
+}
+
+TEST_F(AuditProfilerTest, Pm4RequestedModeAppliesAtCaptureBoundary) {
+  StartPm4Test(false);
+  Config::RequestPm4ProfileMode(true);
+  EXPECT_FALSE(TakeSnapshot().pm4_profile.enabled);
+  StopCapture(); StartPm4Test(false);
+  EXPECT_TRUE(TakeSnapshot().pm4_profile.enabled);
+  { Pm4OpcodeScope scope(0x15, Pm4TestTime(0)); scope.Finish(Pm4TestTime(20)); }
+  EXPECT_EQ(TakeSnapshot().pm4_profile.opcodes.size(), 1u);
+  Config::RequestPm4ProfileMode(false);
+  StopCapture(); StartPm4Test(true);
+  EXPECT_FALSE(TakeSnapshot().pm4_profile.enabled);
+}
+
+TEST_F(AuditProfilerTest, Pm4StageTimersAndManualWaitScopesAreConnected) {
+  StartPm4Test();
+  Pm4OpcodeScope scope(0x2d, Clock::now());
+  {
+    ScopedStageTimer stage(PipelineStage::RenderStatePrep);
+    Pm4ChildScope wait(true);
+  }
+  scope.Finish(Clock::now());
+  const auto snap = TakeSnapshot();
+  ASSERT_EQ(snap.pm4_profile.opcodes.size(), 1u);
+  const auto& row = snap.pm4_profile.opcodes[0];
+  EXPECT_GT(row.excluded_ns, 0u);
+  EXPECT_GT(row.host_wait_ns, 0u);
+  EXPECT_LE(row.host_wait_ns, row.excluded_ns);
+  EXPECT_LE(row.excluded_ns, row.inclusive_ns);
+  EXPECT_GT(snap.pipeline_stages[static_cast<size_t>(PipelineStage::RenderStatePrep)].total_ns, 0u);
+}
+
+TEST_F(AuditProfilerTest, ImageBindingDedupCounterBaselinesAndExport) {
+  Config::ConfigOptions cfg; cfg.image_binding_dedup_enabled=true; Config::Load(cfg);
+  Common::DebugCounters::SetEnabled(true);
+  Common::DebugCounters::Add(Common::DebugCounters::Counter::ImageBindingDuplicateSkips,100);
+  SetExportPath("test_profile.json"); StartCapture("binding-dedup");
+  Common::DebugCounters::Add(Common::DebugCounters::Counter::ImageBindingResetEntries,2);
+  Common::DebugCounters::Add(Common::DebugCounters::Counter::ImageBindingDuplicateSkips,3);
+  const auto snap=TakeSnapshot();
+  EXPECT_TRUE(snap.image_binding_dedup_enabled);
+  EXPECT_EQ(snap.image_binding_reset_entries,2u);
+  EXPECT_EQ(snap.image_binding_duplicate_skips,3u);
+  ASSERT_TRUE(ExportJson("test_profile.json",&snap));
+  std::ifstream in("test_profile.json"); nlohmann::json j; in>>j;
+  EXPECT_TRUE(j["configuration"]["image_binding_dedup"]);
+  EXPECT_EQ(j["optimizations"]["image_binding_duplicate_skips"],3);
+  StopCapture(); StartCapture("fresh");
+  EXPECT_EQ(TakeSnapshot().image_binding_duplicate_skips,0u);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {

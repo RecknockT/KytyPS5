@@ -24,6 +24,9 @@ static void PrintUsage() {
 	         KYTY_GIT_VERSION, __DATE__);
 	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
 	::printf("Options:\n");
+	::printf("  --profile-pm4 / --no-profile-pm4: per-opcode capture timing (default off)\n");
+	::printf(
+	    "  --image-binding-dedup / --no-image-binding-dedup: unique image cleanup (default off)\n");
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf(
@@ -421,6 +424,10 @@ static constexpr Flag FLAGS[] = {
     {"--resolve-texture-cache-512", &ConfigOptions::resolve_texture_cache_512_enabled, true},
     {"--no-resolve-texture-cache-512", &ConfigOptions::resolve_texture_cache_512_enabled, false},
     {"--profile-programs", &ConfigOptions::profile_programs_enabled, true},
+    {"--image-binding-dedup", &ConfigOptions::image_binding_dedup_enabled, true},
+    {"--no-image-binding-dedup", &ConfigOptions::image_binding_dedup_enabled, false},
+    {"--profile-pm4", &ConfigOptions::profile_pm4_enabled, true},
+    {"--no-profile-pm4", &ConfigOptions::profile_pm4_enabled, false},
     {"--no-profile-programs", &ConfigOptions::profile_programs_enabled, false},
     {"--vertex-input-cache", &ConfigOptions::vertex_input_cache_enabled, true},
     {"--no-vertex-input-cache", &ConfigOptions::vertex_input_cache_enabled, false},

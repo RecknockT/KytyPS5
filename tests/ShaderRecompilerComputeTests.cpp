@@ -890,6 +890,9 @@ struct RenderExecutorTestAccess {
     executor.ResolveRenderColorTarget(buffer, color, slot);
   }
 
+  static void BindImage(RenderExecutor &executor, ImageId id, bool storage) { executor.BindImage(id,storage); }
+  static size_t BoundImageCount(const RenderExecutor &executor) { return executor.m_bound_images.size(); }
+
   static void BindRenderTarget(RenderExecutor &executor, ImageId id) {
     executor.BindRenderTarget(id);
   }
@@ -3654,6 +3657,63 @@ public:
             "test cleanup failed");
     Config::Load({.printf_direction = Config::LogDirection::Silent});
     std::printf("[host]    %-32s ok\n", name);
+  }
+
+  void CheckImageBindingDedup() {
+    constexpr const char* name = "ImageBindingDedup";
+    EnsureRuntimeContext();
+    using Common::DebugCounters::Counter;
+    for (bool enabled : {false,true}) {
+      Config::ConfigOptions options;
+      options.printf_direction = Config::LogDirection::Silent;
+      options.perf_overlay_enabled = true;
+      options.image_binding_dedup_enabled = enabled;
+      Config::Load(options);
+      Common::DebugCounters::SetEnabled(true);
+      RenderContext context(m_runtime_context);
+      HW::Context registers{}; HW::UserConfig user_config{}; HW::Shader shaders{};
+      auto& scheduler=context.GetCommandScheduler();
+      scheduler.Begin(registers,user_config,shaders);
+      auto& cache=context.GetTextureCache(); auto& executor=context.GetRenderExecutor();
+      ImageInfo info{};
+      info.data={0x0000000207800000ull,4096}; info.extent={1,1,1}; info.resources={1,1}; info.samples=1;
+      const auto first=TextureCacheTestAccess::InsertImage(cache,info);
+      info.data.address+=0x10000;
+      const auto second=TextureCacheTestAccess::InsertImage(cache,info);
+      const auto entries_before=Common::DebugCounters::Get(Counter::ImageBindingResetEntries);
+      const auto skips_before=Common::DebugCounters::Get(Counter::ImageBindingDuplicateSkips);
+      RenderExecutorTestAccess::BindImage(executor,first,false);
+      RenderExecutorTestAccess::BindRenderTarget(executor,first);
+      RenderExecutorTestAccess::BindImage(executor,first,true);
+      RenderExecutorTestAccess::BindImage(executor,second,false);
+      RenderExecutorTestAccess::BindImage(executor,first,false);
+      const auto& first_binding=cache.GetImage(first).binding;
+      Require(name,"read/write/target hazard flags",first_binding.is_bound && first_binding.is_target &&
+          first_binding.shader_write && first_binding.force_general,"dedup changed a binding hazard");
+      Require(name,"tracking size",RenderExecutorTestAccess::BoundImageCount(executor)==(enabled?2u:5u),"wrong cleanup membership");
+      RenderExecutorTestAccess::ResetBindings(executor);
+      for (auto id : {first,second}) {
+        const auto& b=cache.GetImage(id).binding;
+        Require(name,"complete reset",!b.is_bound && !b.is_target && !b.shader_write && !b.force_general &&
+            !b.needs_rebind && b.attachment_layout==vk::ImageLayout::eUndefined && !b.attachment_access,"binding was not reset");
+      }
+      Require(name,"reset work counter",Common::DebugCounters::Get(Counter::ImageBindingResetEntries)-entries_before==(enabled?2u:5u),"reset count mismatch");
+      Require(name,"duplicate counter",Common::DebugCounters::Get(Counter::ImageBindingDuplicateSkips)-skips_before==(enabled?3u:0u),"skip count mismatch");
+      // RebindImages can clear flags mid-operation; membership must remain independent of flags.
+      RenderExecutorTestAccess::BindRenderTarget(executor,first);
+      cache.GetImage(first).binding={};
+      RenderExecutorTestAccess::BindImage(executor,first,true);
+      Require(name,"alias rebind",cache.GetImage(first).binding.is_bound && cache.GetImage(first).binding.shader_write,"rebind lost writes");
+      RenderExecutorTestAccess::ResetBindings(executor);
+      Require(name,"alias reset",!cache.GetImage(first).binding.is_bound && !cache.GetImage(first).binding.shader_write,"rebound image escaped reset");
+      RenderExecutorTestAccess::BindImage(executor,first,false);
+      Require(name,"next operation membership",RenderExecutorTestAccess::BoundImageCount(executor)==1,"stale membership survived reset");
+      RenderExecutorTestAccess::ResetBindings(executor);
+      scheduler.Finish();
+      std::printf("[binding-reset] enabled=%d requests=5 reset_entries=%u skipped=%u\n",int(enabled),enabled?2u:5u,enabled?3u:0u);
+    }
+    Config::Load({.printf_direction=Config::LogDirection::Silent});
+    std::printf("[host]    %-32s ok\n",name);
   }
 
   void CheckBindingReuse() {
@@ -72290,6 +72350,9 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan;
     vulkan.CheckReadBufferReuse();
     return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--image-binding-dedup-only") == 0) {
+    VulkanHarness vulkan; vulkan.CheckImageBindingDedup(); return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--binding-reuse-only") == 0) {
     VulkanHarness vulkan;

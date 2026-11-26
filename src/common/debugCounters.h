@@ -71,6 +71,8 @@ enum class Counter {
 	RedundantPipelineBinds,
 	RedundantVertexBinds,
 	RedundantIndexBinds,
+	ImageBindingResetEntries,
+	ImageBindingDuplicateSkips,
 	BindingRangeReuses,
 	BindingLookupReuses,
 	BindingSamplerReuses,

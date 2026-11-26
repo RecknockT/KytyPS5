@@ -350,6 +350,7 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 }
 
 void CommandScheduler::DrainPriorityOperations() {
+	Common::AuditProfiler::Pm4ChildScope pm4_wait(true);
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
 	m_priority_available.wait(
@@ -364,6 +365,7 @@ bool CommandScheduler::PriorityDoneLocked(uint64_t tick) const noexcept {
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
+	Common::AuditProfiler::Pm4ChildScope pm4_wait(true);
 	EXIT_IF(g_deferred_callback_scheduler == this);
 	std::unique_lock lock(m_operation_mutex);
 	if (PriorityDoneLocked(tick)) {
@@ -467,6 +469,7 @@ bool CommandScheduler::TakeDueCadenceSubmit() {
 }
 
 uint64_t CommandScheduler::Submit(SubmitInfo submit, Common::AuditProfiler::SubmitReason reason) {
+	Common::AuditProfiler::Pm4ChildScope pm4_submit;
 	EXIT_IF(m_command.IsInvalid());
 
 	{

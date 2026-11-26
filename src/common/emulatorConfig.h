@@ -117,6 +117,7 @@ struct ConfigOptions {
 	bool     render_target_cache_enabled       = true;
 	bool     tile_layout_cache_enabled         = false;
 	bool     binding_reuse_enabled             = false;
+	bool     image_binding_dedup_enabled       = false;
 	bool     resource_prep_reuse_enabled       = false;
 	bool     read_buffer_reuse_enabled         = false;
 	bool     compact_image_readback_enabled    = false;
@@ -124,6 +125,7 @@ struct ConfigOptions {
 	bool     program_cache_mru_enabled         = true;
 	bool     resolve_texture_cache_512_enabled = true;
 	bool     profile_programs_enabled          = false;
+	bool     profile_pm4_enabled               = false;
 	bool     vertex_input_cache_enabled        = true;
 	bool     coalesce_read_faults_enabled      = true;
 	bool     effect_profile_enabled            = false;
@@ -293,6 +295,10 @@ void     ApplyBindingReuseMode();
 bool     ProgramCacheMruEnabled();
 bool     ResolveTextureCache512Enabled();
 bool     ProfileProgramsEnabled();
+bool     ImageBindingDedupEnabled();
+void     RequestImageBindingDedupMode(bool enabled);
+bool     ProfilePm4Enabled();
+void     RequestPm4ProfileMode(bool enabled); // Applied at the next capture boundary.
 bool     VertexInputCacheEnabled();
 bool     CoalesceReadFaultsEnabled();
 bool     GpuTimestampsEnabled();

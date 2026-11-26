@@ -11,6 +11,8 @@
 namespace Config {
 
 static std::unique_ptr<ConfigOptions> g_config;
+static std::atomic<int>               g_pm4_profile_override {-1};
+static std::atomic<int>               g_image_binding_dedup_override {-1};
 static std::atomic<int>               g_binding_reuse_requested {-1};
 static std::atomic<int>               g_binding_reuse_effective {-1};
 static std::atomic<int> g_compact_readback_requested {-1}, g_compact_readback_effective {-1};
@@ -22,6 +24,8 @@ static std::atomic<int> g_submit_cadence_requested {-1};
 static std::atomic<int> g_submit_cadence_effective {-1};
 
 void Initialize() {
+	g_image_binding_dedup_override.store(-1, std::memory_order_relaxed);
+	g_pm4_profile_override.store(-1, std::memory_order_relaxed);
 	EXIT_IF(g_config != nullptr);
 	g_binding_reuse_requested.store(-1, std::memory_order_relaxed);
 	g_binding_reuse_effective.store(-1, std::memory_order_relaxed);
@@ -40,6 +44,7 @@ void Initialize() {
 }
 
 void Shutdown() {
+	g_image_binding_dedup_override.store(-1, std::memory_order_relaxed);
 	Common::DebugCounters::SetEnabled(false);
 	// A backstop that lets any audio thread still held go, so none waits through process exit.
 	Common::GpuStall::Configure(false);
@@ -500,6 +505,24 @@ bool ProgramCacheMruEnabled() {
 
 bool ResolveTextureCache512Enabled() {
 	return g_config != nullptr ? g_config->resolve_texture_cache_512_enabled : true;
+}
+
+bool ImageBindingDedupEnabled() {
+	const int mode = g_image_binding_dedup_override.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->image_binding_dedup_enabled;
+}
+
+void RequestImageBindingDedupMode(bool enabled) {
+	g_image_binding_dedup_override.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+bool ProfilePm4Enabled() {
+	const auto mode = g_pm4_profile_override.load(std::memory_order_relaxed);
+	return mode >= 0 ? mode != 0 : g_config != nullptr && g_config->profile_pm4_enabled;
+}
+
+void RequestPm4ProfileMode(bool enabled) {
+	g_pm4_profile_override.store(enabled ? 1 : 0, std::memory_order_relaxed);
 }
 
 bool ProfileProgramsEnabled() {

@@ -1,4 +1,4 @@
-param([string]$TitleId = 'PPSA21567', [switch]$Preview, [switch]$ManualAB, [switch]$TrimScratchMemory, [switch]$AllImprovements, [ValidateRange(0,360)][int]$FrameLimit = 30, [ValidateSet('resource_prep_reuse','read_buffer_reuse','compact_image_readback')][string]$ABMode = 'resource_prep_reuse')
+param([string]$TitleId = 'PPSA21567', [switch]$Preview, [switch]$ManualAB, [switch]$TrimScratchMemory, [switch]$AllImprovements, [switch]$WaitForExit, [ValidateRange(0,7680)][int]$ScreenWidth = 0, [ValidateRange(0,4320)][int]$ScreenHeight = 0, [switch]$LightDiagnostics, [ValidateRange(0,360)][int]$FrameLimit = 30, [ValidateSet('resource_prep_reuse','read_buffer_reuse','compact_image_readback','binding_reuse','profile_pm4','image_binding_dedup')][string]$ABMode = 'resource_prep_reuse')
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
 $settingsPath = 'C:\ProgramData\Kyty\Kyty.ini'
@@ -27,6 +27,9 @@ $runDirectory = Join-Path $repoRoot ('_Build/windows/live_play/' + (Get-Date -Fo
 $emuArgs = [System.Collections.Generic.List[string]]::new()
 $emuArgs.Add('--game'); $emuArgs.Add($gameDirectory)
 $resolution = $cfg['screen_resolution'] -split 'x'
+if (($ScreenWidth -eq 0) -ne ($ScreenHeight -eq 0)) { throw 'Se requieren ancho y alto juntos.' }
+if ($ScreenWidth -gt 0) { $resolution = @([string]$ScreenWidth, [string]$ScreenHeight) }
+
 if ($resolution.Count -ne 2) { throw 'Resolución inválida.' }
 $valueOptions = @{
     '--screen-width'=$resolution[0]; '--screen-height'=$resolution[1]
@@ -62,8 +65,10 @@ if ($TrimScratchMemory) { $emuArgs.Add('--trim-scratch-memory') }
 $emuArgs.Add('--fps-limit'); $emuArgs.Add([string]$FrameLimit)
 $emuArgs.AddRange([string[]]@('--audit-faults','--live-diagnostics','--audit-capture-duration','0','--audit-export', (Join-Path $runDirectory 'audit.json'), '--perf-overlay','--effect-profile','--no-gpu-timestamps','--no-tile-layout-cache','--no-binding-reuse','--no-cp-sequencer','--no-draw-prep','--no-draw-state-dirty-check'))
 if ($ManualAB) {
-    $emuArgs.AddRange([string[]]@('--no-live-diagnostics','--no-effect-profile','--audit-manual-trigger','--audit-capture-duration','40','--no-resource-prep-reuse','--no-read-buffer-reuse','--no-compact-image-readback'))
+    $captureSeconds = if ($ABMode -in @('binding_reuse','profile_pm4','image_binding_dedup')) { '30' } else { '40' }
+    $emuArgs.AddRange([string[]]@('--no-live-diagnostics','--no-effect-profile','--audit-manual-trigger','--audit-capture-duration',$captureSeconds,'--no-resource-prep-reuse','--no-read-buffer-reuse','--no-compact-image-readback','--no-binding-reuse','--no-image-binding-dedup','--no-profile-pm4'))
 }
+if ($LightDiagnostics) { $emuArgs.AddRange([string[]]@('--no-effect-profile','--no-live-diagnostics','--audit-manual-trigger','--audit-capture-duration','30','--no-profile-pm4')) }
 if ($AllImprovements) {
     if ($ManualAB) { throw 'La prueba conjunta no se combina con la comparación A/B.' }
     $emuArgs.AddRange([string[]]@('--trim-scratch-memory','--compact-image-readback','--resource-prep-reuse','--read-buffer-reuse','--binding-reuse','--tile-layout-cache'))
@@ -90,6 +95,18 @@ try {
             @{at_ms=142000;action=$ABMode;enabled=$false},
             @{at_ms=147000;action='capture';label='control2'}
         )
+        if ($ABMode -in @('binding_reuse','profile_pm4','image_binding_dedup')) {
+            $commands = @()
+            for ($i = 0; $i -lt 6; $i++) {
+                $enabled = ($i % 2 -eq 1)
+                $start = 5000 + 35000 * $i
+                $label = $(if ($ABMode -eq 'binding_reuse') { 'binding_' } elseif ($ABMode -eq 'image_binding_dedup') { 'image_dedup_' } else { 'pm4_' }) + $(if ($enabled) { 'on' } else { 'off' }) + '_' + ([int][math]::Floor($i / 2) + 1)
+                $commands += @{at_ms=$start-3000;action=$ABMode;enabled=$enabled}
+                $commands += @{at_ms=$start;action='capture';label=$label}
+            }
+        }
+        if ($ABMode -eq 'profile_pm4') { $commands += @{at_ms=215000;action='profile_pm4';enabled=$false} }
+        if ($ABMode -eq 'image_binding_dedup') { $commands += @{at_ms=215000;action='image_binding_dedup';enabled=$false} }
         $replayPath = Join-Path $runDirectory 'replay.json'
         $armPath = Join-Path $runDirectory 'start_measurement'
         $commands | ConvertTo-Json | Set-Content -LiteralPath $replayPath -Encoding utf8NoBOM
@@ -105,3 +122,11 @@ try {
 } finally { $env:KYTY_BENCH_REPLAY = $previousReplay; $env:KYTY_BENCH_ARM_FILE = $previousArm }
 # This is the user's interactive session: no timeout, replay, watcher or automatic close.
 [pscustomobject]@{pid=$gameProcess.Id; directory=$runDirectory}
+if ($WaitForExit) {
+    $gameProcess.WaitForExit()
+    $metadata.finished = (Get-Date).ToString('o')
+    $metadata.exitCode = $gameProcess.ExitCode
+    $metadata.exited = $true
+    $metadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runDirectory 'run.json')
+    [pscustomobject]@{exited=$true; exitCode=$gameProcess.ExitCode; directory=$runDirectory}
+}

@@ -2,6 +2,7 @@
 #define KYTY_COMMON_AUDIT_PROFILER_H_
 
 #include "common/common.h"
+#include "common/pm4OpcodeProfiler.h"
 
 #include <array>
 #include <atomic>
@@ -199,7 +200,7 @@ enum class QueueLatencyType : uint32_t {
 
 /// Tripartite workload time distribution: Queue vs CPU Active vs GPU Hardware Wait.
 struct WorkloadTimeDistribution {
-	// 1. Queue & Buffering Latency (Organización del trabajo)
+	// 1. Queue & Buffering Latency (OrganizaciÃ³n del trabajo)
 	uint64_t queue_submission_count   = 0;
 	double   queue_submission_ms      = 0.0;
 	uint64_t queue_intake_count       = 0;
@@ -211,7 +212,7 @@ struct WorkloadTimeDistribution {
 	double   total_queue_ms           = 0.0;
 	double   queue_pct                = 0.0;
 
-	// 2. CPU Active Execution (Traducción y Driver)
+	// 2. CPU Active Execution (TraducciÃ³n y Driver)
 	double cpu_pm4_decode_ms       = 0.0;
 	double cpu_pm4_dispatch_ms     = 0.0;
 	double cpu_render_state_ms     = 0.0;
@@ -224,7 +225,7 @@ struct WorkloadTimeDistribution {
 	double total_cpu_active_ms     = 0.0;
 	double cpu_active_pct          = 0.0;
 
-	// 3. GPU Hardware Wait (Sincronización y Espera de GPU)
+	// 3. GPU Hardware Wait (SincronizaciÃ³n y Espera de GPU)
 	double gpu_timeline_wait_ms     = 0.0;
 	double gpu_streambuffer_wait_ms = 0.0;
 	double gpu_swapchain_wait_ms    = 0.0;
@@ -388,6 +389,8 @@ struct ProfileSnapshot {
 	uint64_t internal_gpu_transfer_bytes = 0;
 	uint64_t neighbour_readback_count    = 0;
 	uint64_t neighbour_readback_bytes    = 0;
+	uint64_t image_binding_reset_entries = 0, image_binding_duplicate_skips = 0;
+	bool     image_binding_dedup_enabled = false;
 	uint64_t binding_range_reuses        = 0;
 	uint64_t binding_lookup_reuses       = 0;
 	uint64_t tile_layout_hits = 0, tile_layout_misses = 0;
@@ -490,6 +493,7 @@ struct ProfileSnapshot {
 
 	// Stage 8 additions: fine-grained pipeline stage timing metrics
 	std::array<PipelineStageMetrics, static_cast<size_t>(PipelineStage::Count)> pipeline_stages {};
+	Pm4ProfileSnapshot                                                          pm4_profile;
 	double pm4_dispatch_inclusive_ms           = 0.0;
 	double pm4_dispatch_exclusive_ms           = 0.0;
 	double pm4_dispatch_exclusive_ms_per_frame = 0.0;
@@ -729,19 +733,22 @@ void RecordDrawPrepAvoided(uint64_t ns = 0) noexcept;
 void                      RecordQueueLatency(QueueLatencyType type, uint64_t latency_ns) noexcept;
 [[nodiscard]] const char* GetQueueLatencyTypeName(QueueLatencyType type) noexcept;
 
-/// RAII scoped timer for pipeline stages with zero overhead when capture is not active.
+/// RAII stage timer; nested PM4 attribution is opt-in during captures.
 class ScopedStageTimer {
 public:
 	explicit ScopedStageTimer(PipelineStage stage) noexcept
 	    : m_stage(stage), m_active(IsCaptureRunning()) {
 		if (m_active) {
-			m_start = std::chrono::steady_clock::now();
+			m_start     = std::chrono::steady_clock::now();
+			m_pm4_child = g_pm4_profiling_active.load(std::memory_order_relaxed) &&
+			              BeginPm4Child(m_start, IsPm4Wait());
 		}
 	}
 	~ScopedStageTimer() noexcept {
 		if (m_active) {
 			const auto end = std::chrono::steady_clock::now();
-			const auto ns  = static_cast<uint64_t>(
+			if (m_pm4_child) EndPm4Child(end, IsPm4Wait());
+			const auto ns = static_cast<uint64_t>(
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(end - m_start).count());
 			RecordPipelineStage(m_stage, ns);
 		}
@@ -749,6 +756,11 @@ public:
 	KYTY_CLASS_NO_COPY(ScopedStageTimer);
 
 private:
+	bool IsPm4Wait() const noexcept {
+		return m_stage == PipelineStage::SyncWaits || m_stage == PipelineStage::SequencerWait ||
+		       m_stage == PipelineStage::DrawPrepCommitWait;
+	}
+	bool                                  m_pm4_child = false;
 	PipelineStage                         m_stage;
 	bool                                  m_active;
 	std::chrono::steady_clock::time_point m_start;

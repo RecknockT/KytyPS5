@@ -61,6 +61,14 @@ BenchmarkReplay::BenchmarkReplay() {
 			if (!entry.contains("enabled") || !entry["enabled"].is_boolean()) return;
 			command.action = Action::ResourcePrep;
 			command.mode   = entry["enabled"].get<bool>();
+		} else if (action == "image_binding_dedup") {
+			if (!entry.contains("enabled") || !entry["enabled"].is_boolean()) return;
+			command.action = Action::ImageBindingDedup;
+			command.mode   = entry["enabled"].get<bool>();
+		} else if (action == "profile_pm4") {
+			if (!entry.contains("enabled") || !entry["enabled"].is_boolean()) return;
+			command.action = Action::Pm4Profile;
+			command.mode   = entry["enabled"].get<bool>();
 		} else if (action == "binding_reuse") {
 			if (!entry.contains("enabled") || !entry["enabled"].is_boolean()) return;
 			command.action = Action::Mode;
@@ -126,6 +134,10 @@ int BenchmarkReplay::WaitLimit(int ordinary_wait) const {
 	if (!m_enabled || m_next == m_commands.size()) return ordinary_wait;
 	const auto elapsed = SDL_GetTicks() - m_start_ms;
 	const auto due     = m_commands[m_next].at_ms;
+	if (due <= elapsed && Common::AuditProfiler::IsCaptureRunning() &&
+	    m_commands[m_next].action != Action::Down && m_commands[m_next].action != Action::Up &&
+	    m_commands[m_next].action != Action::Quit)
+		return std::min(ordinary_wait, 10);
 	return due <= elapsed ? 0 : std::min(ordinary_wait, static_cast<int>(due - elapsed));
 }
 
@@ -142,6 +154,11 @@ bool BenchmarkReplay::Update() {
 	const auto elapsed = SDL_GetTicks() - m_start_ms;
 	while (m_next < m_commands.size() && m_commands[m_next].at_ms <= elapsed) {
 		const auto& command = m_commands[m_next];
+		// A capture ends on a rendered frame, which can arrive after its host-time deadline.
+		// Keep the command pending instead of treating that ordinary overlap as shutdown.
+		if (Common::AuditProfiler::IsCaptureRunning() && command.action != Action::Down &&
+		    command.action != Action::Up && command.action != Action::Quit)
+			return true;
 		if (command.action == Action::WaitFile) {
 			if ((!m_held_keys.empty() && !m_gate_confirm_down) ||
 			    Common::AuditProfiler::IsCaptureRunning())
@@ -193,6 +210,10 @@ bool BenchmarkReplay::Update() {
 				HostInputKey(command.key, false);
 				std::erase(m_held_keys, command.key);
 				break;
+			case Action::ImageBindingDedup:
+				Config::RequestImageBindingDedupMode(command.mode);
+				break;
+			case Action::Pm4Profile: Config::RequestPm4ProfileMode(command.mode); break;
 			case Action::Mode:
 				if (Common::AuditProfiler::IsCaptureRunning()) return false;
 				Config::RequestBindingReuseMode(command.mode);
